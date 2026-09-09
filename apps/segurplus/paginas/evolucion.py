@@ -14,6 +14,8 @@ from datetime import date
 from io import BytesIO
 
 import plotly.graph_objects as go
+import polars as pl
+import requests
 import streamlit as st
 
 from core.almacenamiento import alertas_del_periodo, conectar, recargos_del_periodo
@@ -30,6 +32,18 @@ from core.macro.ipc import leer_ipc
 from core.reportes.excel import generar_reporte_excel
 
 st.title("📊 Evolución por servicio")
+
+
+@st.cache_data(show_spinner="Descargando IPC...")
+def _leer_ipc_cacheado() -> pl.DataFrame:
+    # docs/auditoria-2026-09.md, hallazgo A-15: sin cachear, cada rerun de
+    # esta página (cambiar un selectbox, por ejemplo) podía volver a pegarle
+    # a la red si el parquet cacheado en disco no sobrevivió un reinicio del
+    # servidor (disco efímero, ver ADR-002). Cache a nivel de app (no en
+    # core/, que no depende de Streamlit) -- vive mientras el proceso del
+    # servidor esté arriba, se invalida en cada reinicio.
+    return leer_ipc()
+
 
 con = conectar()
 servicios = [
@@ -115,13 +129,30 @@ ipc_periodo_pct = 0.0
 try:
     fecha_0 = date.fromisoformat(periodo_0)
     fecha_1 = date.fromisoformat(periodo_1)
-    df_ipc = leer_ipc()
-    ipc_periodo_pct = inflacion_del_periodo(fecha_0, fecha_1, df_ipc=df_ipc)
-    if total_0 != 0:
-        vr = variacion_real(total_0, fecha_0, total_1, fecha_1, df_ipc=df_ipc)
-        col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
-except Exception:
-    st.caption("No se pudo calcular la variación real (sin datos de IPC para ese rango).")
+except ValueError:
+    # docs/auditoria-2026-09.md, hallazgo A-12: antes esto caía en el mismo
+    # `except Exception` genérico de más abajo y se mostraba como "sin datos
+    # de IPC", un mensaje falso -- el problema acá es un período con formato
+    # de fecha inválido (ver A-11: se normaliza al extraer, pero un dato
+    # viejo en la base pudo guardarse antes de ese fix), no el IPC.
+    st.caption(
+        f"No se pudo calcular la variación real: el período '{periodo_0}' o "
+        f"'{periodo_1}' no tiene formato de fecha válido (YYYY-MM-DD)."
+    )
+else:
+    try:
+        df_ipc = _leer_ipc_cacheado()
+        ipc_periodo_pct = inflacion_del_periodo(fecha_0, fecha_1, df_ipc=df_ipc)
+        if total_0 != 0:
+            vr = variacion_real(total_0, fecha_0, total_1, fecha_1, df_ipc=df_ipc)
+            col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
+    except requests.exceptions.RequestException as exc:
+        st.caption(f"No se pudo descargar el IPC (problema de red): {exc}")
+    except ValueError as exc:
+        # coeficiente_ajuste/variacion_real lanzan ValueError cuando el rango
+        # de fechas queda fuera de la serie de IPC disponible, o importe_0
+        # es 0 -- acá sí es fiel decir "sin datos de IPC para ese rango".
+        st.caption(f"No se pudo calcular la variación real: {exc}")
 
 fig = go.Figure()
 conceptos_orden = [d.concepto for d in descomposiciones]

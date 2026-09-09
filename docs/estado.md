@@ -32,8 +32,10 @@ y qué falta, para no tener que releer el plan entero cada vez.
 - `core/pipeline.py` une todo lo anterior en una sola función por PDF
   (`procesar_pdf`), que es lo único que llama la app.
 
-88 tests pasan, `ruff check` limpio. El tablero se probó levantado localmente (HTTP 200,
-sin errores de import), incluido el flujo de login con `AppTest` de Streamlit.
+151 tests pasan (1 skipped, requiere `GEMINI_API_KEY` real), `ruff check` limpio. El tablero
+se probó levantado localmente (HTTP 200, sin errores de import). Las tres páginas del
+tablero (Cargar, Evolución, Cuarentena) tienen tests con `AppTest` de Streamlit, no solo el
+login -- ver `docs/auditoria-2026-09.md`, hallazgo A-19 (Bloque 8 del plan de correcciones).
 
 ## Falta (siguiente trabajo)
 

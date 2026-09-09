@@ -133,7 +133,14 @@ Segurplus sí:
 emisor, cuit, servicio, periodo (desde/hasta), fecha_emision, fecha_vencimiento,
 numero_comprobante, moneda,
 conceptos: [ {descripcion, cantidad, unidad, precio_unitario, importe} ],
-consumos:  [ {magnitud, cantidad, unidad} ]        # kWh, m³, GB, minutos
+                                                     # los consumos medidos (kWh, m³, GB,
+                                                     # minutos) van DENTRO de conceptos, con
+                                                     # su propio `unidad` -- no hay un campo
+                                                     # `consumos` separado (ver
+                                                     # core/extraccion/esquema.py; corregido
+                                                     # acá en docs/auditoria-2026-09.md,
+                                                     # hallazgo A-14, que este plan describía
+                                                     # un campo que el código nunca tuvo)
 impuestos: [ {nombre, importe} ]                    # IVA, ingresos brutos, tasas municipales
 recargos:  [ {nombre, importe} ]                    # mora, intereses, refacturaciones
 subtotal, total

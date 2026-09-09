@@ -39,6 +39,15 @@ heredado de `afritocreator/Consultora` (ver CLAUDE.md, stack cerrado).
   como respaldo — no se resuelve en este ADR).
 - Si en algún momento se necesita autenticación, multiusuario real o un dominio propio, ahí
   sí conviene reevaluar el stack — no antes.
+- **Límite de concurrencia de DuckDB** (docs/auditoria-2026-09.md, hallazgo A-15):
+  `core/almacenamiento.py::conectar` abre una conexión nueva contra el mismo archivo
+  `.duckdb` en cada request. DuckDB soporta una sola conexión de ESCRITURA a la vez sobre un
+  mismo archivo (a diferencia de Postgres/MySQL) — con un único usuario cargando facturas a
+  la vez (el uso esperado hoy, un equipo chico) no es un problema; si dos personas
+  cargan/procesan al mismo tiempo, la segunda conexión puede fallar en vez de esperar. No
+  está mitigado (no hay cola ni lock explícito) — si el uso concurrente se vuelve real, la
+  opción más simple es serializar el acceso de escritura desde la propia app (ej. un lock de
+  archivo), antes de migrar a otro motor.
 
 ## Addendum (2026-09-09): app pública con contraseña, no privada
 

@@ -17,7 +17,9 @@ al pedirle al modelo un `responseJsonSchema`, y la validación ARITMÉTICA
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from datetime import date
 
 # Mismos nombres que los archivos data/conceptos/*.yaml (docs/auditoria-2026-09.md,
 # hallazgo A-3) -- "otro" es el catch-all deliberado sin YAML propio: una factura
@@ -164,6 +166,42 @@ def esquema_json_para_modelo() -> dict:
     }
 
 
+_PATRON_FECHA_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PATRON_FECHA_ARGENTINA = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+
+
+def _normalizar_fecha(valor: object) -> str | None:
+    """Normaliza una fecha devuelta por el modelo a ISO `YYYY-MM-DD`, o
+    `None` si no se puede interpretar (docs/auditoria-2026-09.md, hallazgo
+    A-11).
+
+    El prompt de extracción pide ISO, pero un LLM puede devolver el formato
+    que ve impreso en la factura -- en Argentina, típicamente `DD/MM/YYYY`
+    (supuesto explícito: SIEMPRE día/mes/año, nunca mes/día/año). Sin este
+    normalizador, un valor así llega intacto hasta `evolucion.py`, que hace
+    `date.fromisoformat(...)` y lanza `ValueError` -- capturado ahí por un
+    `except` genérico que muestra un mensaje de error que no dice que el
+    problema es el formato de la fecha (ver A-12). Mejor evitarlo en el
+    origen: si no se puede interpretar, `None` (que el resto del código ya
+    maneja como "dato no disponible") en vez de un string inválido."""
+    if not isinstance(valor, str) or not valor:
+        return None
+    if _PATRON_FECHA_ISO.match(valor):
+        try:
+            date.fromisoformat(valor)
+            return valor
+        except ValueError:
+            return None
+    coincidencia = _PATRON_FECHA_ARGENTINA.match(valor)
+    if coincidencia:
+        dia, mes, anio = (int(x) for x in coincidencia.groups())
+        try:
+            return date(anio, mes, dia).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
 def factura_desde_json(
     datos: dict, *, hash_pdf: str | None = None, ruta_pdf: str | None = None
 ) -> FacturaExtraida:
@@ -192,10 +230,10 @@ def factura_desde_json(
         emisor=datos.get("emisor"),
         cuit=datos.get("cuit"),
         servicio=datos.get("servicio"),
-        periodo_desde=datos.get("periodo_desde"),
-        periodo_hasta=datos.get("periodo_hasta"),
-        fecha_emision=datos.get("fecha_emision"),
-        fecha_vencimiento=datos.get("fecha_vencimiento"),
+        periodo_desde=_normalizar_fecha(datos.get("periodo_desde")),
+        periodo_hasta=_normalizar_fecha(datos.get("periodo_hasta")),
+        fecha_emision=_normalizar_fecha(datos.get("fecha_emision")),
+        fecha_vencimiento=_normalizar_fecha(datos.get("fecha_vencimiento")),
         numero_comprobante=datos.get("numero_comprobante"),
         moneda=datos.get("moneda", "ARS"),
         conceptos=conceptos,

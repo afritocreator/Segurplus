@@ -563,12 +563,26 @@ Además: `periodos = [... ORDER BY 1]` en `evolucion.py` ordena `periodo_desde` 
 **string**, no como fecha — funciona hoy porque ISO ordena igual como string que como
 fecha, pero se rompe en silencio si alguna fecha llega en otro formato (ver arriba).
 
+**Bloque 8 (resuelto)**: nueva `core.extraccion.esquema._normalizar_fecha`, aplicada a los
+cuatro campos de fecha en `factura_desde_json`. Acepta ISO (validando que sea una fecha
+real) y `DD/MM/YYYY` (supuesto explícito: siempre día/mes/año), y devuelve `None` para
+cualquier otro formato -- nunca deja pasar un string que rompa río abajo. El ordenamiento
+por string de `periodos` en `evolucion.py` queda sin tocar (sigue siendo válido para ISO,
+que es lo único que puede llegar a la base ahora que se normaliza en el origen).
+
 #### A-12 — `except Exception` genérico que tapa cualquier error, no solo el esperado
 
 `evolucion.py:96`, ya citado en A-1 y A-11: el mismo `try/except Exception` cubre tres
 fallas completamente distintas (rango de IPC no disponible, fecha mal formada, cualquier
 otro bug futuro en `variacion_real`) con el mismo mensaje genérico de "sin datos de IPC
 para ese rango" — que en dos de los tres casos es directamente falso.
+
+**Bloque 8 (resuelto)**: separado en dos bloques `try/except` distintos. Un `except
+ValueError` alrededor de `date.fromisoformat` con un mensaje que nombra el período que no
+tiene formato de fecha válido; y, para la llamada al IPC, `except
+requests.exceptions.RequestException` (problema de red, mensaje distinto) y `except
+ValueError` (rango de IPC no disponible o `importe_0 == 0`) por separado, cada uno con el
+mensaje real de la excepción en vez de un texto fijo que puede ser falso.
 
 #### A-13 — `dias_tolerancia_periodo` declarado y sin una sola línea de código que lo lea
 
@@ -584,6 +598,10 @@ no tiene ningún campo `consumos` — los consumos medidos viven mezclados dentr
 `conceptos` (que sí tiene `cantidad` y `unidad`). Puede ser una simplificación deliberada
 que quedó sin actualizar en el plan, pero el plan es lo que alguien nuevo va a leer primero.
 
+**Bloque 8 (resuelto)**: `docs/PLAN.md` corregido -- el bloque de esquema ya no lista un
+campo `consumos` separado; una nota explica que los consumos medidos viven dentro de
+`conceptos`, con su propio `unidad`.
+
 #### A-15 — Consideraciones de infraestructura no resueltas
 
 - **DuckDB con dos usuarios simultáneos**: `core/almacenamiento.py::conectar` abre una
@@ -595,6 +613,12 @@ que quedó sin actualizar en el plan, pero el plan es lo que alguien nuevo va a 
 - `leer_ipc()` puede salir a la red (`descargar_ipc`) en cada rerun de la página de
   evolución si el parquet cacheado no existe en el filesystem efímero del servidor — no hay
   `@st.cache_data` sobre esa llamada.
+
+**Bloque 8 (resuelto, parcial)**: `evolucion.py` ahora envuelve `leer_ipc()` en
+`_leer_ipc_cacheado()`, decorada con `@st.cache_data` (vive en la capa de app, no en
+`core/`, para no meter Streamlit adentro de la biblioteca). El límite de concurrencia de
+DuckDB se documentó en `docs/decisiones/ADR-002-deploy.md` (una conexión de escritura a la
+vez; sin mitigar, aceptado mientras el uso sea de una persona por vez).
 
 #### A-16 — Se suman cantidades de distinta unidad bajo un mismo concepto normalizado
 
@@ -685,6 +709,17 @@ El 91% total esconde que justamente los dos módulos que tocan el mundo real sin
 llamada a Gemini y la página que muestra el resultado del análisis— son los menos
 verificados. El bug de A-1 vive en un archivo con 0% de cobertura; nadie, ni una corrida
 automática, ejecutó nunca esa fórmula antes de este informe.
+
+**Bloque 8 (resuelto)**: `evolucion.py` y `cuarentena.py` (0% antes) ahora tienen tests
+contra `AppTest` de Streamlit, con una base DuckDB temporal sembrada con facturas
+sintéticas (`monkeypatch` sobre `core.almacenamiento.RUTA_BASE`) y `core.macro.ipc.leer_ipc`
+mockeado (nunca pega a la red real en tests). `cargar.py` ganó tests para lo que se puede
+probar sin un uploader real de Streamlit (con/sin `GEMINI_API_KEY`); el flujo de
+procesamiento en sí ya estaba cubierto por `tests/test_pipeline.py`. `factura_desde_json`
+(la función sin test directo que señalaba este hallazgo) ahora tiene su propio archivo
+`tests/extraccion/test_esquema.py`. No se agregó `pytest-cov` al repo (requeriría un ADR,
+ver CLAUDE.md) -- la cobertura no se vuelve a medir numéricamente en este bloque, pero los
+tres archivos señalados pasaron de 0% a tener casos de uso reales ejercitados.
 
 ---
 
