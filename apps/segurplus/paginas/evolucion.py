@@ -17,7 +17,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from core.almacenamiento import conectar, recargos_del_periodo
-from core.analisis.agregacion import FilaConcepto, agregar_conceptos
+from core.analisis.agregacion import (
+    FilaConcepto,
+    agregar_conceptos,
+    conceptos_con_cantidad_neta_cero,
+)
 from core.analisis.alertas import generar_alertas
 from core.analisis.real import inflacion_del_periodo, variacion_real
 from core.analisis.variacion import descomponer_conceptos
@@ -63,17 +67,30 @@ periodo_1 = col2.selectbox("Período de comparación", periodos, index=len(perio
 
 def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
     filas = con.execute(
-        """SELECT c.concepto_normalizado, c.descripcion, c.cantidad, c.importe
+        """SELECT c.concepto_normalizado, c.descripcion, c.cantidad, c.importe, c.unidad
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
            WHERE f.servicio = ? AND f.periodo_desde = ?""",
         [servicio, periodo],
     ).fetchall()
-    return [FilaConcepto(cn, desc, cant, imp) for cn, desc, cant, imp in filas]
+    return [FilaConcepto(cn, desc, cant, imp, unidad) for cn, desc, cant, imp, unidad in filas]
 
 
-agregado_0 = agregar_conceptos(_filas_del_periodo(periodo_0))
-agregado_1 = agregar_conceptos(_filas_del_periodo(periodo_1))
+filas_0 = _filas_del_periodo(periodo_0)
+filas_1 = _filas_del_periodo(periodo_1)
+agregado_0 = agregar_conceptos(filas_0)
+agregado_1 = agregar_conceptos(filas_1)
 descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
+
+# Conceptos cuya cantidad neta dio cero con importe distinto de cero (ver
+# core.analisis.agregacion, hallazgo A-20): no pierden plata (ya corregido),
+# pero siguen siendo una anomalía real que vale la pena mostrar.
+anomalos_0 = conceptos_con_cantidad_neta_cero(filas_0)
+anomalos_1 = conceptos_con_cantidad_neta_cero(filas_1)
+if anomalos_0 or anomalos_1:
+    st.warning(
+        "Cantidad neta cero con importe distinto de cero (revisar si hay una nota de "
+        f"crédito o ajuste sin homologar bien): {', '.join(sorted(set(anomalos_0 + anomalos_1)))}"
+    )
 
 st.subheader(f"{servicio}: {periodo_0} → {periodo_1}")
 
@@ -155,7 +172,10 @@ factura_agregada = FacturaExtraida(
     recargos=recargos_periodo_1,
 )
 alertas_totales = generar_alertas(
-    factura_agregada, descomposiciones, ipc_periodo_pct=ipc_periodo_pct
+    factura_agregada,
+    descomposiciones,
+    ipc_periodo_pct=ipc_periodo_pct,
+    conceptos_con_cantidad_sintetica=frozenset(anomalos_0 + anomalos_1),
 )
 
 if alertas_totales:

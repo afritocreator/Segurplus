@@ -125,3 +125,33 @@ def test_generar_alertas_combina_todas_las_reglas():
     tipos = {a.tipo for a in alertas}
     assert "recargo" in tipos
     assert "salto_de_cantidad" in tipos
+
+
+def test_salto_de_cantidad_no_dispara_sobre_cantidad_sintetica():
+    # Hallazgo detectado por el revisor-financiero al revisar A-20: el 1.0
+    # "sin cantidad" que agregar_conceptos() inventa cuando la cantidad neta
+    # de un período dio cero con importe distinto de cero (una nota de
+    # crédito) NO es una cantidad real. Compararla contra una cantidad real
+    # de otro período (1 -> 4, "+300%") dispara un salto de cantidad
+    # espurio si no se excluye explícitamente.
+    d = descomponer_variacion(
+        "cargo_fijo", cantidad_0=1, precio_0=2000, cantidad_1=4, precio_1=2500
+    )
+    # Sin excluirlo, sí dispararía (sirve para confirmar que el caso es real):
+    assert alertas_por_salto_de_cantidad([d]) != []
+    # Excluyendo el concepto por ser cantidad sintética, no dispara:
+    alertas = alertas_por_salto_de_cantidad(
+        [d], conceptos_con_cantidad_sintetica=frozenset({"cargo_fijo"})
+    )
+    assert alertas == []
+
+
+def test_generar_alertas_excluye_salto_de_cantidad_sintetica():
+    factura = _factura()
+    d = descomponer_variacion(
+        "cargo_fijo", cantidad_0=1, precio_0=2000, cantidad_1=4, precio_1=2500
+    )
+    alertas = generar_alertas(
+        factura, [d], conceptos_con_cantidad_sintetica=frozenset({"cargo_fijo"})
+    )
+    assert not any(a.tipo == "salto_de_cantidad" for a in alertas)

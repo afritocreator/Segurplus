@@ -83,6 +83,8 @@ sí van a doler con uso real.**
 | A-19 | Medio | cobertura de tests | Evolución y Cuarentena, 0% de cobertura — nunca se ejecutaron en un test |
 | A-22 | Medio | `core/analisis/alertas.py:119` | Alerta de precio vs. IPC resta porcentajes (lineal) en vez de deflactar |
 | A-23 | Bajo | `evolucion.py:84` | Delta nominal mostrado junto a la columna de variación real, sin rotular |
+| A-24 | Medio | `core/analisis/agregacion.py` | Cantidad neta negativa (nota de crédito mayor al cargo) sin decisión ni detección |
+| A-25 | Medio | `core/extraccion/esquema.py` | Unidad sin normalizar puede fragmentar un concepto en dos etiquetas por mayúsculas/espacios |
 
 ---
 
@@ -685,6 +687,46 @@ hallazgos porque no lo es:
   (`UMBRAL_COINCIDENCIA = 0.45` en `homologacion.py` está en código, pero es un parámetro
   de algoritmo, no fiscal — fuera del alcance de esa regla, y ya cubierto por A-3.)
 - Ningún error de signo en ninguna fórmula de `core/`.
+
+---
+
+## Hallazgos nuevos, encontrados durante la corrección del Bloque 3
+
+El subagente `revisor-financiero`, al revisar el fix de A-20/A-16, encontró un problema
+real introducido por ese mismo fix y dos deudas preexistentes. El primero se corrigió en el
+momento (mismo commit); los otros dos quedan anotados para un bloque futuro.
+
+#### A-20-bis — corregido en el momento: salto de cantidad espurio sobre la cantidad sintética
+
+El `(1.0, importe_total)` que `agregar_conceptos` devuelve para preservar la identidad
+contable cuando la cantidad neta da cero (ver A-20) no es una cantidad real. Comparado
+contra la cantidad real de otro período disparaba `alertas_por_salto_de_cantidad` con un
+"+300%" artificial. Se agregó `conceptos_con_cantidad_sintetica` a
+`alertas_por_salto_de_cantidad`/`generar_alertas`, poblado con
+`conceptos_con_cantidad_neta_cero` de ambos períodos, y tests que reproducen exactamente el
+caso que encontró el subagente.
+
+#### A-24 — cantidad neta negativa (no cero) sin decisión explícita ni detección
+
+Si una nota de crédito es MÁS GRANDE que el cargo original del mismo período (ej. `+4/
+$10.000` y `-6/-$15.000`), `agregar_conceptos` da `(-2.0, 2500.0)` — la identidad matemática
+cierra, pero es un resultado raro de mostrar (cantidad negativa), y
+`conceptos_con_cantidad_neta_cero` no lo detecta (solo busca `== 0`), así que no dispara el
+`st.warning`. Comparado contra un período con cantidad positiva, `alertas_por_salto_de_cantidad`
+calcula la variación con un denominador negativo y el signo del mensaje queda invertido
+("-300%" para lo que en realidad es un aumento). No es una regresión de este bloque —esa
+rama de `alertas.py` no se tocó—, pero es de la misma familia que A-20. Queda pendiente.
+
+#### A-25 — la unidad no se normaliza antes de agrupar
+
+`core/extraccion/esquema.py::factura_desde_json` toma `unidad` literal del JSON del modelo
+sin normalizar mayúsculas ni espacios. Con `(concepto, unidad)` como clave de agrupación
+(fix de A-16), si el mismo concepto llega con `"kWh"` en un período y `"KWH"` o `" kWh "` en
+otro, se generan dos claves de texto distintas (`"consumo [kWh]"` vs `"consumo [KWH]"`), y
+la comparación entre períodos los trata como concepto nuevo/desaparecido en vez de la misma
+serie — falsa alerta. A confirmar con facturas reales (Bloque 9) si el modelo es consistente
+en el formato de unidad o si hace falta normalizar (`.strip().lower()` como mínimo) antes de
+agrupar.
 
 ---
 

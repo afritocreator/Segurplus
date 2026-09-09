@@ -81,12 +81,28 @@ def alertas_por_concepto_nuevo_o_desaparecido(
     return alertas
 
 
-def alertas_por_salto_de_cantidad(descomposiciones: list[DescomposicionVariacion]) -> list[Alerta]:
+def alertas_por_salto_de_cantidad(
+    descomposiciones: list[DescomposicionVariacion],
+    *,
+    conceptos_con_cantidad_sintetica: frozenset[str] = frozenset(),
+) -> list[Alerta]:
     """Salto de cantidad (líneas, chips, medidores) respecto del período
-    anterior, por encima del umbral `salto_de_cantidad_ratio`."""
+    anterior, por encima del umbral `salto_de_cantidad_ratio`.
+
+    `conceptos_con_cantidad_sintetica`: conceptos donde `cantidad_0` o
+    `cantidad_1` NO es una cantidad real, sino el `1.0` sintético que
+    `core.analisis.agregacion.agregar_conceptos` genera cuando la cantidad
+    neta de un período dio cero con importe distinto de cero (una nota de
+    crédito, ver hallazgo A-20). Comparar esa cantidad inventada contra una
+    cantidad real dispara un "salto de cantidad" que no es tal -- son
+    conceptos_con_cantidad_neta_cero() del período correspondiente, y se
+    excluyen acá en vez de generar una alerta que después hay que descartar
+    a mano."""
     umbral = _leer_umbrales()["salto_de_cantidad_ratio"]
     alertas = []
     for d in descomposiciones:
+        if d.concepto in conceptos_con_cantidad_sintetica:
+            continue
         if d.cantidad_0 == 0:
             continue
         variacion_cantidad = (d.cantidad_1 - d.cantidad_0) / d.cantidad_0
@@ -168,12 +184,21 @@ def generar_alertas(
     descomposiciones: list[DescomposicionVariacion],
     *,
     ipc_periodo_pct: float = 0.0,
+    conceptos_con_cantidad_sintetica: frozenset[str] = frozenset(),
 ) -> list[Alerta]:
-    """Corre todas las reglas de alerta y devuelve la lista combinada."""
+    """Corre todas las reglas de alerta y devuelve la lista combinada.
+
+    `conceptos_con_cantidad_sintetica`: ver docstring de
+    `alertas_por_salto_de_cantidad` -- pasar acá el resultado de
+    `core.analisis.agregacion.conceptos_con_cantidad_neta_cero()` de AMBOS
+    períodos comparados, para no generar un "salto de cantidad" espurio
+    sobre el 1.0 sintético del hallazgo A-20."""
     return [
         *alertas_por_recargos(factura),
         *alertas_por_item_duplicado(factura),
         *alertas_por_concepto_nuevo_o_desaparecido(descomposiciones),
-        *alertas_por_salto_de_cantidad(descomposiciones),
+        *alertas_por_salto_de_cantidad(
+            descomposiciones, conceptos_con_cantidad_sintetica=conceptos_con_cantidad_sintetica
+        ),
         *alertas_por_precio_sobre_ipc(descomposiciones, ipc_periodo_pct=ipc_periodo_pct),
     ]
