@@ -2,9 +2,12 @@
 data/alertas.yaml (vigencia_desde: 2026-09-01: precio_por_encima_del_ipc_pp=5.0,
 salto_de_cantidad_ratio=0.30)."""
 
+from datetime import date
+
 from core.analisis.alertas import (
     alertas_por_concepto_nuevo_o_desaparecido,
     alertas_por_item_duplicado,
+    alertas_por_periodo_faltante,
     alertas_por_precio_sobre_ipc,
     alertas_por_recargos,
     alertas_por_salto_de_cantidad,
@@ -155,3 +158,44 @@ def test_generar_alertas_excluye_salto_de_cantidad_sintetica():
         factura, [d], conceptos_con_cantidad_sintetica=frozenset({"cargo_fijo"})
     )
     assert not any(a.tipo == "salto_de_cantidad" for a in alertas)
+
+
+# --- A-13: alerta de período faltante -- umbral real: dias_tolerancia_periodo=10 ---
+
+
+def test_periodos_consecutivos_no_alertan():
+    periodos = [date(2026, 7, 1), date(2026, 8, 1), date(2026, 9, 1)]
+    assert alertas_por_periodo_faltante(periodos) == []
+
+
+def test_mes_completo_faltante_alerta():
+    # jul -> sep, sin ago: esperado ago-01, real sep-01 -> exceso 31 días > 10.
+    periodos = [date(2026, 7, 1), date(2026, 9, 1)]
+    alertas = alertas_por_periodo_faltante(periodos)
+    assert len(alertas) == 1
+    assert alertas[0].tipo == "periodo_faltante"
+    assert "2026-07-01" in alertas[0].mensaje
+    assert "2026-09-01" in alertas[0].mensaje
+
+
+def test_factura_unos_dias_tarde_dentro_de_tolerancia_no_alerta():
+    # ago-08 en vez de ago-01: exceso de 7 días, por debajo de la tolerancia (10).
+    periodos = [date(2026, 7, 1), date(2026, 8, 8)]
+    assert alertas_por_periodo_faltante(periodos) == []
+
+
+def test_factura_bastante_tarde_fuera_de_tolerancia_alerta():
+    # ago-15: exceso de 14 días, por encima de la tolerancia (10).
+    periodos = [date(2026, 7, 1), date(2026, 8, 15)]
+    alertas = alertas_por_periodo_faltante(periodos)
+    assert len(alertas) == 1
+
+
+def test_no_alerta_con_un_solo_periodo():
+    assert alertas_por_periodo_faltante([date(2026, 7, 1)]) == []
+
+
+def test_periodos_desordenados_se_ordenan_solos():
+    periodos = [date(2026, 9, 1), date(2026, 7, 1)]  # sep antes que jul, a propósito
+    alertas = alertas_por_periodo_faltante(periodos)
+    assert len(alertas) == 1  # detecta el hueco de agosto igual

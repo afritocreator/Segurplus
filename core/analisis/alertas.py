@@ -10,6 +10,7 @@ pensaron para poder correr independientemente y componerse en
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -177,6 +178,60 @@ def alertas_por_item_duplicado(factura: FacturaExtraida) -> list[Alerta]:
         for descripcion, cantidad in vistos.items()
         if cantidad > 1
     ]
+
+
+def _mes_siguiente(fecha: date) -> date:
+    """Primer día del mes siguiente a `fecha` (que se asume ya es un primer
+    día de mes, como `periodo_desde`)."""
+    if fecha.month == 12:
+        return date(fecha.year + 1, 1, 1)
+    return date(fecha.year, fecha.month + 1, 1)
+
+
+def alertas_por_periodo_faltante(periodos: list[date]) -> list[Alerta]:
+    """Detecta huecos entre períodos consecutivos de un mismo servicio,
+    mayores a la tolerancia `dias_tolerancia_periodo` -- la alerta que
+    `docs/PLAN.md` prometía y que hasta este fix no existía en el código
+    (ver docs/auditoria-2026-09.md, hallazgo A-13): "falta cargar la
+    factura de agosto".
+
+    Compara cada período contra el siguiente, ORDENADOS, y calcula cuánto
+    se pasó el período real del período ESPERADO (un mes después del
+    anterior) -- si ese excedente supera la tolerancia, hay un hueco. Con
+    períodos consecutivos normales (jul, ago, sep) el excedente da 0 y no
+    alerta; si falta un mes completo (jul, sep) el excedente es de ~30
+    días, muy por encima de la tolerancia por defecto (10 días).
+
+    LÍMITE CONOCIDO, sin resolver a propósito (hallazgo del subagente
+    `revisor-financiero`, ver docs/auditoria-2026-09.md hallazgo A-27):
+    esta función asume periodicidad MENSUAL para cualquier servicio. Un
+    servicio con facturación bimestral real (gas residencial, algunos casos
+    de energía en Argentina -- ambos servicios explícitamente contemplados
+    por esta herramienta) va a disparar esta alerta EN TODAS las
+    comparaciones, siempre, aunque nunca falte nada. No se resuelve acá
+    porque hacerlo bien (inferir o parametrizar la cadencia esperada por
+    servicio) necesita ver el patrón real de facturación de un proveedor de
+    verdad -- se calibra en Bloque 9 del plan de correcciones, con
+    facturas reales. Hasta entonces: para un servicio bimestral, esta
+    alerta específica no es confiable y hay que ignorarla a mano."""
+    umbral_dias = _leer_umbrales()["dias_tolerancia_periodo"]
+    ordenados = sorted(periodos)
+    alertas = []
+    for anterior, siguiente in zip(ordenados, ordenados[1:]):
+        esperado = _mes_siguiente(anterior)
+        exceso_dias = (siguiente - esperado).days
+        if exceso_dias > umbral_dias:
+            alertas.append(
+                Alerta(
+                    tipo="periodo_faltante",
+                    severidad="media",
+                    mensaje=(
+                        f"Puede faltar cargar un período entre {anterior} y {siguiente} "
+                        f"(hueco de {(siguiente - anterior).days} días)"
+                    ),
+                )
+            )
+    return alertas
 
 
 def generar_alertas(

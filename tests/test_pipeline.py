@@ -112,3 +112,46 @@ def test_homologa_conceptos_al_guardar(tmp_path, monkeypatch):
     ).fetchone()[0]
     assert normalizado == "abono_movil"
     con.close()
+
+
+def test_item_duplicado_se_persiste_al_procesar(tmp_path, monkeypatch):
+    # docs/auditoria-2026-09.md, hallazgo A-6: antes, alertas_por_item_duplicado
+    # nunca se ejecutaba en el flujo real -- se invocaba en evolucion.py
+    # sobre una factura agregada sin conceptos, así que siempre daba [].
+    factura = _factura_telefonia_julio()
+    factura.conceptos = [
+        Concepto("Abono", 1, None, 1000.0, 1000.0),
+        Concepto("Abono", 1, None, 1000.0, 1000.0),
+    ]
+    factura.subtotal = 2000.0
+    factura.total = 2420.0  # 2000 + IVA 21% (420)
+    factura.impuestos = [Impuesto("IVA 21%", importe=420.0)]
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
+    # El PDF de la fixture imprime un total distinto al de esta factura
+    # sintética (no viene al caso para este test, que prueba item_duplicado
+    # -- no la doble lectura, ya cubierta en tests/extraccion/test_validacion.py).
+    monkeypatch.setattr(pipeline_mod, "total_impreso", lambda texto: None)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert resultado.estado == "guardada"
+
+    fila = con.execute(
+        "SELECT tipo, severidad FROM alertas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    assert fila == ("item_duplicado", "media")
+    con.close()
+
+
+def test_sin_item_duplicado_no_guarda_alertas(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    filas = con.execute("SELECT * FROM alertas WHERE hash_pdf = ?", [resultado.hash_pdf]).fetchall()
+    assert filas == []
+    con.close()

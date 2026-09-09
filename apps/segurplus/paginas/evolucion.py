@@ -16,13 +16,13 @@ from io import BytesIO
 import plotly.graph_objects as go
 import streamlit as st
 
-from core.almacenamiento import conectar, recargos_del_periodo
+from core.almacenamiento import alertas_del_periodo, conectar, recargos_del_periodo
 from core.analisis.agregacion import (
     FilaConcepto,
     agregar_conceptos,
     conceptos_con_cantidad_neta_cero,
 )
-from core.analisis.alertas import generar_alertas
+from core.analisis.alertas import alertas_por_periodo_faltante, generar_alertas
 from core.analisis.real import inflacion_del_periodo, variacion_real
 from core.analisis.variacion import descomponer_conceptos
 from core.extraccion.esquema import FacturaExtraida, Recargo
@@ -59,6 +59,8 @@ if len(periodos) < 2:
     st.info(f"Hay menos de dos períodos cargados para {servicio}. Cargá al menos dos meses.")
     con.close()
     st.stop()
+
+alertas_periodo_faltante = alertas_por_periodo_faltante([date.fromisoformat(p) for p in periodos])
 
 col1, col2 = st.columns(2)
 periodo_0 = col1.selectbox("Período base", periodos, index=max(0, len(periodos) - 2))
@@ -153,8 +155,12 @@ st.dataframe(
 # Los recargos son por factura individual; se agregan acá para armar la
 # alerta sobre el período comparado (ver core.almacenamiento.recargos_del_periodo).
 # El chequeo de ítem duplicado (core.analisis.alertas.alertas_por_item_duplicado)
-# corre por factura individual dentro de core.pipeline.procesar_pdf en su
-# momento -- no aplica a esta vista agregada de varios períodos.
+# SÍ corre por factura individual, pero dentro de core.pipeline.procesar_pdf
+# en el momento de la carga -- no acá, porque acá solo se ve la factura
+# agregada de todo el período, sin los conceptos de cada comprobante por
+# separado. Sus resultados quedan persistidos (core.almacenamiento.alertas)
+# y se leen con alertas_del_periodo, para combinarlos con las alertas que sí
+# necesitan comparar dos períodos (ver docs/auditoria-2026-09.md, A-6).
 recargos_periodo_1 = [
     Recargo(nombre=nombre, importe=importe)
     for nombre, importe in recargos_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
@@ -171,11 +177,15 @@ factura_agregada = FacturaExtraida(
     moneda="ARS",
     recargos=recargos_periodo_1,
 )
-alertas_totales = generar_alertas(
-    factura_agregada,
-    descomposiciones,
-    ipc_periodo_pct=ipc_periodo_pct,
-    conceptos_con_cantidad_sintetica=frozenset(anomalos_0 + anomalos_1),
+alertas_totales = (
+    generar_alertas(
+        factura_agregada,
+        descomposiciones,
+        ipc_periodo_pct=ipc_periodo_pct,
+        conceptos_con_cantidad_sintetica=frozenset(anomalos_0 + anomalos_1),
+    )
+    + alertas_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
+    + alertas_periodo_faltante
 )
 
 if alertas_totales:

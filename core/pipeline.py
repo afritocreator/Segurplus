@@ -16,7 +16,13 @@ from pathlib import Path
 
 import duckdb
 
-from core.almacenamiento import factura_ya_procesada, guardar_en_cuarentena, guardar_factura
+from core.almacenamiento import (
+    factura_ya_procesada,
+    guardar_alertas,
+    guardar_en_cuarentena,
+    guardar_factura,
+)
+from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
 from core.extraccion.gemini import ExtraccionError, extraer_con_gemini
@@ -83,4 +89,9 @@ def procesar_pdf(
             conceptos_normalizados[i] = concepto
 
     guardar_factura(con, factura, conceptos_normalizados=conceptos_normalizados)
+
+    # Ítem duplicado se calcula UNA VEZ acá, sobre la factura individual --
+    # no en la página de evolución (que ve una factura agregada sin
+    # conceptos propios, ver docs/auditoria-2026-09.md, hallazgo A-6).
+    guardar_alertas(con, factura.hash_pdf, alertas_por_item_duplicado(factura))
     return ResultadoPipeline(ruta, factura.hash_pdf, estado="guardada")

@@ -5,6 +5,13 @@ Tablas:
 - `facturas` / `conceptos` / `recargos`: una fila por comprobante, una por
   línea y una por recargo (mora, interés, refacturación), IDEMPOTENTE por
   `hash_pdf` (reprocesar la misma carpeta no duplica nada).
+- `alertas`: alertas que se calculan UNA VEZ, en el momento de cargar la
+  factura (hoy solo `alertas_por_item_duplicado`, que necesita los
+  conceptos de una factura individual -- ver `core.pipeline.procesar_pdf`).
+  El resto de las alertas (recargos, concepto nuevo, salto de cantidad,
+  precio sobre IPC) se siguen calculando al vuelo en la página de
+  evolución, porque dependen de comparar DOS períodos, no de una factura
+  sola.
 - `cuarentena`: facturas que no cerraron aritméticamente, con el detalle de
   qué control falló, para resolver a mano desde el tablero.
 
@@ -20,6 +27,7 @@ from pathlib import Path
 
 import duckdb
 
+from core.analisis.alertas import Alerta
 from core.extraccion.esquema import FacturaExtraida
 from core.extraccion.validacion import ResultadoValidacion
 
@@ -53,6 +61,13 @@ CREATE TABLE IF NOT EXISTS recargos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
     importe DOUBLE,
+);
+CREATE TABLE IF NOT EXISTS alertas (
+    hash_pdf VARCHAR,
+    tipo VARCHAR,
+    severidad VARCHAR,
+    mensaje VARCHAR,
+    concepto VARCHAR,
 );
 CREATE TABLE IF NOT EXISTS cuarentena (
     hash_pdf VARCHAR PRIMARY KEY,
@@ -149,6 +164,38 @@ def recargos_del_periodo(
         [servicio, periodo_desde],
     ).fetchall()
     return [(nombre, importe) for nombre, importe in filas]
+
+
+def guardar_alertas(con: duckdb.DuckDBPyConnection, hash_pdf: str, alertas: list[Alerta]) -> None:
+    """Guarda las alertas calculadas UNA VEZ para una factura individual
+    (hoy solo item_duplicado -- ver `core.pipeline.procesar_pdf`).
+    Idempotente: si se reprocesa el mismo hash, primero se borran las
+    alertas viejas de ese hash."""
+    con.execute("DELETE FROM alertas WHERE hash_pdf = ?", [hash_pdf])
+    for a in alertas:
+        con.execute(
+            "INSERT INTO alertas (hash_pdf, tipo, severidad, mensaje, concepto) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [hash_pdf, a.tipo, a.severidad, a.mensaje, a.concepto],
+        )
+
+
+def alertas_del_periodo(
+    con: duckdb.DuckDBPyConnection, *, servicio: str, periodo_desde: str
+) -> list[Alerta]:
+    """Alertas persistidas (por factura individual) de todas las facturas de
+    `servicio` en `periodo_desde` -- lo que usa la página de evolución para
+    combinarlas con las que se calculan al vuelo comparando dos períodos."""
+    filas = con.execute(
+        """SELECT a.tipo, a.severidad, a.mensaje, a.concepto FROM alertas a
+           JOIN facturas f ON f.hash_pdf = a.hash_pdf
+           WHERE f.servicio = ? AND f.periodo_desde = ?""",
+        [servicio, periodo_desde],
+    ).fetchall()
+    return [
+        Alerta(tipo=tipo, severidad=severidad, mensaje=mensaje, concepto=concepto)
+        for tipo, severidad, mensaje, concepto in filas
+    ]
 
 
 def guardar_en_cuarentena(

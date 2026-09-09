@@ -86,6 +86,7 @@ sí van a doler con uso real.**
 | A-24 | Medio | `core/analisis/agregacion.py` | Cantidad neta negativa (nota de crédito mayor al cargo) sin decisión ni detección |
 | A-25 | Medio | `core/extraccion/esquema.py` | Unidad sin normalizar puede fragmentar un concepto en dos etiquetas por mayúsculas/espacios |
 | A-26 | Bajo | `core/ingesta/pdf_texto.py::_parsear_monto` | Con coma Y punto en el token, no valida que los grupos de miles no-decimales tengan 3 dígitos |
+| A-27 | Medio | `core/analisis/alertas.py::alertas_por_periodo_faltante` | Asume periodicidad mensual; un servicio bimestral (gas, algunos casos de energía) alerta siempre, en todas las comparaciones |
 
 ---
 
@@ -746,6 +747,30 @@ probable con un ERP bien configurado), y no es exactamente el caso que A-5 busca
 (una lectura *parcial*) sino un grupo de miles *inválido* tratado como válido sin control.
 Severidad baja. A confirmar si aparece en facturas reales (Bloque 9); si no aparece nunca,
 no vale la pena endurecer la validación a costa de legibilidad.
+
+#### A-27 — la alerta de período faltante asume periodicidad mensual para cualquier servicio
+
+Encontrado por el `revisor-financiero` al revisar el Bloque 5 (A-6/A-13).
+`alertas_por_periodo_faltante` compara cada período contra "un mes después del anterior" de
+forma fija. Reproducido a mano:
+
+```python
+bimestral = [date(2026,1,1), date(2026,3,1), date(2026,5,1), date(2026,7,1)]
+alertas_por_periodo_faltante(bimestral)
+# -> 3 alertas de "periodo_faltante", una por cada par consecutivo (hueco de ~60 días)
+```
+
+Un servicio con facturación bimestral real (gas residencial, algunos casos de energía en
+Argentina —ambos explícitamente contemplados por esta herramienta—) dispara esta alerta en
+el 100% de las comparaciones, siempre, aunque nunca falte nada. No es un caso raro: es el
+patrón normal de facturación de al menos uno de los servicios que la herramienta target.
+
+**Por qué no se resuelve en el momento**: hacerlo bien (inferir la cadencia real de cada
+servicio, o parametrizarla en `data/parametros/*.yaml` como pide CLAUDE.md) necesita ver el
+patrón real de facturación de un proveedor de verdad — con solo 2-3 períodos sintéticos no
+hay forma de distinguir "bimestral consistente" de "se saltearon un mes". Se calibra en el
+Bloque 9, con facturas reales. Mientras tanto, la limitación queda documentada en el
+docstring de la función: para un servicio bimestral, esta alerta específica no es confiable.
 
 ---
 

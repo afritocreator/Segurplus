@@ -2,8 +2,10 @@
 data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 
 from core.almacenamiento import (
+    alertas_del_periodo,
     conectar,
     factura_ya_procesada,
+    guardar_alertas,
     guardar_en_cuarentena,
     guardar_factura,
     recargos_del_periodo,
@@ -98,4 +100,45 @@ def test_recargos_del_periodo(tmp_path):
 
     sin_recargos = recargos_del_periodo(con, servicio="telefonia", periodo_desde="2020-01-01")
     assert sin_recargos == []
+    con.close()
+
+
+def test_guardar_y_leer_alertas_del_periodo(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura)
+
+    guardar_alertas(
+        con,
+        factura.hash_pdf,
+        [Alerta(tipo="item_duplicado", severidad="media", mensaje="test", concepto="Abono")],
+    )
+
+    alertas = alertas_del_periodo(con, servicio="telefonia", periodo_desde="2026-08-01")
+    assert len(alertas) == 1
+    assert alertas[0].tipo == "item_duplicado"
+    assert alertas[0].concepto == "Abono"
+
+    sin_alertas = alertas_del_periodo(con, servicio="telefonia", periodo_desde="2020-01-01")
+    assert sin_alertas == []
+    con.close()
+
+
+def test_guardar_alertas_es_idempotente(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura)
+
+    alerta = [Alerta(tipo="item_duplicado", severidad="media", mensaje="test", concepto="Abono")]
+    guardar_alertas(con, factura.hash_pdf, alerta)
+    guardar_alertas(con, factura.hash_pdf, alerta)  # reprocesar no duplica
+
+    cantidad = con.execute(
+        "SELECT COUNT(*) FROM alertas WHERE hash_pdf = ?", [factura.hash_pdf]
+    ).fetchone()[0]
+    assert cantidad == 1
     con.close()
