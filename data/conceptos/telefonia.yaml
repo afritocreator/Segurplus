@@ -1,0 +1,15 @@
+# Diccionario de homologación específico de telefonía/internet. Se combina
+# con comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
+# Se completa con las primeras facturas reales que se procesen (ver
+# docs/estado.md) -- estos son solo los alias más obvios para arrancar.
+
+abono_movil:
+  - abono linea movil
+  - cargo fijo movil
+  - abono plan control
+  - abono telefonico
+
+consumo_datos:
+  - consumo de datos
+  - internet movil
+  - datos moviles

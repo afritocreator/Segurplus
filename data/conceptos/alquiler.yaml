@@ -1,0 +1,6 @@
+# Diccionario de homologación específico de alquileres. Se combina con
+# comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
+
+alquiler:
+  - alquiler mensual
+  - canon locativo

@@ -1,0 +1,7 @@
+# Diccionario de homologación específico de energía eléctrica. Se combina
+# con comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
+
+consumo_energia:
+  - consumo de energia
+  - consumo electrico
+  - energia electrica

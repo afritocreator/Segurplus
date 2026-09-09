@@ -43,8 +43,10 @@ sin errores de import), incluido el flujo de login con `AppTest` de Streamlit.
   contra las fixtures sintéticas (incluida una factura rota a propósito, que va a
   cuarentena como se espera) y el tablero levanta sin errores, pero falta la prueba real
   con `GEMINI_API_KEY` y las facturas que aporte el usuario.
-- `data/conceptos/general.yaml` tiene solo los alias más obvios para arrancar — se
-  completa con las primeras facturas reales que se procesen.
+- `data/conceptos/*.yaml` (uno por servicio + `comunes.yaml`) tiene solo los alias más
+  obvios para arrancar — se completa con las primeras facturas reales que se procesen.
+  El umbral de homologación (`data/homologacion.yaml`) es un valor conservador elegido
+  sin facturas reales — falta calibrarlo (ver Bloque 9 del plan de correcciones).
 - **Persistencia en la nube**: el disco de Streamlit Community Cloud gratuito no es
   durable entre reinicios (ver ADR-002). No es grave para probar, sí para depender de
   esto en el día a día — a resolver cuando se decida usarlo en producción.

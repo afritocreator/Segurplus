@@ -48,9 +48,14 @@ def procesar_pdf(
     """Procesa un único PDF de punta a punta. No lanza excepciones para
     errores esperables del pipeline (PDF sin texto, extracción fallida,
     factura que no valida) -- esos casos se reportan en `ResultadoPipeline`,
-    no cortan el procesamiento de los demás PDFs de un lote."""
-    diccionario = diccionario if diccionario is not None else cargar_diccionario()
+    no cortan el procesamiento de los demás PDFs de un lote.
 
+    `diccionario`: si se pasa explícito, se usa tal cual (útil para tests).
+    Si no, se carga DESPUÉS de la extracción, acotado al `servicio` de la
+    factura (ver `core.analisis.diccionario.cargar_diccionario`, hallazgo
+    A-3) -- antes de este fix se cargaba upfront, combinando TODOS los
+    servicios, porque en ese punto del pipeline todavía no se sabía de qué
+    servicio era la factura."""
     try:
         documento = extraer_texto(ruta)
     except PdfSinTextoError as exc:
@@ -82,9 +87,12 @@ def procesar_pdf(
             detalle="; ".join(resultado.motivos_de_falla()),
         )
 
+    diccionario_a_usar = (
+        diccionario if diccionario is not None else cargar_diccionario(factura.servicio)
+    )
     conceptos_normalizados = {}
     for i, c in enumerate(factura.conceptos):
-        concepto, _score = homologar_concepto(c.descripcion, diccionario)
+        concepto, _score = homologar_concepto(c.descripcion, diccionario_a_usar)
         if concepto:
             conceptos_normalizados[i] = concepto
 

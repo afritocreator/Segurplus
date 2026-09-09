@@ -1,0 +1,17 @@
+# Parámetros de la homologación de conceptos (core/analisis/homologacion.py).
+# CLAUDE.md: nunca hardcodear esto en el código.
+
+# Umbral mínimo de similitud de Dice (0-1) para aceptar que una descripción
+# de factura homologa a un concepto normalizado conocido. Por debajo de
+# esto, el concepto queda sin clasificar -- lo que se convierte en la
+# alerta "concepto nuevo sin clasificar" (ver core/analisis/alertas.py).
+#
+# PROVISORIO: subido de 0.45 (el valor heredado de match.ts de Kleric-, que
+# resolvía un problema distinto -- emparejar mercadería contra un catálogo)
+# a 0.60 tras la auditoría de 2026-09 (hallazgo A-3): con 0.45, cargos como
+# "Recargo por reconexión" se absorbían en silencio como cargo_fijo (score
+# 0.571) en vez de alertar. La calibración definitiva de este valor queda
+# para cuando haya facturas reales de varios proveedores (Bloque 9 del plan
+# de correcciones) -- 0.60 es un valor conservador elegido sin esos datos,
+# no uno calibrado.
+umbral_coincidencia: 0.60

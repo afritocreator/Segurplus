@@ -232,6 +232,43 @@ debería existir"— puede colarse homologado como un concepto sano si su descri
 parece lo suficiente a otra cosa, en vez de generar la alerta de "concepto nuevo sin
 clasificar" que el diseño promete.
 
+**Bloque 6 (estructura, parcial)**: `data/conceptos/general.yaml` se separó en un archivo
+por servicio (`telefonia.yaml`, `energia.yaml`, `gas.yaml`, `agua.yaml`, `alquiler.yaml`,
+`seguro.yaml`) más `comunes.yaml`, y `homologar_concepto` ahora se llama con el diccionario
+ya acotado a `factura.servicio` (`core/pipeline.py`), así que `consumo_agua` ya no compite
+contra `consumo_gas` de otra factura. El umbral se movió a `data/homologacion.yaml`
+(0,60, provisorio) en vez de estar hardcodeado. **Lo que queda para el Bloque 9**: elegir
+el valor final del umbral con facturas reales — 0,60 es conservador a propósito, sin
+evidencia todavía.
+
+**Hallazgo nuevo descubierto al verificar este bloque (sin número propio, corregido en el
+mismo commit)**: el campo `servicio` del JSON Schema que se le pasa a Gemini
+(`core/extraccion/esquema.py::esquema_json_para_modelo`) era texto libre (solo una
+`description`, sin `enum`). Como el acotado por servicio de arriba depende de que
+`factura.servicio` coincida EXACTO con el nombre de un archivo, un valor del modelo como
+`"internet"` en vez de `"telefonia"` hacía que `cargar_diccionario("internet")` no
+encontrara ningún archivo propio y la factura perdiera TODA la homologación específica,
+silenciosamente, salvo `comunes.yaml`. Verificado corriendo `cargar_diccionario("internet")`
+y `cargar_diccionario("luz")` contra el repo real: ambos devuelven solo
+`{'cargo_fijo': [...]}`. Corregido agregando `"enum": list(SERVICIOS_CONOCIDOS) + [None]`
+al campo, con `SERVICIOS_CONOCIDOS` como constante única que enumera los mismos nombres que
+los archivos de `data/conceptos/*.yaml` (más `"otro"` como catch-all deliberado sin YAML
+propio). Se agregaron tests que verifican el enum y que cada valor del enum (salvo `"otro"`)
+tiene su YAML correspondiente, para que un futuro servicio nuevo no repita este mismo bug
+por omisión.
+
+Nota de proceso: el subagente `revisor-financiero` rehusó revisar este bloque dos veces
+(la segunda con una justificación explícita: su mandato es `core/` de Consultora, este es
+un repo de cliente separado, y el cambio no es una fórmula financiera con signos), a pesar
+de haber revisado sin objeciones el código de este mismo repo en los Bloques 2 a 5. La
+verificación de este bloque —incluida la detección del bug del `enum`— se hizo
+manualmente: se revisó el contenido completo de los seis `data/conceptos/*.yaml` para
+confirmar que ningún concepto legítimo quedó huérfano por el acotado por servicio (no hay
+overlaps entre archivos fuera de `comunes.yaml`, así que no hay falso-negativo nuevo), se
+corrió `cargar_diccionario` contra los casos límite (servicio inexistente, servicio `None`)
+y se confirmó con tests que el orden `extraer -> validar -> cargar diccionario por servicio
+-> homologar` en `core/pipeline.py` es el correcto.
+
 **Fix propuesto**: subir el umbral (probar con facturas reales una vez resuelto A-2 qué
 umbral separa bien los casos reales) y/o exigir que la homologación considere el `servicio`
 de la factura, no solo el texto — hoy `homologar_concepto` no recibe el servicio, así que

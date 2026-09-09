@@ -1,0 +1,10 @@
+# Diccionario de homologación específico de seguros. Se combina con
+# comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
+#
+# Alias mínimos para arrancar (sin facturas reales todavía, ver Bloque 9 del
+# plan de correcciones) -- se completa con las primeras pólizas que se procesen.
+
+premio_seguro:
+  - premio
+  - cuota de seguro
+  - prima

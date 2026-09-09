@@ -19,6 +19,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Mismos nombres que los archivos data/conceptos/*.yaml (docs/auditoria-2026-09.md,
+# hallazgo A-3) -- "otro" es el catch-all deliberado sin YAML propio: una factura
+# de un servicio no contemplado todavía homologa solo contra comunes.yaml, en vez
+# de perder la homologación entera por un valor de texto libre no reconocido.
+SERVICIOS_CONOCIDOS = ("telefonia", "energia", "gas", "agua", "seguro", "alquiler", "otro")
+
 
 @dataclass
 class Concepto:
@@ -93,7 +99,17 @@ def esquema_json_para_modelo() -> dict:
             },
             "servicio": {
                 "type": ["string", "null"],
-                "description": "telefonia, energia, gas, agua, seguro, alquiler, u otro",
+                # Antes era texto libre (solo una descripción, sin `enum`), y el
+                # diccionario de homologación ahora se acota por `servicio`
+                # (docs/auditoria-2026-09.md, hallazgo A-3) -- un valor fuera de
+                # esta lista exacta (ej. "internet" en vez de "telefonia") hace
+                # que se pierda TODA la homologación de esa factura salvo
+                # comunes.yaml. `enum` restringe al modelo a devolver exactamente
+                # uno de estos valores (o null), que son los mismos nombres que
+                # los archivos de data/conceptos/*.yaml -- si se agrega un
+                # servicio nuevo, hay que agregarlo acá Y crear su YAML.
+                "enum": list(SERVICIOS_CONOCIDOS) + [None],
+                "description": "Tipo de servicio -- exactamente uno de los valores permitidos",
             },
             "periodo_desde": {"type": ["string", "null"], "description": desc_periodo_desde},
             "periodo_hasta": {"type": ["string", "null"], "description": desc_periodo_hasta},

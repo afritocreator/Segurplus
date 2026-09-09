@@ -14,8 +14,24 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from pathlib import Path
 
-UMBRAL_COINCIDENCIA = 0.45  # mismo umbral calibrado en match.ts
+import yaml
+
+RUTA_HOMOLOGACION = Path(__file__).resolve().parents[2] / "data" / "homologacion.yaml"
+
+
+def _umbral_coincidencia() -> float:
+    """Sin cache y sin lectura a nivel de módulo, a propósito -- un YAML
+    corrupto no debe tumbar el import ni la app Streamlit (mismo patrón que
+    `core/analisis/alertas.py::_leer_umbrales`). Ver `data/homologacion.yaml`
+    para el valor y por qué es provisorio (docs/auditoria-2026-09.md, A-3)."""
+    datos = yaml.safe_load(RUTA_HOMOLOGACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "umbral_coincidencia" not in datos:
+        raise ValueError(
+            f"{RUTA_HOMOLOGACION} no tiene la forma esperada (falta 'umbral_coincidencia')"
+        )
+    return float(datos["umbral_coincidencia"])
 
 
 def normalizar(texto: str) -> str:
@@ -43,16 +59,21 @@ def similitud(a: str, b: str) -> float:
 
 
 def homologar_concepto(
-    descripcion: str, diccionario: dict[str, list[str]]
+    descripcion: str, diccionario: dict[str, list[str]], *, umbral: float | None = None
 ) -> tuple[str | None, float]:
     """Busca el concepto normalizado más parecido a `descripcion` dentro de
     `diccionario` ({concepto_normalizado: [alias, alias, ...]}).
+
+    `umbral`: por defecto se lee de `data/homologacion.yaml`
+    (`umbral_coincidencia`) -- se puede pasar explícito para tests, sin
+    depender del archivo.
 
     Devuelve `(None, score)` si el mejor score queda por debajo del umbral —
     eso NO se descarta silenciosamente: en `core/analisis/alertas.py` se
     convierte en la alerta "concepto nuevo sin clasificar", que suele ser
     justo el cargo que se coló.
     """
+    umbral = umbral if umbral is not None else _umbral_coincidencia()
     mejor_concepto = None
     mejor_score = 0.0
     for concepto, alias in diccionario.items():
@@ -62,6 +83,6 @@ def homologar_concepto(
             mejor_score = score
             mejor_concepto = concepto
 
-    if mejor_score < UMBRAL_COINCIDENCIA:
+    if mejor_score < umbral:
         return None, mejor_score
     return mejor_concepto, mejor_score

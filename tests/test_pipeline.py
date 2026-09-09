@@ -114,6 +114,33 @@ def test_homologa_conceptos_al_guardar(tmp_path, monkeypatch):
     con.close()
 
 
+def test_homologacion_se_acota_al_servicio_de_la_factura(tmp_path, monkeypatch):
+    # docs/auditoria-2026-09.md, hallazgo A-3: el diccionario que usa
+    # procesar_pdf se carga DESPUÉS de la extracción, acotado al
+    # factura.servicio -- confirmamos que un concepto de gas no homologa
+    # aunque la factura (por error del modelo) diga "telefonia", porque
+    # cargar_diccionario("telefonia") ni siquiera trae consumo_gas.
+    factura = _factura_telefonia_julio()
+    factura.conceptos = [Concepto("Consumo de gas natural m3", 50, "m3", 100.0, 5000.0)]
+    factura.subtotal = 5000.0
+    factura.total = 6050.0
+    factura.impuestos = [Impuesto("IVA 21%", importe=1050.0)]
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
+    monkeypatch.setattr(pipeline_mod, "total_impreso", lambda texto: None)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert resultado.estado == "guardada"
+
+    normalizado = con.execute(
+        "SELECT concepto_normalizado FROM conceptos WHERE hash_pdf = ? AND orden = 0",
+        [resultado.hash_pdf],
+    ).fetchone()[0]
+    assert normalizado is None  # sin clasificar -- correcto, "consumo_gas" no está en telefonia
+    con.close()
+
+
 def test_item_duplicado_se_persiste_al_procesar(tmp_path, monkeypatch):
     # docs/auditoria-2026-09.md, hallazgo A-6: antes, alertas_por_item_duplicado
     # nunca se ejecutaba en el flujo real -- se invocaba en evolucion.py

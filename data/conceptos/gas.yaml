@@ -1,0 +1,6 @@
+# Diccionario de homologación específico de gas. Se combina con
+# comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
+
+consumo_gas:
+  - consumo de gas
+  - consumo m3

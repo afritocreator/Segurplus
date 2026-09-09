@@ -1,0 +1,8 @@
+# Conceptos que aparecen en más de un tipo de servicio -- se combinan con
+# el YAML específico del servicio (ver core/analisis/diccionario.py).
+# CLAUDE.md: nunca hardcodear esto en el código.
+
+cargo_fijo:
+  - cargo fijo
+  - abono mensual
+  - cargo por servicio
