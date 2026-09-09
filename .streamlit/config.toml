@@ -1,0 +1,11 @@
+# Config no sensible de la app (mismo patrón que Consultora, ver ADR-004 ahí).
+# Los secretos van en .streamlit/secrets.toml, que está en .gitignore --
+# este archivo no lleva ningún dato sensible, por eso se versiona.
+
+[server]
+# Facturas PDF chicas (unas decenas de KB a pocos MB) -- 10 MB es generoso
+# y evita que alguien suba por error un archivo enorme al servidor compartido.
+maxUploadSize = 10
+
+[browser]
+gatherUsageStats = false

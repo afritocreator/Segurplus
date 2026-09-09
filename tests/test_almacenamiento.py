@@ -6,6 +6,7 @@ from core.almacenamiento import (
     factura_ya_procesada,
     guardar_en_cuarentena,
     guardar_factura,
+    recargos_del_periodo,
 )
 from core.extraccion.esquema import Concepto, FacturaExtraida
 from core.extraccion.validacion import validar_factura
@@ -81,4 +82,20 @@ def test_factura_rota_va_a_cuarentena_no_a_facturas(tmp_path):
         "SELECT motivos FROM cuarentena WHERE hash_pdf = ?", [factura.hash_pdf]
     ).fetchone()[0]
     assert "línea" in motivos
+    con.close()
+
+
+def test_recargos_del_periodo(tmp_path):
+    from core.extraccion.esquema import Recargo
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    factura.recargos = [Recargo("Interés por mora", importe=350.0)]
+    guardar_factura(con, factura)
+
+    recargos = recargos_del_periodo(con, servicio="telefonia", periodo_desde="2026-08-01")
+    assert recargos == [("Interés por mora", 350.0)]
+
+    sin_recargos = recargos_del_periodo(con, servicio="telefonia", periodo_desde="2020-01-01")
+    assert sin_recargos == []
     con.close()

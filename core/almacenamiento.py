@@ -1,9 +1,10 @@
 """Persistencia en DuckDB de las facturas ya validadas y de la cola de
 cuarentena (facturas que no pasaron `core/extraccion/validacion.py`).
 
-Dos tablas:
-- `facturas` / `conceptos`: una fila por comprobante y una por línea,
-  IDEMPOTENTE por `hash_pdf` (reprocesar la misma carpeta no duplica nada).
+Tablas:
+- `facturas` / `conceptos` / `recargos`: una fila por comprobante, una por
+  línea y una por recargo (mora, interés, refacturación), IDEMPOTENTE por
+  `hash_pdf` (reprocesar la misma carpeta no duplica nada).
 - `cuarentena`: facturas que no cerraron aritméticamente, con el detalle de
   qué control falló, para resolver a mano desde el tablero.
 
@@ -46,6 +47,11 @@ CREATE TABLE IF NOT EXISTS conceptos (
     cantidad DOUBLE,
     unidad VARCHAR,
     precio_unitario DOUBLE,
+    importe DOUBLE,
+);
+CREATE TABLE IF NOT EXISTS recargos (
+    hash_pdf VARCHAR,
+    nombre VARCHAR,
     importe DOUBLE,
 );
 CREATE TABLE IF NOT EXISTS cuarentena (
@@ -121,6 +127,28 @@ def guardar_factura(
                 c.importe,
             ],
         )
+
+    con.execute("DELETE FROM recargos WHERE hash_pdf = ?", [factura.hash_pdf])
+    for r in factura.recargos:
+        con.execute(
+            "INSERT INTO recargos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
+            [factura.hash_pdf, r.nombre, r.importe],
+        )
+
+
+def recargos_del_periodo(
+    con: duckdb.DuckDBPyConnection, *, servicio: str, periodo_desde: str
+) -> list[tuple[str, float]]:
+    """(nombre, importe) de todos los recargos de las facturas de `servicio`
+    en `periodo_desde` -- lo que usa la página de evolución para armar la
+    alerta de recargos sobre el período comparado."""
+    filas = con.execute(
+        """SELECT r.nombre, r.importe FROM recargos r
+           JOIN facturas f ON f.hash_pdf = r.hash_pdf
+           WHERE f.servicio = ? AND f.periodo_desde = ?""",
+        [servicio, periodo_desde],
+    ).fetchall()
+    return [(nombre, importe) for nombre, importe in filas]
 
 
 def guardar_en_cuarentena(

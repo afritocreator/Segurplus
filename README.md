@@ -38,6 +38,37 @@ pytest -q
 ruff check .
 ```
 
+## Correr el tablero localmente
+
+```bash
+streamlit run streamlit_app.py
+```
+
+## Publicar en Streamlit Community Cloud (gratis, accesible desde cualquier compu)
+
+No usamos Vercel: Segurplus es Python + Streamlit (para reutilizar el análisis financiero
+ya escrito en Consultora), y Vercel no corre este tipo de servidor persistente — eso es
+lo que sí resuelve Streamlit Community Cloud, gratis, mismo patrón que ya usa Consultora
+(ver `docs/decisiones/ADR-002-deploy.md`).
+
+1. Entrá a [share.streamlit.io](https://share.streamlit.io) con la cuenta de GitHub de la
+   organización y elegí "New app".
+2. Repo: `afritocreator/Segurplus`, branch: `main`, archivo principal: `streamlit_app.py`.
+3. En **Advanced settings → Secrets**, pegá:
+   ```toml
+   GEMINI_API_KEY = "la-api-key-real"
+   ```
+   (ver `.streamlit/secrets.toml.example` para el formato — ese archivo real nunca se
+   commitea, solo se carga acá).
+4. Deploy. Queda accesible por un link (tipo `segurplus.streamlit.app`) desde cualquier
+   computadora con navegador, sin instalar nada.
+
+**Importante sobre los datos**: el disco de la app en la nube NO es persistente entre
+reinicios del servidor gratuito — `data/reales/facturas.duckdb` puede perderse si el
+servidor se reinicia por inactividad. Mientras se prueba esto no es grave (se puede
+recargar el mismo lote de PDFs, es idempotente por hash), pero antes de depender de esto
+en el día a día hay que decidir dónde persiste la base de verdad — ver `docs/estado.md`.
+
 ## Estructura
 
 - `core/extraccion/` — esquema canónico, llamada a Gemini, validación aritmética.
