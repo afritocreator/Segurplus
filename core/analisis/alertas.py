@@ -109,14 +109,27 @@ def alertas_por_precio_sobre_ipc(
     descomposiciones: list[DescomposicionVariacion], *, ipc_periodo_pct: float
 ) -> list[Alerta]:
     """Precio unitario que sube más de `precio_por_encima_del_ipc_pp` puntos
-    porcentuales por encima de la inflación del período."""
+    porcentuales POR ENCIMA, EN TÉRMINOS REALES, de la inflación del período
+    -- es decir, `exceso_pp` es la variación de precio ya deflactada por el
+    IPC, no una resta lineal de dos porcentajes.
+
+    exceso = (1 + variacion_precio_pct) / (1 + ipc_periodo_pct) - 1
+
+    Por qué no `variacion_precio_pct - ipc_periodo_pct` (la aproximación
+    lineal que tenía este módulo antes -- ver docs/auditoria-2026-09.md,
+    hallazgo A-22): con inflación mensual real (no el 1-2% de una economía
+    estable), la diferencia entre ambas fórmulas deja de ser despreciable.
+    Ejemplo con el umbral real de data/alertas.yaml (5,0 pp): precio +55%,
+    inflación +50% -> la resta lineal da exactamente 5,0 pp y dispara la
+    alerta; la fórmula correcta da (1.55/1.50 - 1) = +3,33%, por debajo del
+    umbral -- el proveedor subió en línea con la inflación, no por encima."""
     umbral_pp = _leer_umbrales()["precio_por_encima_del_ipc_pp"]
     alertas = []
     for d in descomposiciones:
         if d.precio_0 == 0:
             continue
         variacion_precio_pct = (d.precio_1 - d.precio_0) / d.precio_0
-        exceso_pp = (variacion_precio_pct - ipc_periodo_pct) * 100
+        exceso_pp = ((1 + variacion_precio_pct) / (1 + ipc_periodo_pct) - 1) * 100
         if exceso_pp >= umbral_pp:
             alertas.append(
                 Alerta(
@@ -124,7 +137,7 @@ def alertas_por_precio_sobre_ipc(
                     severidad="alta",
                     mensaje=(
                         f'"{d.concepto}": precio unitario subió {variacion_precio_pct:.1%}, '
-                        f"{exceso_pp:.1f} puntos por encima del IPC del período"
+                        f"{exceso_pp:.1f} puntos reales por encima de la inflación del período"
                     ),
                     concepto=d.concepto,
                 )

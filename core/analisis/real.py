@@ -15,7 +15,7 @@ from datetime import date
 
 import polars as pl
 
-from core.deflactor import a_pesos_constantes
+from core.deflactor import a_pesos_constantes, coeficiente_ajuste
 
 
 @dataclass
@@ -56,3 +56,27 @@ def variacion_real(
         variacion_nominal_pct=(importe_1 / importe_0) - 1,
         variacion_real_pct=(importe_1 / importe_0_en_pesos_de_1) - 1,
     )
+
+
+def inflacion_del_periodo(
+    fecha_0: date, fecha_1: date, *, df_ipc: pl.DataFrame | None = None
+) -> float:
+    """Inflación acumulada entre `fecha_0` y `fecha_1`, como proporción
+    (0.12 = 12%), calculada directo del IPC -- no derivada de restar dos
+    variaciones porcentuales ya calculadas (nominal y real), que da un
+    resultado distinto y de signo contrario.
+
+    inflación = coeficiente_ajuste(fecha_0, fecha_1) - 1 = IPC(fecha_1)/IPC(fecha_0) - 1
+
+    Por qué existe: antes de este fix, `apps/segurplus/paginas/evolucion.py`
+    calculaba `ipc_periodo_pct = variacion_real_pct - variacion_nominal_pct`
+    para usarlo en las alertas de precio -- una resta que da, por
+    construcción algebraica, un número NEGATIVO para cualquier inflación
+    positiva (con r = (1+n)/(1+π) - 1, se cumple r - n = -(1+n)·π/(1+π) < 0
+    para todo π > 0), y que después se aplastaba a 0 con `max(...,0.0)`. El
+    resultado: la alerta de "precio por encima del IPC" comparaba siempre
+    contra 0% de inflación, y el texto llegaba a decir "por encima del IPC"
+    en casos donde el aumento estuvo por debajo (ver docs/auditoria-2026-09.md,
+    hallazgo A-1). Esta función reemplaza esa cuenta con la correcta,
+    reutilizando `core.deflactor`, que ya está testeado."""
+    return coeficiente_ajuste(fecha_0, fecha_1, df_ipc=df_ipc) - 1

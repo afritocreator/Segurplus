@@ -88,7 +88,8 @@ def test_salto_de_cantidad_por_debajo_del_umbral_no_alerta():
 
 
 def test_precio_por_encima_del_ipc_dispara_alerta():
-    # Precio sube de 100 a 120 (+20%). IPC del período: 10%. Exceso: 10pp >= umbral 5pp.
+    # Precio sube de 100 a 120 (+20%). IPC del período: 10%.
+    # Exceso real = (1.20/1.10 - 1) * 100 = 9.0909...pp >= umbral 5pp.
     d = descomponer_variacion("abono_movil", cantidad_0=4, precio_0=100, cantidad_1=4, precio_1=120)
     alertas = alertas_por_precio_sobre_ipc([d], ipc_periodo_pct=0.10)
     assert len(alertas) == 1
@@ -96,9 +97,23 @@ def test_precio_por_encima_del_ipc_dispara_alerta():
 
 
 def test_precio_apenas_por_encima_del_ipc_no_dispara():
-    # Precio sube 12%, IPC 10% -> exceso 2pp, por debajo del umbral de 5pp.
+    # Precio sube 12%, IPC 10% -> exceso real = (1.12/1.10 - 1)*100 = 1.818...pp,
+    # por debajo del umbral de 5pp.
     d = descomponer_variacion("abono_movil", cantidad_0=4, precio_0=100, cantidad_1=4, precio_1=112)
     assert alertas_por_precio_sobre_ipc([d], ipc_periodo_pct=0.10) == []
+
+
+def test_deflacta_en_vez_de_restar_porcentajes():
+    # docs/auditoria-2026-09.md, hallazgo A-22: con la vieja fórmula lineal
+    # (variacion - ipc), precio +55% con IPC +50% daba exceso = 5.0pp exactos
+    # y disparaba la alerta. La fórmula correcta (deflactada) da
+    # (1.55/1.50 - 1)*100 = 3.33...pp, por debajo del umbral de 5pp: el
+    # proveedor subió EN LÍNEA con la inflación, no por encima -- no debería
+    # alertar. Este test fija el comportamiento correcto.
+    d = descomponer_variacion("abono_movil", cantidad_0=4, precio_0=100, cantidad_1=4, precio_1=155)
+    alertas_lineal_habria_disparado = (0.55 - 0.50) * 100 >= 5.0
+    assert alertas_lineal_habria_disparado  # confirma que el caso es el que rompía antes
+    assert alertas_por_precio_sobre_ipc([d], ipc_periodo_pct=0.50) == []
 
 
 def test_generar_alertas_combina_todas_las_reglas():

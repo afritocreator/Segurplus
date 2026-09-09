@@ -19,7 +19,7 @@ import streamlit as st
 from core.almacenamiento import conectar, recargos_del_periodo
 from core.analisis.agregacion import FilaConcepto, agregar_conceptos
 from core.analisis.alertas import generar_alertas
-from core.analisis.real import variacion_real
+from core.analisis.real import inflacion_del_periodo, variacion_real
 from core.analisis.variacion import descomponer_conceptos
 from core.extraccion.esquema import FacturaExtraida, Recargo
 from core.macro.ipc import leer_ipc
@@ -81,17 +81,25 @@ total_0 = sum(d.total_0 for d in descomposiciones)
 total_1 = sum(d.total_1 for d in descomposiciones)
 col_a, col_b, col_c = st.columns(3)
 col_a.metric("Total período base", f"${total_0:,.2f}")
-col_b.metric("Total período comparado", f"${total_1:,.2f}", delta=f"{total_1 - total_0:+,.2f}")
+col_b.metric(
+    "Total período comparado",
+    f"${total_1:,.2f}",
+    delta=f"{total_1 - total_0:+,.2f} (variación nominal)",
+)
 
+# ipc_periodo_pct alimenta alertas_por_precio_sobre_ipc -- tiene que ser la
+# inflación real del período, NUNCA una aproximación que pueda dar negativa
+# (ver docs/auditoria-2026-09.md, hallazgo A-1: antes acá se restaban dos
+# porcentajes ya calculados y el resultado se aplastaba a 0 con max(),
+# dejando la alerta comparando siempre contra 0% de inflación).
 ipc_periodo_pct = 0.0
 try:
     fecha_0 = date.fromisoformat(periodo_0)
     fecha_1 = date.fromisoformat(periodo_1)
+    df_ipc = leer_ipc()
+    ipc_periodo_pct = inflacion_del_periodo(fecha_0, fecha_1, df_ipc=df_ipc)
     if total_0 != 0:
-        vr = variacion_real(total_0, fecha_0, total_1, fecha_1, df_ipc=leer_ipc())
-        ipc_periodo_pct = (
-            vr.variacion_real_pct - vr.variacion_nominal_pct
-        )  # aprox. inflación del período
+        vr = variacion_real(total_0, fecha_0, total_1, fecha_1, df_ipc=df_ipc)
         col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
 except Exception:
     st.caption("No se pudo calcular la variación real (sin datos de IPC para ese rango).")
@@ -147,7 +155,7 @@ factura_agregada = FacturaExtraida(
     recargos=recargos_periodo_1,
 )
 alertas_totales = generar_alertas(
-    factura_agregada, descomposiciones, ipc_periodo_pct=max(ipc_periodo_pct, 0.0)
+    factura_agregada, descomposiciones, ipc_periodo_pct=ipc_periodo_pct
 )
 
 if alertas_totales:
