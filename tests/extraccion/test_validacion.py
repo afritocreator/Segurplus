@@ -114,3 +114,55 @@ def test_tolerancia_de_un_peso_por_redondeo_no_bloquea():
     factura.conceptos[0].importe = 10000.99  # $0.99 de diferencia, dentro de tolerancia
     resultado = validar_factura(factura)
     assert resultado.items[0].ok
+
+
+def test_subtotal_y_total_ausentes_ya_no_pasan_solos():
+    # docs/auditoria-2026-09.md, hallazgo A-4: antes de este fix, un precio
+    # unitario absurdo ($999.999) pasaba TODOS los controles con
+    # factura_valida=True si el modelo simplemente no informaba subtotal
+    # ni total -- el propio cálculo se usaba como su referencia y se
+    # comparaba contra sí mismo. Reproduce exactamente ese caso.
+    factura = FacturaExtraida(
+        emisor="X",
+        cuit=None,
+        servicio="telefonia",
+        periodo_desde=None,
+        periodo_hasta=None,
+        fecha_emision=None,
+        fecha_vencimiento=None,
+        numero_comprobante=None,
+        moneda="ARS",
+        conceptos=[Concepto("Abono", 4, "línea", 999999.0, 3999996.0)],  # precio absurdo
+        subtotal=None,
+        total=None,
+    )
+    resultado = validar_factura(factura)
+    # Antes del fix: subtotal_ok=True, total_ok=True, factura_valida=True.
+    assert resultado.subtotal_ok  # el cálculo sigue "cerrando" contra sí mismo...
+    assert resultado.total_ok  # ...pero eso ya no alcanza:
+    assert not resultado.subtotal_presente
+    assert not resultado.total_presente
+    assert not resultado.factura_valida
+    motivos = resultado.motivos_de_falla()
+    assert any("subtotal" in m for m in motivos)
+    assert any("total" in m for m in motivos)
+
+
+def test_solo_total_ausente_va_a_cuarentena():
+    factura = _factura_ok()
+    factura.total = None
+    resultado = validar_factura(factura)
+    assert resultado.subtotal_presente
+    assert not resultado.total_presente
+    assert not resultado.factura_valida
+    assert "no pudo leer el total" in resultado.motivos_de_falla()[0]
+
+
+def test_solo_subtotal_ausente_va_a_cuarentena():
+    factura = _factura_ok()
+    factura.subtotal = None
+    resultado = validar_factura(factura)
+    assert not resultado.subtotal_presente
+    assert resultado.total_presente
+    assert not resultado.factura_valida
+    assert "no pudo leer el subtotal" in resultado.motivos_de_falla()[0]

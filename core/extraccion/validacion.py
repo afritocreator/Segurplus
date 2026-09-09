@@ -14,10 +14,16 @@ Kleric- no necesita:
   (`core/ingesta/pdf_texto.py::total_impreso`). Dos lecturas independientes
   del mismo dato — si no coinciden, algo está mal y no hay que confiar en
   ninguna de las dos.
+- `subtotal`/`total` AUSENTES (el modelo devolvió `null`) son un motivo de
+  cuarentena en sí mismo, no algo que se tapa con un fallback. Antes, si
+  faltaban, se usaba el propio cálculo (`suma_conceptos`,
+  `subtotal + impuestos + recargos`) como referencia -- y esa referencia se
+  comparaba contra sí misma, así que CUALQUIER número pasaba la validación
+  con esos campos en `null` (ver docs/auditoria-2026-09.md, hallazgo A-4).
 
 Si CUALQUIERA de estos controles falla, la factura va a cuarentena (ver
-`core/extraccion/cuarentena.py`) y NO entra al análisis. CLAUDE.md: "nunca
-mostrarle a un usuario un número no verificado".
+`core/almacenamiento.py::guardar_en_cuarentena`) y NO entra al análisis.
+CLAUDE.md: "nunca mostrarle a un usuario un número no verificado".
 """
 
 from __future__ import annotations
@@ -47,16 +53,29 @@ class ResultadoValidacion:
     total_ok: bool = True
     total_impreso_ok: bool = True
     todas_las_lineas_ok: bool = True
+    subtotal_presente: bool = True
+    total_presente: bool = True
 
     @property
     def factura_valida(self) -> bool:
         """True solo si TODOS los controles pasaron — es la condición que
-        decide si la factura entra al análisis o va a cuarentena."""
+        decide si la factura entra al análisis o va a cuarentena.
+
+        `subtotal_presente`/`total_presente` son controles aparte de
+        `subtotal_ok`/`total_ok` a propósito: si el modelo no informa
+        `subtotal` o `total`, esos dos últimos usan como referencia el
+        propio cálculo (`suma_conceptos`, `subtotal + impuestos + recargos`)
+        y por eso SIEMPRE dan `True` en ese caso -- el control se compara
+        contra sí mismo. Antes de este chequeo explícito, eso hacía que
+        CUALQUIER número pasara la validación con `subtotal`/`total` en
+        `null` (ver docs/auditoria-2026-09.md, hallazgo A-4)."""
         return (
             self.todas_las_lineas_ok
             and self.subtotal_ok
             and self.total_ok
             and self.total_impreso_ok
+            and self.subtotal_presente
+            and self.total_presente
         )
 
     def motivos_de_falla(self) -> list[str]:
@@ -66,9 +85,13 @@ class ResultadoValidacion:
             motivos.append(
                 f"cantidad×precio no coincide con el importe en la(s) línea(s) {', '.join(indices)}"
             )
-        if not self.subtotal_ok:
+        if not self.subtotal_presente:
+            motivos.append("el modelo no pudo leer el subtotal de la factura")
+        if not self.total_presente:
+            motivos.append("el modelo no pudo leer el total de la factura")
+        if self.subtotal_presente and not self.subtotal_ok:
             motivos.append("la suma de los conceptos no coincide con el subtotal")
-        if not self.total_ok:
+        if self.total_presente and not self.total_ok:
             motivos.append("subtotal + impuestos + recargos no coincide con el total")
         if not self.total_impreso_ok:
             motivos.append("el total extraído no coincide con el total impreso en el PDF")
@@ -99,12 +122,20 @@ def validar_factura(
     suma_impuestos = sum(i.importe for i in factura.impuestos)
     suma_recargos = sum(r.importe for r in factura.recargos)
 
-    subtotal_referencia = factura.subtotal if factura.subtotal is not None else suma_conceptos
+    # subtotal_presente/total_presente son deliberadamente independientes de
+    # subtotal_ok/total_ok -- ver docstring de ResultadoValidacion.factura_valida
+    # (hallazgo A-4). El fallback a suma_conceptos/total_calculado sigue
+    # existiendo para poder MOSTRAR algo razonable en motivos_de_falla() y en
+    # el resto de ResultadoValidacion, pero nunca alcanza por sí solo para
+    # que la factura se considere válida.
+    subtotal_presente = factura.subtotal is not None
+    subtotal_referencia = factura.subtotal if subtotal_presente else suma_conceptos
     tol_subtotal = max(tolerancia_linea, abs(subtotal_referencia) * tolerancia_total_ratio)
     subtotal_ok = abs(suma_conceptos - subtotal_referencia) <= tol_subtotal
 
+    total_presente = factura.total is not None
     total_calculado = subtotal_referencia + suma_impuestos + suma_recargos
-    total_referencia = factura.total if factura.total is not None else total_calculado
+    total_referencia = factura.total if total_presente else total_calculado
     tol_total = max(tolerancia_linea, abs(total_referencia) * tolerancia_total_ratio)
     total_ok = abs(total_calculado - total_referencia) <= tol_total
 
@@ -123,4 +154,6 @@ def validar_factura(
         total_ok=total_ok,
         total_impreso_ok=total_impreso_ok,
         todas_las_lineas_ok=all(i.ok for i in items),
+        subtotal_presente=subtotal_presente,
+        total_presente=total_presente,
     )

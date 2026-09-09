@@ -20,10 +20,15 @@ from pathlib import Path
 
 import pdfplumber
 
-# Total en pesos argentinos: "TOTAL" (con o sin acento, con o sin "A PAGAR")
-# seguido de un monto en formato argentino ($ 1.234.567,89 o 1234567,89).
+# "TOTAL" (con o sin "A PAGAR") seguido de un monto. Captura el TOKEN
+# NUMÉRICO COMPLETO, con todos sus separadores -- decidir cuál es el
+# separador decimal es trabajo de `_parsear_monto`, no de la regex. Antes,
+# esta regex exigía el formato argentino exacto (coma decimal con 2
+# dígitos) y, ante un total en formato estadounidense ("12,584.00"),
+# matcheaba solo un PREFIJO del número ("12,58") -- un valor incorrecto en
+# silencio, no un `None` (ver docs/auditoria-2026-09.md, hallazgo A-5).
 _PATRON_TOTAL = re.compile(
-    r"(?:TOTAL(?:\s+A\s+PAGAR)?)\s*:?\s*\$?\s*([\d.]+,\d{2})",
+    r"(?:TOTAL(?:\s+A\s+PAGAR)?)\s*:?\s*\$?\s*(\d+(?:[.,]\d+)*)",
     re.IGNORECASE,
 )
 
@@ -65,9 +70,48 @@ def extraer_texto(ruta: Path) -> DocumentoPdf:
     return DocumentoPdf(ruta=ruta, texto=texto, hash_sha256=hash_archivo(ruta))
 
 
-def _a_float_formato_argentino(monto: str) -> float:
-    """'1.234.567,89' -> 1234567.89"""
-    return float(monto.replace(".", "").replace(",", "."))
+def _parsear_monto(token: str) -> float | None:
+    """Convierte un token numérico COMPLETO (ya extraído por la regex, con
+    todos sus separadores) a float -- nunca a partir de una coincidencia
+    parcial. Soporta los formatos que puede imprimir un proveedor real:
+
+    - `1.234,56` -- argentino: punto de miles, coma decimal.
+    - `1,234.56` -- estadounidense: coma de miles, punto decimal.
+    - `12584,00` / `12584.56` -- sin separador de miles, con decimales.
+    - `12584` -- sin separador de miles ni decimales.
+
+    Convención para decidir cuál separador es el decimal: si aparecen
+    coma Y punto, el que esté MÁS A LA DERECHA es el decimal (el otro es
+    de miles). Si aparece un solo tipo de separador, es decimal solo si
+    el último grupo después de él tiene exactamente 2 dígitos (el resto
+    de los grupos, si hay más de uno, son de miles); si no, es de miles.
+    """
+    tiene_coma = "," in token
+    tiene_punto = "." in token
+
+    if tiene_coma and tiene_punto:
+        if token.rfind(",") > token.rfind("."):
+            limpio = token.replace(".", "").replace(",", ".")
+        else:
+            limpio = token.replace(",", "")
+    elif tiene_coma:
+        # Un solo tipo de separador presente: es decimal solo si el último
+        # grupo tiene exactamente 2 dígitos (ej. "12584,00"); si no
+        # (ej. "1,234,567", todos de miles), se descarta como separador de
+        # miles. No se contempla mezclar grupos de miles y coma decimal sin
+        # punto de por medio (ej. "1,234,56") -- no es un formato real.
+        ultimo_grupo = token.rsplit(",", 1)[1]
+        limpio = token.replace(",", ".") if len(ultimo_grupo) == 2 else token.replace(",", "")
+    elif tiene_punto:
+        ultimo_grupo = token.rsplit(".", 1)[1]
+        limpio = token if len(ultimo_grupo) == 2 else token.replace(".", "")
+    else:
+        limpio = token
+
+    try:
+        return float(limpio)
+    except ValueError:
+        return None
 
 
 def total_impreso(texto: str) -> float | None:
@@ -78,9 +122,11 @@ def total_impreso(texto: str) -> float | None:
     queda con la ÚLTIMA ocurrencia -- en las facturas de servicio argentinas
     revisadas, el total a pagar real es el que aparece más abajo.
 
-    Devuelve `None` si no matchea nada -- ese control se omite en vez de
-    fallar (ver `validar_factura`), es una capa extra, no la única."""
+    Devuelve `None` si no matchea nada, o si lo que matcheó no se pudo
+    interpretar como un número -- ese control se omite en vez de fallar
+    (ver `validar_factura`), es una capa extra, no la única. NUNCA devuelve
+    un valor construido a partir de una lectura parcial o dudosa."""
     coincidencias = _PATRON_TOTAL.findall(texto)
     if not coincidencias:
         return None
-    return _a_float_formato_argentino(coincidencias[-1])
+    return _parsear_monto(coincidencias[-1])

@@ -85,6 +85,7 @@ sí van a doler con uso real.**
 | A-23 | Bajo | `evolucion.py:84` | Delta nominal mostrado junto a la columna de variación real, sin rotular |
 | A-24 | Medio | `core/analisis/agregacion.py` | Cantidad neta negativa (nota de crédito mayor al cargo) sin decisión ni detección |
 | A-25 | Medio | `core/extraccion/esquema.py` | Unidad sin normalizar puede fragmentar un concepto en dos etiquetas por mayúsculas/espacios |
+| A-26 | Bajo | `core/ingesta/pdf_texto.py::_parsear_monto` | Con coma Y punto en el token, no valida que los grupos de miles no-decimales tengan 3 dígitos |
 
 ---
 
@@ -727,6 +728,24 @@ la comparación entre períodos los trata como concepto nuevo/desaparecido en ve
 serie — falsa alerta. A confirmar con facturas reales (Bloque 9) si el modelo es consistente
 en el formato de unidad o si hace falta normalizar (`.strip().lower()` como mínimo) antes de
 agrupar.
+
+#### A-26 — `_parsear_monto` no valida grupos de miles inválidos cuando hay coma y punto mezclados
+
+Encontrado por el `revisor-financiero` al revisar el fix de A-5. Cuando el token tiene coma
+Y punto, la función decide el separador decimal por posición (`rfind`) sin validar que los
+grupos no-decimales tengan 3 dígitos, a diferencia de las ramas de un solo separador (que sí
+validan longitud de grupo). Ejemplos reproducidos a mano:
+
+```python
+_parsear_monto("1.2,34")   # -> 12.34   (trata "1.2" como miles válidos; no lo son)
+_parsear_monto("1,2,345")  # -> 12345.0 (trata "1,2," como miles válidos; no lo son)
+```
+
+En una factura real esto exigiría un agrupamiento de miles ya inválido en el texto (poco
+probable con un ERP bien configurado), y no es exactamente el caso que A-5 buscaba cerrar
+(una lectura *parcial*) sino un grupo de miles *inválido* tratado como válido sin control.
+Severidad baja. A confirmar si aparece en facturas reales (Bloque 9); si no aparece nunca,
+no vale la pena endurecer la validación a costa de legibilidad.
 
 ---
 
