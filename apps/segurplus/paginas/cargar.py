@@ -14,7 +14,7 @@ import streamlit as st
 
 from apps.segurplus.secretos import leer_secret
 from core.almacenamiento import conectar
-from core.pipeline import procesar_pdf
+from core.pipeline import ResultadoPipeline, procesar_pdf
 
 st.title("📥 Cargar facturas")
 st.caption(
@@ -38,10 +38,27 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
     resultados = []
     barra = st.progress(0.0)
     for i, archivo in enumerate(archivos):
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(archivo.getvalue())
-            ruta_temporal = Path(tmp.name)
-        resultado = procesar_pdf(ruta_temporal, con, api_key=api_key)
+        ruta_temporal = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(archivo.getvalue())
+                ruta_temporal = Path(tmp.name)
+            # docs/auditoria-2026-09.md, hallazgo A-18: un archivo de ESTE
+            # loop no puede tumbar el procesamiento de los demás -- aunque
+            # procesar_pdf ya atrapa las excepciones esperables del pipeline
+            # (ver core/pipeline.py), esto es una segunda red por si algo
+            # imprevisto (disco lleno, permisos) explota acá mismo.
+            resultado = procesar_pdf(ruta_temporal, con, api_key=api_key)
+        except Exception as exc:  # noqa: BLE001 -- ver comentario arriba
+            resultado = ResultadoPipeline(
+                Path(archivo.name), hash_pdf="", estado="error_extraccion", detalle=str(exc)
+            )
+        finally:
+            # docs/auditoria-2026-09.md, hallazgo A-9: el PDF subido queda en
+            # disco del servidor si no se borra explícitamente -- puede ser
+            # información de facturación real de un cliente.
+            if ruta_temporal is not None:
+                ruta_temporal.unlink(missing_ok=True)
         resultado.ruta = Path(archivo.name)  # mostrar el nombre original, no el temporal
         resultados.append(resultado)
         barra.progress((i + 1) / len(archivos))

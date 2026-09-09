@@ -3,11 +3,13 @@ data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 
 from core.almacenamiento import (
     alertas_del_periodo,
+    borrar_de_cuarentena,
     conectar,
     factura_ya_procesada,
     guardar_alertas,
     guardar_en_cuarentena,
     guardar_factura,
+    llamadas_ultima_hora,
     recargos_del_periodo,
 )
 from core.extraccion.esquema import Concepto, FacturaExtraida
@@ -123,6 +125,42 @@ def test_guardar_y_leer_alertas_del_periodo(tmp_path):
 
     sin_alertas = alertas_del_periodo(con, servicio="telefonia", periodo_desde="2020-01-01")
     assert sin_alertas == []
+    con.close()
+
+
+# --- A-7: tope de llamadas por hora --------------------------------------
+
+
+def test_llamadas_ultima_hora_cuenta_facturas_y_cuarentena(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    assert llamadas_ultima_hora(con) == 0
+
+    guardar_factura(con, _factura(hash_pdf="a1"))
+    assert llamadas_ultima_hora(con) == 1
+
+    rota = _factura(hash_pdf="b2")
+    resultado = validar_factura(rota)  # subtotal/total consistentes -> válida
+    guardar_en_cuarentena(con, hash_pdf="c3", ruta_pdf="/tmp/c3.pdf", resultado=resultado)
+    assert llamadas_ultima_hora(con) == 2
+    con.close()
+
+
+# --- A-17: reintentar desde cuarentena ------------------------------------
+
+
+def test_borrar_de_cuarentena_libera_el_hash_para_reprocesar(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura(hash_pdf="rota789")
+    factura.conceptos[0].importe = 999999.0
+    resultado = validar_factura(factura)
+
+    guardar_en_cuarentena(
+        con, hash_pdf=factura.hash_pdf, ruta_pdf=factura.ruta_pdf, resultado=resultado
+    )
+    assert factura_ya_procesada(con, factura.hash_pdf)
+
+    borrar_de_cuarentena(con, factura.hash_pdf)
+    assert not factura_ya_procesada(con, factura.hash_pdf)
     con.close()
 
 

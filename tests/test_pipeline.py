@@ -171,6 +171,46 @@ def test_item_duplicado_se_persiste_al_procesar(tmp_path, monkeypatch):
     con.close()
 
 
+def test_pdf_corrupto_no_tumba_el_procesamiento(tmp_path, monkeypatch):
+    # docs/auditoria-2026-09.md, hallazgo A-18: antes solo se atrapaba
+    # PdfSinTextoError -- cualquier otra excepción al leer el PDF (acá
+    # simulada) tumbaba todo el pipeline en vez de reportarse como
+    # error_extraccion, como cualquier otro PDF ilegible.
+    def _romper(*a, **k):
+        raise ValueError("PDF con estructura inválida")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_texto", _romper)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "error_extraccion"
+    assert "ilegible" in resultado.detalle
+    con.close()
+
+
+def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
+    # docs/auditoria-2026-09.md, hallazgo A-7: MAX_LLAMADAS_POR_HORA estaba
+    # declarada y nunca se usaba.
+    monkeypatch.setattr(pipeline_mod, "MAX_LLAMADAS_POR_HORA", 0)
+    llamado = False
+
+    def _no_deberia_llamarse(*a, **k):
+        nonlocal llamado
+        llamado = True
+        return _factura_telefonia_julio()
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _no_deberia_llamarse)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "error_extraccion"
+    assert "tope" in resultado.detalle
+    assert not llamado  # ni siquiera se intentó llamar a Gemini
+    con.close()
+
+
 def test_sin_item_duplicado_no_guarda_alertas(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()

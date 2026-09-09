@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS facturas (
     subtotal DOUBLE,
     total DOUBLE,
 );
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT now();
 CREATE TABLE IF NOT EXISTS conceptos (
     hash_pdf VARCHAR,
     orden INTEGER,
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS cuarentena (
     ruta_pdf VARCHAR,
     motivos VARCHAR,
 );
+ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT now();
 """
 
 
@@ -84,6 +86,23 @@ def conectar(ruta: Path | None = None) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(ruta))
     con.execute(_DDL)
     return con
+
+
+def llamadas_ultima_hora(con: duckdb.DuckDBPyConnection) -> int:
+    """Cuenta cuántos PDFs se procesaron (guardados o mandados a cuarentena)
+    en la última hora -- proxy de cuántas llamadas a Gemini se hicieron, para
+    hacer cumplir `core.extraccion.gemini.MAX_LLAMADAS_POR_HORA` (docs/
+    auditoria-2026-09.md, hallazgo A-7: la constante estaba declarada y
+    nunca se usaba). No cuenta una llamada que falló ANTES de persistir nada
+    (ej. `ExtraccionError` de la propia API) -- subestima un poco el conteo
+    real, pero alcanza como freno simple contra un loop o un mal uso del
+    tablero, no pretende ser un contador exacto de facturación de la API."""
+    fila = con.execute(
+        """SELECT
+             (SELECT count(*) FROM facturas WHERE creado_en > now() - INTERVAL '1 hour') +
+             (SELECT count(*) FROM cuarentena WHERE creado_en > now() - INTERVAL '1 hour')"""
+    ).fetchone()
+    return fila[0]
 
 
 def factura_ya_procesada(con: duckdb.DuckDBPyConnection, hash_pdf: str) -> bool:
@@ -196,6 +215,16 @@ def alertas_del_periodo(
         Alerta(tipo=tipo, severidad=severidad, mensaje=mensaje, concepto=concepto)
         for tipo, severidad, mensaje, concepto in filas
     ]
+
+
+def borrar_de_cuarentena(con: duckdb.DuckDBPyConnection, hash_pdf: str) -> None:
+    """Saca una factura de la cola de cuarentena (docs/auditoria-2026-09.md,
+    hallazgo A-17: "reintentar" desde el tablero). No borra nada de
+    `facturas` porque una factura en cuarentena nunca llegó a esa tabla --
+    esto solo libera el hash para que `factura_ya_procesada` deje de
+    bloquear un reintento tras corregir el problema (ej. ajustar el prompt
+    de extracción, o resubir un PDF distinto del mismo período)."""
+    con.execute("DELETE FROM cuarentena WHERE hash_pdf = ?", [hash_pdf])
 
 
 def guardar_en_cuarentena(

@@ -21,11 +21,12 @@ from core.almacenamiento import (
     guardar_alertas,
     guardar_en_cuarentena,
     guardar_factura,
+    llamadas_ultima_hora,
 )
 from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
-from core.extraccion.gemini import ExtraccionError, extraer_con_gemini
+from core.extraccion.gemini import MAX_LLAMADAS_POR_HORA, ExtraccionError, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
 from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto, total_impreso
 
@@ -60,9 +61,35 @@ def procesar_pdf(
         documento = extraer_texto(ruta)
     except PdfSinTextoError as exc:
         return ResultadoPipeline(ruta, hash_pdf="", estado="error_extraccion", detalle=str(exc))
+    except Exception as exc:
+        # docs/auditoria-2026-09.md, hallazgo A-18: antes solo se atrapaba
+        # PdfSinTextoError -- un PDF corrupto o mal formado (no "sin texto",
+        # sino directamente ilegible para pdfplumber/pdfminer) lanzaba una
+        # excepción distinta que no se atrapaba acá y tumbaba el lote entero
+        # en cargar.py. Un archivo roto es un caso esperable de este pipeline
+        # (viene de un upload de usuario), no un bug -- se reporta como
+        # cualquier otro error_extraccion en vez de propagar.
+        return ResultadoPipeline(
+            ruta, hash_pdf="", estado="error_extraccion", detalle=f"PDF ilegible: {exc}"
+        )
 
     if factura_ya_procesada(con, documento.hash_sha256):
         return ResultadoPipeline(ruta, documento.hash_sha256, estado="ya_procesada")
+
+    if llamadas_ultima_hora(con) >= MAX_LLAMADAS_POR_HORA:
+        # docs/auditoria-2026-09.md, hallazgo A-7: MAX_LLAMADAS_POR_HORA
+        # estaba declarada en core/extraccion/gemini.py y nunca se hacía
+        # cumplir -- nada frenaba un loop o un mal uso del tablero de agotar
+        # la cuota gratuita de Gemini.
+        return ResultadoPipeline(
+            ruta,
+            documento.hash_sha256,
+            estado="error_extraccion",
+            detalle=(
+                f"Se alcanzó el tope de {MAX_LLAMADAS_POR_HORA} llamadas a Gemini "
+                "por hora -- probá de nuevo más tarde."
+            ),
+        )
 
     try:
         factura = extraer_con_gemini(ruta.read_bytes(), api_key=api_key)

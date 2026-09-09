@@ -12,11 +12,22 @@ def _app():
     return AppTest.from_file(str(_ENTRYPOINT))
 
 
-def test_sin_password_configurada_pasa_directo():
+def test_sin_password_configurada_bloquea_por_defecto(monkeypatch):
+    # docs/auditoria-2026-09.md, hallazgo A-8: el default pasó de abierto
+    # (dejaba pasar sin login si no había APP_PASSWORD) a cerrado.
+    monkeypatch.delenv("SEGURPLUS_DEV", raising=False)
     at = _app()
     at.run()
     assert not at.exception
-    # Sin APP_PASSWORD en secrets, no debería quedar trabado en el login --
+    assert any("APP_PASSWORD" in e.value for e in at.error)
+
+
+def test_sin_password_configurada_con_segurplus_dev_pasa_directo(monkeypatch):
+    monkeypatch.setenv("SEGURPLUS_DEV", "1")
+    at = _app()
+    at.run()
+    assert not at.exception
+    # Con SEGURPLUS_DEV=1 explícito, no debería quedar trabado en el login --
     # la página de "Cargar facturas" (default) tiene que renderizar.
     assert "Cargar facturas" in at.title[0].value or len(at.title) > 0
 

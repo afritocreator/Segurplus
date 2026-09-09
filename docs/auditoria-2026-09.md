@@ -460,6 +460,14 @@ del día — justo el escenario que el docstring dice estar previniendo.
 nuevas llamadas por encima del tope, igual que hace `app/api/invoices/parse/route.ts` en
 Klericó contra su tabla `purchases`.
 
+**Bloque 7 (resuelto)**: `facturas` y `cuarentena` ganaron una columna `creado_en TIMESTAMP
+DEFAULT now()` (idempotente vía `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`), y
+`core.almacenamiento.llamadas_ultima_hora` cuenta ambas tablas de la última hora.
+`core.pipeline.procesar_pdf` corta ANTES de llamar a Gemini si el conteo llega al tope,
+devolviendo `error_extraccion` con un mensaje claro. Subestima llamadas que fallaron sin
+persistir nada (`ExtraccionError` antes de guardar), aceptado como límite conocido de un
+freno simple, no un contador exacto de facturación de la API.
+
 ---
 
 #### A-8 — El login de la app falla abierto, no cerrado
@@ -495,6 +503,14 @@ dejar pasar, para no romper el desarrollo local) de cualquier otro error al leer
 debe bloquear con un mensaje de "error de configuración, contactar al administrador" en vez
 de dejar entrar).
 
+**Bloque 7 (resuelto)**: `leer_secret` atrapa solo `StreamlitSecretNotFoundError`; cualquier
+otra excepción se propaga y `requerir_contrasena` la atrapa para mostrar un mensaje de
+"error de configuración" con `st.stop()`, sin entrar. Además, el default de "sin
+APP_PASSWORD" pasó de ABIERTO a CERRADO: ahora bloquea con un mensaje explícito salvo que se
+declare `SEGURPLUS_DEV=1` a propósito (desarrollo local). El test que antes afirmaba el
+comportamiento viejo (`test_sin_password_configurada_pasa_directo`) se reescribió para
+verificar el default cerrado y el bypass explícito de desarrollo.
+
 ---
 
 #### A-9 — Los PDFs de facturas reales quedan en el disco del servidor sin borrarse
@@ -515,6 +531,9 @@ Streamlit Cloud (compartido, aunque efímero entre reinicios) y se queda ahí.
 
 **Fix propuesto**: `ruta_temporal.unlink(missing_ok=True)` en un `finally` después de
 llamar a `procesar_pdf`.
+
+**Bloque 7 (resuelto)**: cada archivo del loop de `cargar.py` ahora limpia su temporal en un
+`finally` con `unlink(missing_ok=True)`, en el mismo bloque `try/except` que aísla A-18.
 
 ---
 
@@ -625,6 +644,11 @@ de A-3, o se arregla A-5), volver a subir **el mismo PDF** no hace nada — sigu
 procesado". No hay ningún comando ni botón para vaciar una entrada de cuarentena y
 reintentarla.
 
+**Bloque 7 (resuelto)**: nueva función `core.almacenamiento.borrar_de_cuarentena(con,
+hash_pdf)`, con un botón "Reintentar" por fila en `apps/segurplus/paginas/cuarentena.py`
+que la llama y hace `st.rerun()`. Solo libera el hash (no reprocesa nada automáticamente) --
+hay que resubir el PDF desde "Cargar facturas" después.
+
 #### A-18 — Un PDF corrupto (no solo "sin capa de texto") tumba el lote de carga completo
 
 `core/pipeline.py::procesar_pdf` solo atrapa `PdfSinTextoError` alrededor de
@@ -636,6 +660,12 @@ auditoría con un archivo de texto plano renombrado a `.pdf`). `cargar.py` no ti
 tumba la página de Streamlit a mitad del lote, perdiendo el resumen de qué se procesó antes
 del PDF corrupto (aunque lo ya guardado en la base sigue ahí, el usuario ve un error crudo
 de Streamlit sin ningún contexto).
+
+**Bloque 7 (resuelto)**: `core.pipeline.procesar_pdf` ahora atrapa cualquier excepción
+alrededor de `extraer_texto` (no solo `PdfSinTextoError`) y la reporta como
+`error_extraccion`. Además, `cargar.py` envuelve cada archivo del loop en su propio
+`try/except` como segunda red, para que algo imprevisto que explote en la página misma
+(disco lleno, permisos) tampoco tumbe el resto del lote.
 
 #### A-19 — Dos de las tres páginas del tablero nunca se ejecutaron en un test
 
