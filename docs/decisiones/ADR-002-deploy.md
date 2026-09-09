@@ -39,3 +39,30 @@ heredado de `afritocreator/Consultora` (ver CLAUDE.md, stack cerrado).
   como respaldo — no se resuelve en este ADR).
 - Si en algún momento se necesita autenticación, multiusuario real o un dominio propio, ahí
   sí conviene reevaluar el stack — no antes.
+
+## Addendum (2026-09-09): app pública con contraseña, no privada
+
+El plan gratuito de Streamlit Community Cloud permite **una sola app privada por
+workspace** de GitHub. Ese lugar ya lo ocupa `afritocreator/Consultora` (desplegada
+privada, con los socios de la consultora invitados como viewers — ver
+`docs/decisiones/ADR-004-app-en-la-nube.md` de ese repo). Segurplus no puede ser también
+privada sin pasar a un plan pago (Streamlit Cloud for Teams), lo que rompe el requisito de
+"gratis mientras se prueba".
+
+**Decisión**: Segurplus se despliega como app **pública**, pero con un login de
+contraseña compartida agregado adentro de la propia app
+(`apps/segurplus/autenticacion.py` + `core/autenticacion.py`) — nadie sin la clave ve
+ninguna pantalla, aunque técnicamente cualquiera con el link podría llegar hasta el
+formulario de login.
+
+**Límite aceptado, dicho sin vueltas**: esto NO es control de acceso real. Es una barrera
+contra quien encuentra el link por casualidad, no contra alguien decidido a entrar — no
+hay usuarios individuales, no hay registro de quién entró, y la contraseña se comparte
+por fuera de la app (Slack, de palabra, como corresponda). El repositorio de GitHub sigue
+siendo privado en todo momento — esto solo afecta la visibilidad de la app ya desplegada,
+no el código fuente.
+
+Si en algún momento esto pasa a manejar información más sensible o a un uso más amplio,
+las alternativas reales son: pagar el plan de Streamlit Cloud con múltiples apps privadas
+y login por email/Google, o migrar a otro hosting gratuito con autenticación propia (ej.
+Hugging Face Spaces). No se resuelve acá — se documenta como el próximo paso si hace falta.

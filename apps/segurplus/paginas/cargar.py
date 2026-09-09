@@ -12,6 +12,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from apps.segurplus.secretos import leer_secret
 from core.almacenamiento import conectar
 from core.pipeline import procesar_pdf
 
@@ -22,7 +23,7 @@ st.caption(
     "en vez de mostrarse como si fuera un dato confiable."
 )
 
-api_key = st.secrets.get("GEMINI_API_KEY", None) if hasattr(st, "secrets") else None
+api_key = leer_secret("GEMINI_API_KEY")
 if not api_key:
     st.warning(
         "No hay GEMINI_API_KEY configurada (Settings → Secrets en Streamlit Community "

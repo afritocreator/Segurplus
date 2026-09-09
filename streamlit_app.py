@@ -9,13 +9,24 @@ named 'core'.
 
 Es un router: no calcula nada. Todo el contenido vive en
 apps/segurplus/paginas/, y toda fórmula vive en core/.
+
+La app se publica como PÚBLICA en Streamlit Community Cloud (el plan
+gratuito solo permite una app privada por workspace, y ese lugar ya lo
+ocupa Consultora — ver docs/decisiones/ADR-002-deploy.md), así que antes de
+mostrar cualquier página se pide una contraseña compartida
+(apps/segurplus/autenticacion.py). No es control de acceso real, es una
+barrera contra quien encuentra el link por casualidad.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
+from apps.segurplus.autenticacion import requerir_contrasena
+
 st.set_page_config(page_title="Segurplus", layout="wide", page_icon="🧾")
+
+requerir_contrasena()
 
 pagina_cargar = st.Page(
     "apps/segurplus/paginas/cargar.py", title="Cargar facturas", icon="📥", default=True

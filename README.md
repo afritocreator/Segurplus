@@ -54,14 +54,25 @@ lo que sí resuelve Streamlit Community Cloud, gratis, mismo patrón que ya usa 
 1. Entrá a [share.streamlit.io](https://share.streamlit.io) con la cuenta de GitHub de la
    organización y elegí "New app".
 2. Repo: `afritocreator/Segurplus`, branch: `main`, archivo principal: `streamlit_app.py`.
+   **Marcala como pública, no privada** — el plan gratis solo permite una app privada por
+   workspace y ese lugar ya lo ocupa Consultora (ver el addendum de
+   `docs/decisiones/ADR-002-deploy.md`).
 3. En **Advanced settings → Secrets**, pegá:
    ```toml
    GEMINI_API_KEY = "la-api-key-real"
+   APP_PASSWORD = "una-clave-que-compartas-por-fuera-de-github"
    ```
    (ver `.streamlit/secrets.toml.example` para el formato — ese archivo real nunca se
-   commitea, solo se carga acá).
+   commitea, solo se carga acá). `APP_PASSWORD` es la contraseña que la app pide antes de
+   mostrar cualquier pantalla, ya que queda pública — **sin esto configurado, cualquiera
+   con el link entra directo**, así que no te olvides de cargarlo.
 4. Deploy. Queda accesible por un link (tipo `segurplus.streamlit.app`) desde cualquier
-   computadora con navegador, sin instalar nada.
+   computadora con navegador, sin instalar nada — y sin la contraseña, no se puede usar.
+
+**Sobre la contraseña**: es una barrera simple, no control de acceso real — no hay
+usuarios ni registro de quién entró. Alcanza para que la app no quede abierta a cualquiera
+que encuentre el link, pero si en algún momento maneja información más sensible, conviene
+pagar el plan con apps privadas de verdad (ver el addendum del ADR).
 
 **Importante sobre los datos**: el disco de la app en la nube NO es persistente entre
 reinicios del servidor gratuito — `data/reales/facturas.duckdb` puede perderse si el

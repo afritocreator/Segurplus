@@ -24,12 +24,16 @@ y qué falta, para no tener que releer el plan entero cada vez.
 - **Fase 5** — tablero Streamlit (`streamlit_app.py` + `apps/segurplus/paginas/`): cargar
   PDFs, ver evolución con descomposición precio/cantidad y alertas, cola de cuarentena.
   Listo para publicar en Streamlit Community Cloud (ver README.md y
-  `docs/decisiones/ADR-002-deploy.md`).
+  `docs/decisiones/ADR-002-deploy.md`, incluido el addendum sobre app pública + contraseña).
+- **Login con contraseña compartida** (`apps/segurplus/autenticacion.py` +
+  `core/autenticacion.py`): la app se publica pública (el único slot privado del plan
+  gratis ya lo usa Consultora), así que pide `APP_PASSWORD` antes de mostrar cualquier
+  pantalla. Sin esa clave configurada en secrets, no bloquea (desarrollo local).
 - `core/pipeline.py` une todo lo anterior en una sola función por PDF
   (`procesar_pdf`), que es lo único que llama la app.
 
-80 tests pasan, `ruff check` limpio. El tablero se probó levantado localmente (HTTP 200,
-sin errores de import).
+88 tests pasan, `ruff check` limpio. El tablero se probó levantado localmente (HTTP 200,
+sin errores de import), incluido el flujo de login con `AppTest` de Streamlit.
 
 ## Falta (siguiente trabajo)
 
