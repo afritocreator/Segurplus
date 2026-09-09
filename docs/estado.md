@@ -3,7 +3,7 @@
 Ver el plan completo en `docs/PLAN.md`. Esto es el resumen rápido de qué está construido
 y qué falta, para no tener que releer el plan entero cada vez.
 
-## Construido (Fases 0-3 y 5 del plan; Fase 4 parcial)
+## Construido (Fases 0-5 del plan completas)
 
 - **Fase 0** — andamiaje: `pyproject.toml`, CI, protección de `data/reales/` (hook de
   Claude Code + pre-commit real de git), subagente `revisor-financiero`, generador de
@@ -18,8 +18,9 @@ y qué falta, para no tener que releer el plan entero cada vez.
 - **Fase 3** — el corazón del análisis: descomposición precio/cantidad
   (`core/analisis/variacion.py`) y variación real deflactada por IPC
   (`core/analisis/real.py`). Ambos con tests de valor calculado a mano.
-- **Fase 4 (parcial)** — alertas (`core/analisis/alertas.py`), con umbrales en
-  `data/alertas.yaml`. Falta el Excel de salida.
+- **Fase 4** — alertas (`core/analisis/alertas.py`), con umbrales en `data/alertas.yaml`,
+  y Excel de salida (`core/reportes/excel.py`: hojas Resumen, Descomposición, Alertas,
+  Cuarentena), con botón de descarga en el tablero.
 - **Fase 5** — tablero Streamlit (`streamlit_app.py` + `apps/segurplus/paginas/`): cargar
   PDFs, ver evolución con descomposición precio/cantidad y alertas, cola de cuarentena.
   Listo para publicar en Streamlit Community Cloud (ver README.md y
@@ -27,12 +28,11 @@ y qué falta, para no tener que releer el plan entero cada vez.
 - `core/pipeline.py` une todo lo anterior en una sola función por PDF
   (`procesar_pdf`), que es lo único que llama la app.
 
-77 tests pasan, `ruff check` limpio. El tablero se probó levantado localmente (HTTP 200,
+80 tests pasan, `ruff check` limpio. El tablero se probó levantado localmente (HTTP 200,
 sin errores de import).
 
 ## Falta (siguiente trabajo)
 
-- **Excel de salida** — adaptar `core/reportes/excel.py` de Consultora.
 - **Fase 6** — motor por reglas 100% local, solo si hace falta (ver punto de decisión
   pendiente en `docs/PLAN.md`).
 - **No probado contra facturas reales todavía**: el pipeline corre de punta a punta

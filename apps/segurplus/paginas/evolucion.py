@@ -11,6 +11,7 @@ core.analisis.alertas -- ningún cálculo nuevo vive acá.
 from __future__ import annotations
 
 from datetime import date
+from io import BytesIO
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -22,6 +23,7 @@ from core.analisis.real import variacion_real
 from core.analisis.variacion import descomponer_conceptos
 from core.extraccion.esquema import FacturaExtraida, Recargo
 from core.macro.ipc import leer_ipc
+from core.reportes.excel import generar_reporte_excel
 
 st.title("📊 Evolución por servicio")
 
@@ -155,5 +157,24 @@ if alertas_totales:
         st.write(f"{icono} **{a.tipo}**: {a.mensaje}")
 else:
     st.success("Sin alertas para esta comparación.")
+
+cuarentena_actual = con.execute("SELECT ruta_pdf, motivos FROM cuarentena").fetchall()
+
+buffer_excel = BytesIO()
+generar_reporte_excel(
+    servicio=servicio,
+    periodo_0=periodo_0,
+    periodo_1=periodo_1,
+    descomposiciones=descomposiciones,
+    alertas=alertas_totales,
+    cuarentena=cuarentena_actual,
+    ruta_salida=buffer_excel,
+)
+st.download_button(
+    "⬇️ Descargar reporte en Excel",
+    data=buffer_excel,
+    file_name=f"segurplus_{servicio}_{periodo_0}_{periodo_1}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 con.close()
