@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+.streamlit/secrets.toml
+
+# Datos reales de facturas — nunca se commitean (ver CLAUDE.md, zona restringida)
+data/reales/
+
+# Cache de tests/lint
+.pytest_cache/
+.ruff_cache/
+__pycache__/

@@ -1,0 +1,46 @@
+[project]
+name = "segurplus"
+version = "0.1.0"
+description = "Análisis automatizado de facturas de servicios — control de evolución de gastos por proveedor"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.0",
+    "polars>=1.0",
+    "plotly>=5.22",
+    "streamlit>=1.37",
+    "openpyxl>=3.1",
+    "pyarrow>=17.0",
+    "requests>=2.32",
+    "pyyaml>=6.0",
+    "pdfplumber>=0.11",
+    "google-genai>=0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "reportlab>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--strict-markers"
+markers = [
+    "red_real: pega contra una API real (Gemini o INDEC). Se skipea si no hay red o falta la API key.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["core"]

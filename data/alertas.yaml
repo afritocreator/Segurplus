@@ -1,0 +1,21 @@
+# Umbrales de alertas -- CLAUDE.md: nunca hardcodear estos números en el código.
+# vigencia_desde: desde cuándo rige este set de umbrales (por si se recalibran).
+
+vigencia_desde: "2026-09-01"
+
+# Puntos porcentuales por encima de la inflación del período que disparan
+# la alerta de "precio unitario aumentó más que el IPC".
+precio_por_encima_del_ipc_pp: 5.0
+
+# Cualquier recargo (mora, interés, refacturación) dispara alerta siempre --
+# no debería existir uno solo en una factura sana, así que no hay umbral,
+# hay presencia/ausencia.
+alertar_cualquier_recargo: true
+
+# Variación de cantidad (líneas, chips, medidores) respecto del período
+# anterior que dispara alerta, en proporción (0.30 = 30%).
+salto_de_cantidad_ratio: 0.30
+
+# Días de tolerancia entre facturas del mismo servicio antes de marcar
+# "período faltante" o "factura fuera de rango".
+dias_tolerancia_periodo: 10
