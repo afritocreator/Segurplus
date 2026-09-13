@@ -19,7 +19,12 @@ import requests
 import streamlit as st
 
 from apps.segurplus.estilo import aplicar_estilo
-from core.almacenamiento import alertas_del_periodo, conectar, recargos_del_periodo
+from core.almacenamiento import (
+    alertas_del_periodo,
+    conectar,
+    recargos_del_periodo,
+    totales_por_periodo,
+)
 from core.analisis.agregacion import (
     PREFIJO_SIN_HOMOLOGAR,
     FilaConcepto,
@@ -30,6 +35,7 @@ from core.analisis.agregacion import (
 )
 from core.analisis.alertas import alertas_por_periodo_faltante, generar_alertas
 from core.analisis.real import inflacion_del_periodo, variacion_real
+from core.analisis.serie import serie_nominal_y_real
 from core.analisis.variacion import descomponer_conceptos
 from core.extraccion.esquema import FacturaExtraida, Recargo
 from core.macro.ipc import leer_ipc
@@ -79,6 +85,43 @@ if len(periodos) < 2:
     st.stop()
 
 alertas_periodo_faltante = alertas_por_periodo_faltante([date.fromisoformat(p) for p in periodos])
+
+st.subheader("Evolución histórica")
+st.caption(
+    "Todos los períodos cargados de este servicio, en pesos nominales y en pesos "
+    "constantes de hoy (descontada la inflación) -- para ver la tendencia, no solo la "
+    "comparación entre dos meses puntuales."
+)
+try:
+    fecha_base = date.fromisoformat(periodos[-1])
+    totales_por_fecha = {
+        date.fromisoformat(p): total
+        for p, total in totales_por_periodo(con, servicio=servicio).items()
+    }
+    df_ipc_serie = _leer_ipc_cacheado()
+    serie = serie_nominal_y_real(totales_por_fecha, fecha_base=fecha_base, df_ipc=df_ipc_serie)
+    fig_serie = go.Figure()
+    fig_serie.add_scatter(
+        x=[p.periodo for p in serie],
+        y=[p.total_nominal for p in serie],
+        name="Nominal",
+        mode="lines+markers",
+        line={"dash": "solid"},
+    )
+    fig_serie.add_scatter(
+        x=[p.periodo for p in serie],
+        y=[p.total_real for p in serie],
+        name=f"Real (pesos de {fecha_base:%m/%Y})",
+        mode="lines+markers",
+        line={"dash": "dot"},
+    )
+    fig_serie.update_layout(yaxis_title="Total del período")
+    aplicar_estilo(fig_serie)
+    st.plotly_chart(fig_serie, use_container_width=True)
+except requests.exceptions.RequestException as exc:
+    st.caption(f"No se pudo descargar el IPC para la serie histórica (problema de red): {exc}")
+except ValueError as exc:
+    st.caption(f"No se pudo calcular la serie histórica: {exc}")
 
 col1, col2 = st.columns(2)
 periodo_0 = col1.selectbox("Período base", periodos, index=max(0, len(periodos) - 2))

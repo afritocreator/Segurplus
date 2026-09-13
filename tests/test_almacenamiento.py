@@ -295,3 +295,48 @@ def test_conceptos_sin_clasificar_acotado_por_servicio(tmp_path):
     assert len(filas) == 1
     assert filas[0][0] == "telefonia"
     con.close()
+
+
+# --- totales_por_periodo: la serie temporal (Bloque 7) --------------------
+
+
+def test_totales_por_periodo_suma_conceptos_no_facturas_total(tmp_path):
+    from core.almacenamiento import totales_por_periodo
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()  # total=12100.0 (incluye IVA), conceptos suman 10000.0
+    guardar_factura(con, factura)
+
+    totales = totales_por_periodo(con, servicio="telefonia")
+    # Suma el importe de los CONCEPTOS (10000.0), no facturas.total
+    # (12100.0, que incluye IVA) -- a propósito, ver docstring de la función.
+    assert totales == {"2026-08-01": pytest.approx(10000.0)}
+    con.close()
+
+
+def test_totales_por_periodo_junta_varias_facturas_del_mismo_periodo(tmp_path):
+    from core.almacenamiento import totales_por_periodo
+
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura("h1"))
+    otra = _factura("h2")
+    otra.conceptos = [Concepto("Otro cargo", 1, None, 2000.0, 2000.0)]
+    guardar_factura(con, otra)
+
+    totales = totales_por_periodo(con, servicio="telefonia")
+    assert totales == {"2026-08-01": pytest.approx(12000.0)}
+    con.close()
+
+
+def test_totales_por_periodo_acotado_por_servicio(tmp_path):
+    from core.almacenamiento import totales_por_periodo
+
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura())
+    otro_servicio = _factura("h2")
+    otro_servicio.servicio = "gas"
+    otro_servicio.conceptos = [Concepto("Consumo de gas", 1, None, 3000.0, 3000.0)]
+    guardar_factura(con, otro_servicio)
+
+    assert totales_por_periodo(con, servicio="gas") == {"2026-08-01": pytest.approx(3000.0)}
+    con.close()

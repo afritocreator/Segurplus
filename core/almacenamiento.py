@@ -209,6 +209,27 @@ def conceptos_sin_clasificar(
     ]
 
 
+def totales_por_periodo(con: duckdb.DuckDBPyConnection, *, servicio: str) -> dict[str, float]:
+    """`{periodo_desde: total}` de TODOS los períodos cargados de
+    `servicio` -- lo que usa `apps/segurplus/paginas/evolucion.py` para la
+    serie temporal (`core.analisis.serie`).
+
+    Suma `conceptos.importe`, NO `facturas.total` -- a propósito: `total`
+    incluye impuestos y recargos, y la comparación de dos períodos que ya
+    existe en esta misma página (`agregar_conceptos` + `descomponer_
+    conceptos`) también trabaja solo sobre `conceptos`. Sumar `facturas.
+    total` acá haría que la serie y la comparación de dos puntos muestren
+    números distintos para el mismo período -- confuso e innecesario."""
+    filas = con.execute(
+        """SELECT f.periodo_desde, sum(c.importe)
+           FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+           WHERE f.servicio = ? AND f.periodo_desde IS NOT NULL
+           GROUP BY f.periodo_desde""",
+        [servicio],
+    ).fetchall()
+    return {periodo: total for periodo, total in filas}
+
+
 def recargos_del_periodo(
     con: duckdb.DuckDBPyConnection, *, servicio: str, periodo_desde: str
 ) -> list[tuple[str, float]]:
