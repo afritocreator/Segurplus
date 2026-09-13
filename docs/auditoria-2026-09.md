@@ -87,6 +87,7 @@ sí van a doler con uso real.**
 | A-25 | Medio | `core/extraccion/esquema.py` | Unidad sin normalizar puede fragmentar un concepto en dos etiquetas por mayúsculas/espacios |
 | A-26 | Bajo | `core/ingesta/pdf_texto.py::_parsear_monto` | Con coma Y punto en el token, no valida que los grupos de miles no-decimales tengan 3 dígitos |
 | A-27 | Medio | `core/analisis/alertas.py::alertas_por_periodo_faltante` | Asume periodicidad mensual; un servicio bimestral (gas, algunos casos de energía) alerta siempre, en todas las comparaciones |
+| A-28 | **Crítico** | `core/analisis/homologacion.py`, `core/analisis/agregacion.py` | El período pegado a la descripción (facturas reales) hace que la descomposición precio/cantidad reporte un aumento de precio como si fuera cambio de cantidad — **resuelto** |
 
 ---
 
@@ -821,6 +822,12 @@ calcula la variación con un denominador negativo y el signo del mensaje queda i
 ("-300%" para lo que en realidad es un aumento). No es una regresión de este bloque —esa
 rama de `alertas.py` no se tocó—, pero es de la misma familia que A-20. Queda pendiente.
 
+**Bloque 2 (facturas reales, resuelto)**: nueva `conceptos_con_cantidad_neta_negativa`, mismo
+patrón que `conceptos_con_cantidad_neta_cero` (A-20). Se suma al `frozenset` que ya excluye
+cantidades sintéticas en `alertas_por_salto_de_cantidad` (evita el signo invertido) y al
+`st.warning` de `evolucion.py`. Test con valor a mano: `+4/$10.000` y `-6/-$15.000` da
+cantidad neta `-2.0`, precio `2.500,0`, identidad `-2 × 2500 == -5000` verificada.
+
 #### A-25 — la unidad no se normaliza antes de agrupar
 
 `core/extraccion/esquema.py::factura_desde_json` toma `unidad` literal del JSON del modelo
@@ -831,6 +838,37 @@ la comparación entre períodos los trata como concepto nuevo/desaparecido en ve
 serie — falsa alerta. A confirmar con facturas reales (Bloque 9) si el modelo es consistente
 en el formato de unidad o si hace falta normalizar (`.strip().lower()` como mínimo) antes de
 agrupar.
+
+**Bloque 2 (facturas reales, resuelto)**: `core/analisis/agregacion.py::_clave` normaliza la
+unidad con `.strip().lower()` (`""`/solo-espacios → `None`) antes de armar la clave. Tests:
+`"kWh"`, `"KWH"`, `" kWh "` agrupan como una sola entrada; `" "` se trata como sin unidad.
+
+#### A-28 — el período pegado a la descripción rompe la homologación y la agregación (hallazgo nuevo, resuelto)
+
+Encontrado con facturas reales de Movistar, no en la auditoría original. El proveedor
+factura el mismo concepto con el período pegado a la descripción: `"Servicio de telefonía
+Agosto 2026"`, al mes siguiente `"...Septiembre 2026"`. `normalizar()` preserva dígitos y no
+conoce meses, así que el score contra el diccionario caía de 0,588 a 0,444 (bajo el umbral
+0,60) y encima de forma distinta cada mes. Sin homologar, `agregacion.py::_clave` usaba la
+**descripción cruda** como clave de agrupamiento — dos períodos, dos claves — y
+`descomponer_conceptos` (`core/analisis/variacion.py`) veía "un concepto que desaparece" +
+"un concepto que aparece", con **efecto_precio = 0 en las dos filas**, cuando la causa real
+era un aumento de PRECIO. La herramienta reportaba exactamente lo contrario de su propósito.
+
+**Resuelto** (Bloques 1 y 2 de este mismo paquete): `homologacion.py::quitar_periodo()` saca
+mes+año antes de comparar contra el diccionario (deliberadamente conservadora — no saca
+números sueltos, para no fusionar "Línea 1"/"Línea 2" ni "Medidor 1"/"Medidor 2", verificado
+caso por caso). `agregacion.py::_clave` usa `quitar_periodo(descripcion)` en el fallback sin
+homologar, en vez de la descripción cruda — la clave pasa a ser estable entre períodos para
+cualquier proveedor, con o sin alias en el diccionario. Test de punta a punta con valores a
+mano (`tests/analisis/test_variacion.py`): agosto $30.000, septiembre $36.000, sin homologar
+→ una sola fila de descomposición, `efecto_precio == 6000.0`, `efecto_cantidad == 0.0`.
+
+Nota de proceso: el subagente `revisor-financiero` rehusó revisar este cambio (cuarta vez en
+este repo) — esta vez con el argumento de no tener cargado el `CLAUDE.md` de Segurplus, y
+sugirió resolver la extensión de su mandato con un ADR en Consultora en vez de pedirlo ad
+hoc. Verificación manual: la guarda de A-3 (`"Recargo por reconexion"` sigue dando
+exactamente `0.5714285714285714`) y el test de punta a punta de arriba.
 
 #### A-26 — `_parsear_monto` no valida grupos de miles inválidos cuando hay coma y punto mezclados
 

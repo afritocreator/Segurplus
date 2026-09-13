@@ -13,6 +13,7 @@ A mano:
 
 import pytest
 
+from core.analisis.agregacion import FilaConcepto, agregar_conceptos
 from core.analisis.variacion import descomponer_conceptos, descomponer_variacion
 
 
@@ -91,3 +92,52 @@ def test_descomponer_conceptos_concepto_que_desaparece():
     desaparecido = resultados["roaming"]
     assert desaparecido.total_1 == 0.0
     assert desaparecido.variacion_total == pytest.approx(-500.0)  # 0 - 5*100
+
+
+# --- De punta a punta: el bug real de Movistar (período pegado a la ------
+# --- descripción) tiene que imputarse a efecto_precio, no a efecto_cantidad
+
+
+def test_de_punta_a_punta_concepto_sin_homologar_con_periodo_en_la_descripcion():
+    # Caso real (Movistar): "Servicio de telefonía Agosto 2026" y al mes
+    # siguiente "...Septiembre 2026", el mismo concepto, sin ningún alias en
+    # el diccionario todavía. ANTES de este fix, agregar_conceptos usaba la
+    # descripción CRUDA como clave -> dos claves distintas -> descomponer_
+    # conceptos las veía como "un concepto que desaparece" + "un concepto
+    # que aparece", con efecto_precio == 0 en las dos filas, cuando la causa
+    # real es un aumento de PRECIO de $30.000 a $36.000 (+$6.000).
+    filas_agosto = [
+        FilaConcepto(None, "Servicio de telefonía Agosto 2026", cantidad=1, importe=30000.0)
+    ]
+    filas_septiembre = [
+        FilaConcepto(None, "Servicio de telefonía Septiembre 2026", cantidad=1, importe=36000.0)
+    ]
+    agregado_0 = agregar_conceptos(filas_agosto)
+    agregado_1 = agregar_conceptos(filas_septiembre)
+    descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
+
+    assert len(descomposiciones) == 1  # UN solo concepto, no dos
+    d = descomposiciones[0]
+    assert d.efecto_precio == pytest.approx(6000.0)
+    assert d.efecto_cantidad == pytest.approx(0.0)
+    assert d.efecto_cruzado == pytest.approx(0.0)
+    assert d.variacion_total == pytest.approx(6000.0)
+
+
+def test_de_punta_a_punta_cantidad_de_lineas_cambia_en_la_descripcion():
+    # "Abono 4 líneas móviles" / "Abono 5 líneas móviles": mismo concepto sin
+    # homologar (agrupado por descripción sin período), la cantidad de
+    # líneas que cambia entre meses queda en la propia `cantidad` de la
+    # fila, no en el texto -- acá la fila representa el cargo total del
+    # concepto, agrupado por su descripción estable.
+    filas_0 = [FilaConcepto(None, "Abono 4 líneas móviles", cantidad=4, importe=10000.0)]
+    filas_1 = [FilaConcepto(None, "Abono 5 líneas móviles", cantidad=5, importe=14000.0)]
+    agregado_0 = agregar_conceptos(filas_0)
+    agregado_1 = agregar_conceptos(filas_1)
+    # Sin homologar, las descripciones (sin período) siguen siendo distintas
+    # -- "4 líneas" y "5 líneas" no colapsan por diseño (ver quitar_periodo,
+    # que NO saca números sueltos). Este caso lo resuelve el diccionario
+    # (homologar_concepto), no la clave de agregación: se deja documentado
+    # acá como el límite conocido de lo que agregacion.py puede arreglar
+    # solo.
+    assert set(agregado_0) != set(agregado_1)

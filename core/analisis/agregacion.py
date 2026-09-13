@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.analisis.homologacion import quitar_periodo
+
+PREFIJO_SIN_HOMOLOGAR = "(sin_homologar) "
+
 
 @dataclass
 class FilaConcepto:
@@ -18,6 +22,19 @@ class FilaConcepto:
     cantidad: float
     importe: float
     unidad: str | None = None
+
+
+def _unidad_normalizada(unidad: str | None) -> str | None:
+    """`.strip().lower()`, y `""`/solo-espacios pasa a `None` ("sin unidad",
+    no una unidad llamada vacía). Cierra docs/auditoria-2026-09.md, hallazgo
+    A-25: sin esto, "kWh", "KWH" y " kWh " arman tres claves de agrupamiento
+    distintas para la MISMA unidad, y entre dos períodos eso se ve
+    exactamente igual que el bug del período pegado a la descripción
+    (concepto nuevo/desaparecido en vez de una sola serie)."""
+    if unidad is None:
+        return None
+    limpia = unidad.strip().lower()
+    return limpia or None
 
 
 def _clave(
@@ -29,13 +46,44 @@ def _clave(
     de `core.analisis.homologacion` las confunde -- ver
     docs/auditoria-2026-09.md, hallazgo A-16). Sumarlas sin distinguir la
     unidad produce una "cantidad total" y un "precio unitario promedio" que
-    no significan nada -- el equivalente de sumar litros con kilos."""
-    concepto = concepto_normalizado or f"(sin_homologar) {descripcion}"
-    return concepto, unidad
+    no significan nada -- el equivalente de sumar litros con kilos.
+
+    Cuando no hubo homologación (`concepto_normalizado is None`), el
+    fallback usa `quitar_periodo(descripcion)` -- NUNCA la descripción
+    cruda. Esta clave es también, vía `_etiqueta`, lo que el usuario ve en
+    pantalla y en el Excel, y es lo que `descomponer_conceptos` usa para
+    decidir si un concepto del período 0 "es el mismo" que uno del período
+    1. Si la clave dependiera de la descripción cruda, un proveedor que
+    factura "Servicio de telefonía Agosto 2026" y al mes siguiente
+    "...Septiembre 2026" generaría DOS claves para el mismo concepto -- la
+    causa raíz del bug donde un aumento de PRECIO se reportaba como que un
+    concepto "desapareció" y otro "apareció", con efecto_precio en 0 (ver
+    docs/auditoria-2026-09.md). `quitar_periodo` hace que la clave sea
+    estable entre períodos para CUALQUIER proveedor, incluso sin ningún
+    alias en el diccionario todavía."""
+    concepto = concepto_normalizado or PREFIJO_SIN_HOMOLOGAR + quitar_periodo(descripcion)
+    return concepto, _unidad_normalizada(unidad)
 
 
 def _etiqueta(concepto: str, unidad: str | None) -> str:
     return concepto if unidad is None else f"{concepto} [{unidad}]"
+
+
+def etiqueta_legible(etiqueta: str) -> str:
+    """SOLO para mostrar (tablero, Excel) -- NUNCA usar como clave de
+    agrupamiento ni de unión entre períodos. Capitaliza la primera letra del
+    texto sin homologar; el resto de la etiqueta (conceptos ya homologados,
+    como "abono_movil") queda igual.
+
+    Es función pura de la ETIQUETA YA NORMALIZADA, nunca de "la primera
+    descripción cruda vista" -- si lo fuera, dos períodos del mismo concepto
+    sin homologar volverían a mostrar (y a agruparse detrás de una capa
+    "bonita") como dos cosas distintas, reintroduciendo el mismo bug que
+    `_clave` soluciona."""
+    if etiqueta.startswith(PREFIJO_SIN_HOMOLOGAR):
+        resto = etiqueta[len(PREFIJO_SIN_HOMOLOGAR) :]
+        return PREFIJO_SIN_HOMOLOGAR + (resto[:1].upper() + resto[1:] if resto else resto)
+    return etiqueta
 
 
 def _acumular(filas: list[FilaConcepto]) -> dict[tuple[str, str | None], list[float]]:
@@ -99,4 +147,23 @@ def conceptos_con_cantidad_neta_cero(filas: list[FilaConcepto]) -> list[str]:
         _etiqueta(concepto, unidad)
         for (concepto, unidad), (cantidad_total, importe_total) in _acumular(filas).items()
         if cantidad_total == 0 and importe_total != 0
+    ]
+
+
+def conceptos_con_cantidad_neta_negativa(filas: list[FilaConcepto]) -> list[str]:
+    """Etiquetas de los conceptos cuya cantidad total dio NEGATIVA (una nota
+    de crédito mayor que el cargo original del mismo período, ej. `+4/
+    $10.000` y `-6/-$15.000` da cantidad neta `-2`). La identidad
+    `cantidad × precio == importe` sigue cerrando, pero es un resultado raro
+    de mostrar, y comparado contra un período con cantidad positiva,
+    `alertas_por_salto_de_cantidad` calcula con un denominador negativo e
+    invierte el signo del mensaje ("-300%" para lo que en realidad es un
+    aumento) -- ver docs/auditoria-2026-09.md, hallazgo A-24. Mismo
+    tratamiento que `conceptos_con_cantidad_neta_cero`: se detecta acá para
+    poder excluirlo de esa alerta y mostrarlo aparte, en vez de tapar la
+    anomalía en silencio."""
+    return [
+        _etiqueta(concepto, unidad)
+        for (concepto, unidad), (cantidad_total, _importe_total) in _acumular(filas).items()
+        if cantidad_total < 0
     ]

@@ -7,6 +7,7 @@ from core.analisis.agregacion import (
     FilaConcepto,
     agregar_conceptos,
     conceptos_con_cantidad_neta_cero,
+    conceptos_con_cantidad_neta_negativa,
 )
 
 
@@ -38,7 +39,28 @@ def test_conceptos_sin_homologar_no_se_pierden():
     resultado = agregar_conceptos(filas)
     assert len(resultado) == 1
     clave = next(iter(resultado))
-    assert "Cargo raro nunca visto" in clave
+    # La clave usa el texto NORMALIZADO (minúsculas, sin tildes), no la
+    # descripción cruda -- ver docs/auditoria-2026-09.md: la clave es
+    # también la identidad entre períodos en descomponer_conceptos, y una
+    # descripción cruda cambia de un mes a otro (ej. el período pegado al
+    # final) aunque sea el mismo concepto. Reexpresado a propósito: este
+    # test antes codificaba el bug (fallback a descripción cruda).
+    assert clave == "(sin_homologar) cargo raro nunca visto"
+
+
+def test_conceptos_sin_homologar_estables_entre_periodos_con_periodo_en_la_descripcion():
+    # El caso real que motivó el cambio (Movistar): el mismo concepto sin
+    # homologar, en dos períodos distintos, con el mes pegado a la
+    # descripción -- tiene que dar la MISMA clave en los dos.
+    filas_agosto = [
+        FilaConcepto(None, "Servicio de telefonía Agosto 2026", cantidad=1, importe=30000.0)
+    ]
+    filas_septiembre = [
+        FilaConcepto(None, "Servicio de telefonía Septiembre 2026", cantidad=1, importe=36000.0)
+    ]
+    clave_agosto = next(iter(agregar_conceptos(filas_agosto)))
+    clave_septiembre = next(iter(agregar_conceptos(filas_septiembre)))
+    assert clave_agosto == clave_septiembre == "(sin_homologar) servicio de telefonia"
 
 
 def test_cantidad_y_importe_cero_da_cero():
@@ -101,10 +123,11 @@ def test_no_mezcla_unidades_distintas_bajo_el_mismo_concepto():
         FilaConcepto("consumo", "Consumo datos", cantidad=20, importe=4000.0, unidad="GB"),
     ]
     resultado = agregar_conceptos(filas)
-    # Dos entradas separadas, una por unidad -- nunca se suman entre sí.
+    # Dos entradas separadas, una por unidad -- nunca se suman entre sí. La
+    # unidad se normaliza a minúscula (A-25, ver test dedicado más abajo).
     assert resultado == {
-        "consumo [kWh]": (500.0, 100.0),
-        "consumo [GB]": (20.0, 200.0),
+        "consumo [kwh]": (500.0, 100.0),
+        "consumo [gb]": (20.0, 200.0),
     }
 
 
@@ -118,7 +141,7 @@ def test_misma_unidad_si_se_agrega_normalmente():
         ),
     ]
     resultado = agregar_conceptos(filas)
-    assert resultado == {"consumo [kWh]": (600.0, pytest.approx(61000.0 / 600.0))}
+    assert resultado == {"consumo [kwh]": (600.0, pytest.approx(61000.0 / 600.0))}
 
 
 def test_unidad_none_no_lleva_sufijo_en_la_etiqueta():
@@ -126,3 +149,55 @@ def test_unidad_none_no_lleva_sufijo_en_la_etiqueta():
     resultado = agregar_conceptos(filas)
     assert "cargo_fijo" in resultado
     assert "cargo_fijo [" not in str(resultado.keys())
+
+
+# --- A-25: la unidad se normaliza antes de agrupar ------------------------
+
+
+def test_unidad_con_mayusculas_y_espacios_agrupa_igual_que_normalizada():
+    # docs/auditoria-2026-09.md, hallazgo A-25: "kWh", "KWH" y " kWh " no
+    # pueden armar tres claves de agrupamiento distintas para la misma
+    # unidad -- entre dos períodos, eso se ve exactamente igual que el bug
+    # del período pegado a la descripción (concepto nuevo/desaparecido en
+    # vez de una sola serie).
+    filas = [
+        FilaConcepto("consumo", "Consumo energía", cantidad=500, importe=50000.0, unidad="kWh"),
+        FilaConcepto("consumo", "Consumo energía", cantidad=100, importe=11000.0, unidad="KWH"),
+        FilaConcepto("consumo", "Consumo energía", cantidad=50, importe=5000.0, unidad=" kWh "),
+    ]
+    resultado = agregar_conceptos(filas)
+    assert len(resultado) == 1
+    cantidad, precio = resultado["consumo [kwh]"]
+    assert cantidad == pytest.approx(650.0)
+    assert precio == pytest.approx((50000.0 + 11000.0 + 5000.0) / 650.0)
+
+
+def test_unidad_solo_espacios_es_sin_unidad():
+    filas = [FilaConcepto("cargo_fijo", "Cargo fijo", cantidad=1, importe=3200.0, unidad="   ")]
+    resultado = agregar_conceptos(filas)
+    assert "cargo_fijo" in resultado
+    assert "cargo_fijo [" not in str(resultado.keys())
+
+
+# --- A-24: cantidad neta negativa ------------------------------------------
+
+
+def test_cantidad_neta_negativa_se_detecta():
+    # Nota de crédito MAYOR que el cargo original: +4/$10.000 y -6/-$15.000
+    # -> cantidad neta -2, importe neto -$5.000. La identidad cierra
+    # (-2 * 2500 == -5000) pero es un resultado raro de mostrar.
+    filas = [
+        FilaConcepto("cargo_fijo", "Cargo fijo", cantidad=4, importe=10000.0),
+        FilaConcepto("cargo_fijo", "Nota de crédito", cantidad=-6, importe=-15000.0),
+    ]
+    cantidad, precio = agregar_conceptos(filas)["cargo_fijo"]
+    assert cantidad == pytest.approx(-2.0)
+    assert precio == pytest.approx(2500.0)
+    assert cantidad * precio == pytest.approx(-5000.0)
+    assert conceptos_con_cantidad_neta_negativa(filas) == ["cargo_fijo"]
+    assert conceptos_con_cantidad_neta_cero(filas) == []  # no es el mismo caso que A-20
+
+
+def test_cantidad_neta_negativa_vacio_si_no_hay_anomalias():
+    filas = [FilaConcepto("abono_movil", "Abono", cantidad=4, importe=10000.0)]
+    assert conceptos_con_cantidad_neta_negativa(filas) == []

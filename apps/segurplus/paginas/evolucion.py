@@ -23,6 +23,8 @@ from core.analisis.agregacion import (
     FilaConcepto,
     agregar_conceptos,
     conceptos_con_cantidad_neta_cero,
+    conceptos_con_cantidad_neta_negativa,
+    etiqueta_legible,
 )
 from core.analisis.alertas import alertas_por_periodo_faltante, generar_alertas
 from core.analisis.real import inflacion_del_periodo, variacion_real
@@ -99,13 +101,22 @@ descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
 
 # Conceptos cuya cantidad neta dio cero con importe distinto de cero (ver
 # core.analisis.agregacion, hallazgo A-20): no pierden plata (ya corregido),
-# pero siguen siendo una anomalía real que vale la pena mostrar.
-anomalos_0 = conceptos_con_cantidad_neta_cero(filas_0)
-anomalos_1 = conceptos_con_cantidad_neta_cero(filas_1)
+# pero siguen siendo una anomalía real que vale la pena mostrar. Lo mismo
+# para cantidad neta NEGATIVA (A-24): la identidad cierra, pero
+# alertas_por_salto_de_cantidad invertiría el signo del mensaje si se la
+# deja competir con un período de cantidad positiva -- se excluye de esa
+# alerta más abajo, igual que las de cantidad cero.
+anomalos_0 = conceptos_con_cantidad_neta_cero(filas_0) + conceptos_con_cantidad_neta_negativa(
+    filas_0
+)
+anomalos_1 = conceptos_con_cantidad_neta_cero(filas_1) + conceptos_con_cantidad_neta_negativa(
+    filas_1
+)
 if anomalos_0 or anomalos_1:
+    etiquetas = sorted({etiqueta_legible(a) for a in anomalos_0 + anomalos_1})
     st.warning(
-        "Cantidad neta cero con importe distinto de cero (revisar si hay una nota de "
-        f"crédito o ajuste sin homologar bien): {', '.join(sorted(set(anomalos_0 + anomalos_1)))}"
+        "Cantidad neta cero o negativa con importe distinto de cero (revisar si hay una "
+        f"nota de crédito o ajuste sin homologar bien): {', '.join(etiquetas)}"
     )
 
 st.subheader(f"{servicio}: {periodo_0} → {periodo_1}")
@@ -155,7 +166,7 @@ else:
         st.caption(f"No se pudo calcular la variación real: {exc}")
 
 fig = go.Figure()
-conceptos_orden = [d.concepto for d in descomposiciones]
+conceptos_orden = [etiqueta_legible(d.concepto) for d in descomposiciones]
 fig.add_bar(
     name="Efecto cantidad", x=conceptos_orden, y=[d.efecto_cantidad for d in descomposiciones]
 )
@@ -169,7 +180,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.dataframe(
     [
         {
-            "Concepto": d.concepto,
+            "Concepto": etiqueta_legible(d.concepto),
             "Cantidad (base)": d.cantidad_0,
             "Precio (base)": d.precio_0,
             "Cantidad (comparado)": d.cantidad_1,

@@ -17,6 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
+from core.analisis.agregacion import etiqueta_legible
 from core.analisis.alertas import Alerta
 from core.analisis.variacion import DescomposicionVariacion
 
@@ -54,7 +55,7 @@ def _hoja_descomposicion(wb: Workbook, descomposiciones: list[DescomposicionVari
     fila = 4
     for d in descomposiciones:
         valores = [
-            d.concepto,
+            etiqueta_legible(d.concepto),
             d.cantidad_0,
             d.precio_0,
             d.cantidad_1,
