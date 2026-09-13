@@ -15,6 +15,7 @@ from __future__ import annotations
 import plotly.graph_objects as go
 import streamlit as st
 
+from apps.segurplus.estilo import DORADO, aplicar_estilo
 from core.almacenamiento import conceptos_sin_clasificar, conectar
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import quitar_periodo, umbral_coincidencia
@@ -72,8 +73,11 @@ if servicio_elegido:
 st.subheader("Distribución de scores")
 fig = go.Figure()
 fig.add_histogram(x=[score for _s, _d, score, _i, _v, _u in filas], name="Score")
-fig.add_vline(x=umbral, line_dash="dash", annotation_text=f"Umbral ({umbral:.2f})")
+fig.add_vline(
+    x=umbral, line_dash="dash", line_color=DORADO, annotation_text=f"Umbral ({umbral:.2f})"
+)
 fig.update_layout(xaxis_title="Score de similitud", yaxis_title="Cantidad de conceptos")
+aplicar_estilo(fig, formato_moneda=False)
 st.plotly_chart(fig, use_container_width=True)
 
 st.divider()

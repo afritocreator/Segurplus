@@ -9,3 +9,17 @@ maxUploadSize = 10
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+# Paleta institucional de la consultora (la misma que usan los documentos
+# y presentaciones -- ver apps/segurplus/estilo.py, que replica estos
+# mismos colores en los gráficos Plotly). Requiere Streamlit >= 1.63 para
+# `chartCategoricalColors` -- ver pyproject.toml/requirements.txt.
+base = "light"
+primaryColor = "#B08D3E"              # dorado -- acentos, botones, selección
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F5F7"  # fondo claro -- sidebar y contenedores
+textColor = "#14324D"                 # navy
+linkColor = "#14324D"
+borderColor = "#D8DEE4"
+chartCategoricalColors = ["#14324D", "#B08D3E", "#5A5A5A", "#7C98AC", "#D8C48A"]

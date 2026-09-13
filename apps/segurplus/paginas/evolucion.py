@@ -18,6 +18,7 @@ import polars as pl
 import requests
 import streamlit as st
 
+from apps.segurplus.estilo import aplicar_estilo
 from core.almacenamiento import alertas_del_periodo, conectar, recargos_del_periodo
 from core.analisis.agregacion import (
     PREFIJO_SIN_HOMOLOGAR,
@@ -190,6 +191,7 @@ fig.add_bar(
     name="Efecto cruzado", x=conceptos_orden, y=[d.efecto_cruzado for d in descomposiciones]
 )
 fig.update_layout(barmode="relative", title="Descomposición de la variación por concepto")
+aplicar_estilo(fig)
 st.plotly_chart(fig, use_container_width=True)
 
 st.dataframe(
