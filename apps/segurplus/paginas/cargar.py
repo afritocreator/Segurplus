@@ -69,6 +69,12 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
     repetidas = [r for r in resultados if r.estado == "ya_procesada"]
     errores = [r for r in resultados if r.estado == "error_extraccion"]
 
+    col_g, col_c, col_r, col_e = st.columns(4)
+    col_g.metric("Guardadas", len(guardadas))
+    col_c.metric("Cuarentena", len(cuarentena))
+    col_r.metric("Ya procesadas", len(repetidas))
+    col_e.metric("Errores", len(errores))
+
     if guardadas:
         st.success(f"{len(guardadas)} factura(s) guardadas y validadas.")
     if repetidas:

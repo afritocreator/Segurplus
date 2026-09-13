@@ -58,7 +58,7 @@ st.dataframe(
         }
         for servicio, descripcion, score, importe, veces, ultimo_periodo in filas
     ],
-    use_container_width=True,
+    width="stretch",
 )
 
 st.subheader("Snippet para pegar en data/conceptos/<servicio>.yaml")
@@ -78,7 +78,7 @@ fig.add_vline(
 )
 fig.update_layout(xaxis_title="Score de similitud", yaxis_title="Cantidad de conceptos")
 aplicar_estilo(fig, formato_moneda=False)
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 st.divider()
 st.subheader("Re-homologar ahora")

@@ -10,6 +10,7 @@ core.analisis.alertas -- ningún cálculo nuevo vive acá.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 from io import BytesIO
 
@@ -33,15 +34,25 @@ from core.analisis.agregacion import (
     conceptos_con_cantidad_neta_negativa,
     etiqueta_legible,
 )
-from core.analisis.alertas import alertas_por_periodo_faltante, generar_alertas
+from core.analisis.alertas import (
+    alertas_por_periodo_faltante,
+    generar_alertas,
+    ordenar_por_severidad,
+)
 from core.analisis.real import inflacion_del_periodo, variacion_real
 from core.analisis.serie import serie_nominal_y_real
-from core.analisis.variacion import descomponer_conceptos
+from core.analisis.variacion import (
+    descomponer_conceptos,
+    efecto_dominante,
+    top_conceptos_por_variacion,
+)
 from core.extraccion.esquema import FacturaExtraida, Recargo
 from core.macro.ipc import leer_ipc
 from core.reportes.excel import generar_reporte_excel
 
 st.title("📊 Evolución por servicio")
+
+TOP_N_CONCEPTOS = 12
 
 
 @st.cache_data(show_spinner="Descargando IPC...")
@@ -68,7 +79,8 @@ if not servicios:
     con.close()
     st.stop()
 
-servicio = st.selectbox("Servicio", servicios)
+with st.sidebar:
+    servicio = st.selectbox("Servicio", servicios)
 
 periodos = [
     r[0]
@@ -86,46 +98,9 @@ if len(periodos) < 2:
 
 alertas_periodo_faltante = alertas_por_periodo_faltante([date.fromisoformat(p) for p in periodos])
 
-st.subheader("Evolución histórica")
-st.caption(
-    "Todos los períodos cargados de este servicio, en pesos nominales y en pesos "
-    "constantes de hoy (descontada la inflación) -- para ver la tendencia, no solo la "
-    "comparación entre dos meses puntuales."
-)
-try:
-    fecha_base = date.fromisoformat(periodos[-1])
-    totales_por_fecha = {
-        date.fromisoformat(p): total
-        for p, total in totales_por_periodo(con, servicio=servicio).items()
-    }
-    df_ipc_serie = _leer_ipc_cacheado()
-    serie = serie_nominal_y_real(totales_por_fecha, fecha_base=fecha_base, df_ipc=df_ipc_serie)
-    fig_serie = go.Figure()
-    fig_serie.add_scatter(
-        x=[p.periodo for p in serie],
-        y=[p.total_nominal for p in serie],
-        name="Nominal",
-        mode="lines+markers",
-        line={"dash": "solid"},
-    )
-    fig_serie.add_scatter(
-        x=[p.periodo for p in serie],
-        y=[p.total_real for p in serie],
-        name=f"Real (pesos de {fecha_base:%m/%Y})",
-        mode="lines+markers",
-        line={"dash": "dot"},
-    )
-    fig_serie.update_layout(yaxis_title="Total del período")
-    aplicar_estilo(fig_serie)
-    st.plotly_chart(fig_serie, use_container_width=True)
-except requests.exceptions.RequestException as exc:
-    st.caption(f"No se pudo descargar el IPC para la serie histórica (problema de red): {exc}")
-except ValueError as exc:
-    st.caption(f"No se pudo calcular la serie histórica: {exc}")
-
-col1, col2 = st.columns(2)
-periodo_0 = col1.selectbox("Período base", periodos, index=max(0, len(periodos) - 2))
-periodo_1 = col2.selectbox("Período de comparación", periodos, index=len(periodos) - 1)
+with st.sidebar:
+    periodo_0 = st.selectbox("Período base", periodos, index=max(0, len(periodos) - 2))
+    periodo_1 = st.selectbox("Período de comparación", periodos, index=len(periodos) - 1)
 
 
 def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
@@ -178,17 +153,8 @@ if anomalos_0 or anomalos_1:
         f"nota de crédito o ajuste sin homologar bien): {', '.join(etiquetas)}"
     )
 
-st.subheader(f"{servicio}: {periodo_0} → {periodo_1}")
-
 total_0 = sum(d.total_0 for d in descomposiciones)
 total_1 = sum(d.total_1 for d in descomposiciones)
-col_a, col_b, col_c = st.columns(3)
-col_a.metric("Total período base", f"${total_0:,.2f}")
-col_b.metric(
-    "Total período comparado",
-    f"${total_1:,.2f}",
-    delta=f"{total_1 - total_0:+,.2f} (variación nominal)",
-)
 
 # ipc_periodo_pct alimenta alertas_por_precio_sobre_ipc -- tiene que ser la
 # inflación real del período, NUNCA una aproximación que pueda dar negativa
@@ -196,6 +162,7 @@ col_b.metric(
 # porcentajes ya calculados y el resultado se aplastaba a 0 con max(),
 # dejando la alerta comparando siempre contra 0% de inflación).
 ipc_periodo_pct = 0.0
+vr = None
 try:
     fecha_0 = date.fromisoformat(periodo_0)
     fecha_1 = date.fromisoformat(periodo_1)
@@ -215,7 +182,6 @@ else:
         ipc_periodo_pct = inflacion_del_periodo(fecha_0, fecha_1, df_ipc=df_ipc)
         if total_0 != 0:
             vr = variacion_real(total_0, fecha_0, total_1, fecha_1, df_ipc=df_ipc)
-            col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
     except requests.exceptions.RequestException as exc:
         st.caption(f"No se pudo descargar el IPC (problema de red): {exc}")
     except ValueError as exc:
@@ -223,36 +189,6 @@ else:
         # de fechas queda fuera de la serie de IPC disponible, o importe_0
         # es 0 -- acá sí es fiel decir "sin datos de IPC para ese rango".
         st.caption(f"No se pudo calcular la variación real: {exc}")
-
-fig = go.Figure()
-conceptos_orden = [etiqueta_legible(d.concepto) for d in descomposiciones]
-fig.add_bar(
-    name="Efecto cantidad", x=conceptos_orden, y=[d.efecto_cantidad for d in descomposiciones]
-)
-fig.add_bar(name="Efecto precio", x=conceptos_orden, y=[d.efecto_precio for d in descomposiciones])
-fig.add_bar(
-    name="Efecto cruzado", x=conceptos_orden, y=[d.efecto_cruzado for d in descomposiciones]
-)
-fig.update_layout(barmode="relative", title="Descomposición de la variación por concepto")
-aplicar_estilo(fig)
-st.plotly_chart(fig, use_container_width=True)
-
-st.dataframe(
-    [
-        {
-            "Concepto": etiqueta_legible(d.concepto),
-            "Cantidad (base)": d.cantidad_0,
-            "Precio (base)": d.precio_0,
-            "Cantidad (comparado)": d.cantidad_1,
-            "Precio (comparado)": d.precio_1,
-            "Efecto cantidad": d.efecto_cantidad,
-            "Efecto precio": d.efecto_precio,
-            "Variación total": d.variacion_total,
-        }
-        for d in descomposiciones
-    ],
-    use_container_width=True,
-)
 
 # Los recargos son por factura individual; se agregan acá para armar la
 # alerta sobre el período comparado (ver core.almacenamiento.recargos_del_periodo).
@@ -290,13 +226,135 @@ alertas_totales = (
     + alertas_periodo_faltante
 )
 
-if alertas_totales:
-    st.subheader("⚠️ Alertas")
-    for a in alertas_totales:
-        icono = {"alta": "🔴", "media": "🟡", "baja": "⚪"}[a.severidad]
-        st.write(f"{icono} **{a.tipo}**: {a.mensaje}")
-else:
-    st.success("Sin alertas para esta comparación.")
+with st.container(border=True):
+    st.subheader(f"{servicio}: {periodo_0} → {periodo_1}")
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("Total período base", f"${total_0:,.2f}")
+    col_b.metric(
+        "Total período comparado",
+        f"${total_1:,.2f}",
+        delta=f"{total_1 - total_0:+,.2f} (variación nominal)",
+    )
+    if vr is not None:
+        col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
+    col_d.metric("Inflación del período", f"{ipc_periodo_pct:+.1%}")
+
+    # Frase de veredicto: la respuesta literal a la pregunta que motivó el
+    # proyecto ("¿aumentó por cantidad o por precio?"), hoy solo deducible
+    # mirando el gráfico apilado concepto por concepto.
+    tipo_dominante, proporcion_dominante = efecto_dominante(descomposiciones)
+    variacion_total_pesos = total_1 - total_0
+    if tipo_dominante == "precio":
+        st.caption(
+            f"El cambio de ${variacion_total_pesos:+,.2f} fue mayormente por **PRECIO** "
+            f"({abs(proporcion_dominante):.0%})."
+        )
+    elif tipo_dominante == "cantidad":
+        st.caption(
+            f"El cambio de ${variacion_total_pesos:+,.2f} fue mayormente por **CANTIDAD** "
+            f"({abs(proporcion_dominante):.0%})."
+        )
+    elif tipo_dominante == "mixto":
+        st.caption(
+            f"El cambio de ${variacion_total_pesos:+,.2f} fue una **mezcla** de cantidad y "
+            "precio -- ningún efecto explica la mayor parte por sí solo."
+        )
+
+tab_descomposicion, tab_serie, tab_alertas, tab_detalle = st.tabs(
+    ["Descomposición", "Serie histórica", "Alertas", "Detalle"]
+)
+
+with tab_descomposicion:
+    principales = top_conceptos_por_variacion(descomposiciones, TOP_N_CONCEPTOS)
+    if len(principales) < len(descomposiciones):
+        st.caption(
+            f"Mostrando los {TOP_N_CONCEPTOS} conceptos con mayor variación, de "
+            f"{len(descomposiciones)} en total -- el resto está en la pestaña Detalle."
+        )
+    fig = go.Figure()
+    conceptos_orden = [etiqueta_legible(d.concepto) for d in principales]
+    fig.add_bar(
+        name="Efecto cantidad", x=conceptos_orden, y=[d.efecto_cantidad for d in principales]
+    )
+    fig.add_bar(name="Efecto precio", x=conceptos_orden, y=[d.efecto_precio for d in principales])
+    fig.add_bar(name="Efecto cruzado", x=conceptos_orden, y=[d.efecto_cruzado for d in principales])
+    fig.update_layout(barmode="relative", title="Descomposición de la variación por concepto")
+    aplicar_estilo(fig)
+    st.plotly_chart(fig, width="stretch")
+
+with tab_serie:
+    st.caption(
+        "Todos los períodos cargados de este servicio, en pesos nominales y en pesos "
+        "constantes de hoy (descontada la inflación) -- para ver la tendencia, no solo la "
+        "comparación entre dos meses puntuales."
+    )
+    try:
+        fecha_base = date.fromisoformat(periodos[-1])
+        totales_por_fecha = {
+            date.fromisoformat(p): total
+            for p, total in totales_por_periodo(con, servicio=servicio).items()
+        }
+        df_ipc_serie = _leer_ipc_cacheado()
+        serie = serie_nominal_y_real(totales_por_fecha, fecha_base=fecha_base, df_ipc=df_ipc_serie)
+        fig_serie = go.Figure()
+        fig_serie.add_scatter(
+            x=[p.periodo for p in serie],
+            y=[p.total_nominal for p in serie],
+            name="Nominal",
+            mode="lines+markers",
+            line={"dash": "solid"},
+        )
+        fig_serie.add_scatter(
+            x=[p.periodo for p in serie],
+            y=[p.total_real for p in serie],
+            name=f"Real (pesos de {fecha_base:%m/%Y})",
+            mode="lines+markers",
+            line={"dash": "dot"},
+        )
+        fig_serie.update_layout(yaxis_title="Total del período")
+        aplicar_estilo(fig_serie)
+        st.plotly_chart(fig_serie, width="stretch")
+    except requests.exceptions.RequestException as exc:
+        st.caption(f"No se pudo descargar el IPC para la serie histórica (problema de red): {exc}")
+    except ValueError as exc:
+        st.caption(f"No se pudo calcular la serie histórica: {exc}")
+
+with tab_alertas:
+    if alertas_totales:
+        ordenadas = ordenar_por_severidad(alertas_totales)
+        conteo = Counter(a.severidad for a in ordenadas)
+        st.caption(
+            f"🔴 {conteo['alta']} alta(s) · 🟡 {conteo['media']} media(s) · "
+            f"⚪ {conteo['baja']} baja(s)"
+        )
+        for a in ordenadas:
+            texto = f"**{a.tipo}**: {a.mensaje}"
+            if a.severidad == "alta":
+                st.error(texto, icon="🔴")
+            elif a.severidad == "media":
+                st.warning(texto, icon="🟡")
+            else:
+                st.info(texto, icon="⚪")
+    else:
+        st.success("Sin alertas para esta comparación.")
+
+with tab_detalle:
+    st.dataframe(
+        [
+            {
+                "Concepto": etiqueta_legible(d.concepto),
+                "Cantidad (base)": d.cantidad_0,
+                "Precio (base)": d.precio_0,
+                "Cantidad (comparado)": d.cantidad_1,
+                "Precio (comparado)": d.precio_1,
+                "Efecto cantidad": d.efecto_cantidad,
+                "Efecto precio": d.efecto_precio,
+                "Variación total": d.variacion_total,
+            }
+            for d in descomposiciones
+        ],
+        width="stretch",
+    )
 
 cuarentena_actual = con.execute("SELECT ruta_pdf, motivos FROM cuarentena").fetchall()
 

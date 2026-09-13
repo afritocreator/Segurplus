@@ -257,3 +257,15 @@ def generar_alertas(
         ),
         *alertas_por_precio_sobre_ipc(descomposiciones, ipc_periodo_pct=ipc_periodo_pct),
     ]
+
+
+_ORDEN_SEVERIDAD = {"alta": 0, "media": 1, "baja": 2}
+
+
+def ordenar_por_severidad(alertas: list[Alerta]) -> list[Alerta]:
+    """Alta primero, después media, después baja -- orden determinístico
+    para que el tablero no las muestre en el orden arbitrario en que
+    `generar_alertas()` las fue componiendo. Estable: dentro de la misma
+    severidad, conserva el orden relativo original (`sorted` de Python es
+    estable)."""
+    return sorted(alertas, key=lambda a: _ORDEN_SEVERIDAD.get(a.severidad, 99))

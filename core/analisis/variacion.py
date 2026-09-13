@@ -29,6 +29,11 @@ correcto: no hay "cantidad" que descomponer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+RUTA_ALERTAS = Path(__file__).resolve().parents[2] / "data" / "alertas.yaml"
 
 
 @dataclass
@@ -109,3 +114,67 @@ def descomponer_conceptos(
             descomponer_variacion(concepto, cantidad_0=c0, precio_0=p0, cantidad_1=c1, precio_1=p1)
         )
     return resultado
+
+
+def _umbral_dominancia() -> float:
+    """Sin cache y sin lectura a nivel de módulo, a propósito -- mismo
+    patrón que `core/analisis/alertas.py::_leer_umbrales` y
+    `core/analisis/homologacion.py::umbral_coincidencia` (un YAML corrupto
+    no debe tumbar el import ni la app)."""
+    datos = yaml.safe_load(RUTA_ALERTAS.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "umbral_efecto_dominante" not in datos:
+        raise ValueError(
+            f"{RUTA_ALERTAS} no tiene la forma esperada (falta umbral_efecto_dominante)"
+        )
+    return float(datos["umbral_efecto_dominante"])
+
+
+def efecto_dominante(
+    descomposiciones: list[DescomposicionVariacion], *, umbral: float | None = None
+) -> tuple[str, float]:
+    """Resume TODA la comparación (no concepto por concepto) en una sola
+    frase: ¿el cambio total fue mayormente por CANTIDAD, por PRECIO, o
+    MIXTO? Es la respuesta literal a la pregunta que motivó el proyecto
+    ("¿aumentó porque hay más líneas o porque subió el precio?"), hoy solo
+    deducible mirando un gráfico apilado concepto por concepto.
+
+    Suma los efectos de TODOS los conceptos (la suma sigue cumpliendo la
+    identidad algebraica de `descomponer_variacion`, porque es una suma de
+    identidades):
+
+        Σefecto_cantidad + Σefecto_precio + Σefecto_cruzado == variación total
+
+    Devuelve `("cantidad" | "precio" | "mixto" | "sin_variacion",
+    proporción)`, donde `proporción` es la fracción de la variación total
+    que explica ese efecto (`Σefecto_precio / variación_total` para
+    "precio", etc.) -- "mixto" cuando ningún efecto solo llega al umbral
+    de `data/alertas.yaml` (`umbral_efecto_dominante`, nunca hardcodeado,
+    CLAUDE.md), "sin_variacion" si la variación total es exactamente 0."""
+    umbral = umbral if umbral is not None else _umbral_dominancia()
+    suma_cantidad = sum(d.efecto_cantidad for d in descomposiciones)
+    suma_precio = sum(d.efecto_precio for d in descomposiciones)
+    suma_cruzado = sum(d.efecto_cruzado for d in descomposiciones)
+    variacion_total = suma_cantidad + suma_precio + suma_cruzado
+
+    if variacion_total == 0:
+        return "sin_variacion", 0.0
+
+    proporcion_cantidad = suma_cantidad / variacion_total
+    proporcion_precio = suma_precio / variacion_total
+
+    if abs(proporcion_precio) >= umbral:
+        return "precio", proporcion_precio
+    if abs(proporcion_cantidad) >= umbral:
+        return "cantidad", proporcion_cantidad
+    return "mixto", proporcion_precio
+
+
+def top_conceptos_por_variacion(
+    descomposiciones: list[DescomposicionVariacion], n: int
+) -> list[DescomposicionVariacion]:
+    """Los `n` conceptos con mayor variación en VALOR ABSOLUTO (suben o
+    bajan, ambos son relevantes), para acotar un gráfico a lo que importa
+    en vez de mostrar decenas de barras minúsculas. No modifica ni agrega
+    ningún dato -- solo reordena y trunca; la tabla de detalle de la
+    página sigue mostrando todos los conceptos."""
+    return sorted(descomposiciones, key=lambda d: abs(d.variacion_total), reverse=True)[:n]

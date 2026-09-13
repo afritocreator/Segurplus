@@ -14,7 +14,12 @@ A mano:
 import pytest
 
 from core.analisis.agregacion import FilaConcepto, agregar_conceptos
-from core.analisis.variacion import descomponer_conceptos, descomponer_variacion
+from core.analisis.variacion import (
+    descomponer_conceptos,
+    descomponer_variacion,
+    efecto_dominante,
+    top_conceptos_por_variacion,
+)
 
 
 def test_descomposicion_ejemplo_movistar_calculado_a_mano():
@@ -141,3 +146,77 @@ def test_de_punta_a_punta_cantidad_de_lineas_cambia_en_la_descripcion():
     # acá como el límite conocido de lo que agregacion.py puede arreglar
     # solo.
     assert set(agregado_0) != set(agregado_1)
+
+
+# --- efecto_dominante: resumen de TODA la comparación (Bloque 8) ----------
+
+
+def test_efecto_dominante_solo_precio_cambia():
+    d = descomponer_variacion("x", cantidad_0=4, precio_0=2500, cantidad_1=4, precio_1=2800)
+    tipo, proporcion = efecto_dominante([d], umbral=0.60)
+    assert tipo == "precio"
+    assert proporcion == pytest.approx(1.0)
+
+
+def test_efecto_dominante_solo_cantidad_cambia():
+    d = descomponer_variacion("x", cantidad_0=4, precio_0=2500, cantidad_1=6, precio_1=2500)
+    tipo, proporcion = efecto_dominante([d], umbral=0.60)
+    assert tipo == "cantidad"
+    assert proporcion == pytest.approx(1.0)
+
+
+def test_efecto_dominante_mixto_calculado_a_mano():
+    # cantidad 10->11 ($100 c/u), precio 100->115.
+    # efecto_cantidad = (11-10)*100 = 100
+    # efecto_precio   = (115-100)*10 = 150
+    # efecto_cruzado  = (11-10)*(115-100) = 15
+    # total = 265 (= 11*115 - 10*100 = 1265-1000)
+    # proporcion_cantidad = 100/265 = 0.377 ; proporcion_precio = 150/265 = 0.566
+    # -- ninguno llega al umbral 0.60 -> mixto.
+    d = descomponer_variacion("x", cantidad_0=10, precio_0=100, cantidad_1=11, precio_1=115)
+    tipo, proporcion = efecto_dominante([d], umbral=0.60)
+    assert tipo == "mixto"
+    assert proporcion == pytest.approx(150.0 / 265.0)
+
+
+def test_efecto_dominante_sin_variacion():
+    d = descomponer_variacion("x", cantidad_0=10, precio_0=100, cantidad_1=10, precio_1=100)
+    tipo, proporcion = efecto_dominante([d], umbral=0.60)
+    assert tipo == "sin_variacion"
+    assert proporcion == 0.0
+
+
+def test_efecto_dominante_suma_varios_conceptos():
+    # Dos conceptos, cada uno solo con efecto precio -> la suma también es
+    # 100% precio.
+    d1 = descomponer_variacion("a", cantidad_0=1, precio_0=1000, cantidad_1=1, precio_1=1200)
+    d2 = descomponer_variacion("b", cantidad_0=1, precio_0=500, cantidad_1=1, precio_1=600)
+    tipo, proporcion = efecto_dominante([d1, d2], umbral=0.60)
+    assert tipo == "precio"
+    assert proporcion == pytest.approx(1.0)
+
+
+def test_efecto_dominante_umbral_por_defecto_se_lee_del_yaml_real():
+    d = descomponer_variacion("x", cantidad_0=4, precio_0=2500, cantidad_1=4, precio_1=2800)
+    tipo, _proporcion = efecto_dominante([d])  # sin pasar umbral -> data/alertas.yaml
+    assert tipo == "precio"
+
+
+# --- top_conceptos_por_variacion: acotar el gráfico (Bloque 8) ------------
+
+
+def test_top_conceptos_por_variacion_ordena_por_valor_absoluto():
+    chico = descomponer_variacion("chico", cantidad_0=1, precio_0=100, cantidad_1=1, precio_1=110)
+    grande_baja = descomponer_variacion(
+        "grande_baja", cantidad_0=1, precio_0=1000, cantidad_1=1, precio_1=200
+    )
+    mediano = descomponer_variacion(
+        "mediano", cantidad_0=1, precio_0=500, cantidad_1=1, precio_1=700
+    )
+    top = top_conceptos_por_variacion([chico, grande_baja, mediano], 2)
+    assert [d.concepto for d in top] == ["grande_baja", "mediano"]
+
+
+def test_top_conceptos_por_variacion_n_mayor_a_la_lista_devuelve_todo():
+    d = descomponer_variacion("x", cantidad_0=1, precio_0=100, cantidad_1=1, precio_1=110)
+    assert len(top_conceptos_por_variacion([d], 10)) == 1

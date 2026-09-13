@@ -72,11 +72,12 @@ def test_pagina_evolucion_renderiza_sin_errores(base_con_dos_periodos):
 
 def test_pagina_muestra_la_serie_historica(base_con_dos_periodos):
     # Bloque 7: la serie nominal vs. real de TODOS los períodos cargados,
-    # no solo los dos elegidos para comparar.
+    # no solo los dos elegidos para comparar -- vive en su propia pestaña
+    # (Bloque 8: layout con st.tabs).
     at = _app()
     at.run()
     assert not at.exception
-    assert any("Evolución histórica" in s.value for s in at.subheader)
+    assert any("Todos los períodos cargados" in c.value for c in at.caption)
 
 
 def test_pagina_muestra_totales_de_ambos_periodos(base_con_dos_periodos):

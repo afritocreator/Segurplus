@@ -28,14 +28,14 @@ if not filas:
     st.success("No hay facturas en cuarentena.")
 else:
     for hash_pdf, ruta, motivos in filas:
-        col_info, col_boton = st.columns([5, 1])
-        with col_info:
-            st.write(f"**{ruta}**")
-            st.caption(motivos)
-        with col_boton:
-            if st.button("Reintentar", key=f"reintentar_{hash_pdf}"):
-                borrar_de_cuarentena(con, hash_pdf)
-                st.rerun()
-        st.divider()
+        with st.container(border=True):
+            col_info, col_boton = st.columns([5, 1])
+            with col_info:
+                st.write(f"**{ruta}**")
+                st.caption(motivos)
+            with col_boton:
+                if st.button("Reintentar", key=f"reintentar_{hash_pdf}"):
+                    borrar_de_cuarentena(con, hash_pdf)
+                    st.rerun()
 
 con.close()

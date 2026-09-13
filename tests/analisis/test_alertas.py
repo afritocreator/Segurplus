@@ -5,6 +5,7 @@ salto_de_cantidad_ratio=0.30)."""
 from datetime import date
 
 from core.analisis.alertas import (
+    Alerta,
     alertas_por_concepto_nuevo_o_desaparecido,
     alertas_por_item_duplicado,
     alertas_por_periodo_faltante,
@@ -12,6 +13,7 @@ from core.analisis.alertas import (
     alertas_por_recargos,
     alertas_por_salto_de_cantidad,
     generar_alertas,
+    ordenar_por_severidad,
 )
 from core.analisis.variacion import descomponer_variacion
 from core.extraccion.esquema import Concepto, FacturaExtraida, Recargo
@@ -199,3 +201,25 @@ def test_periodos_desordenados_se_ordenan_solos():
     periodos = [date(2026, 9, 1), date(2026, 7, 1)]  # sep antes que jul, a propósito
     alertas = alertas_por_periodo_faltante(periodos)
     assert len(alertas) == 1  # detecta el hueco de agosto igual
+
+
+# --- ordenar_por_severidad: orden determinístico (Bloque 8) --------------
+
+
+def test_ordenar_por_severidad_alta_media_baja():
+    baja = Alerta(tipo="x", severidad="baja", mensaje="b")
+    alta = Alerta(tipo="x", severidad="alta", mensaje="a")
+    media = Alerta(tipo="x", severidad="media", mensaje="m")
+    ordenadas = ordenar_por_severidad([baja, alta, media])
+    assert [a.severidad for a in ordenadas] == ["alta", "media", "baja"]
+
+
+def test_ordenar_por_severidad_es_estable_dentro_de_la_misma_severidad():
+    a1 = Alerta(tipo="uno", severidad="alta", mensaje="1")
+    a2 = Alerta(tipo="dos", severidad="alta", mensaje="2")
+    ordenadas = ordenar_por_severidad([a1, a2])
+    assert [a.tipo for a in ordenadas] == ["uno", "dos"]
+
+
+def test_ordenar_por_severidad_lista_vacia():
+    assert ordenar_por_severidad([]) == []

@@ -19,3 +19,10 @@ salto_de_cantidad_ratio: 0.30
 # Días de tolerancia entre facturas del mismo servicio antes de marcar
 # "período faltante" o "factura fuera de rango".
 dias_tolerancia_periodo: 10
+
+# Proporción mínima (0.60 = 60%) de la variación total que un solo efecto
+# (cantidad o precio) tiene que explicar para que el tablero diga "el
+# aumento fue mayormente por CANTIDAD/PRECIO". Por debajo de esto se
+# muestra como "mixto" -- ni cantidad ni precio explican la mayor parte
+# por sí solos. Ver core/analisis/variacion.py::efecto_dominante.
+umbral_efecto_dominante: 0.60
