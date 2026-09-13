@@ -1,6 +1,8 @@
 """Tests del almacenamiento DuckDB contra un archivo temporal (nunca
 data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 
+import pytest
+
 from core.almacenamiento import (
     alertas_del_periodo,
     borrar_de_cuarentena,
@@ -53,6 +55,54 @@ def test_guardar_y_leer_factura(tmp_path):
     ).fetchone()
     assert concepto == ("abono_movil", 10000.0)
     con.close()
+
+
+# --- score_homologacion: persistido siempre, haya homologado o no ---------
+
+
+def test_score_homologacion_se_guarda_para_concepto_homologado(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(
+        con, factura, conceptos_normalizados={0: "abono_movil"}, scores_homologacion={0: 0.81}
+    )
+    score = con.execute(
+        "SELECT score_homologacion FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf]
+    ).fetchone()[0]
+    assert score == pytest.approx(0.81)
+    con.close()
+
+
+def test_score_homologacion_se_guarda_incluso_sin_homologar(tmp_path):
+    # El caso que importa para calibrar: un concepto que NO homologó igual
+    # guarda su score (0.44, por ejemplo) -- así se puede distinguir "casi
+    # homologa, falta un alias" de "concepto genuinamente nuevo".
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, conceptos_normalizados={}, scores_homologacion={0: 0.44})
+    fila = con.execute(
+        "SELECT concepto_normalizado, score_homologacion FROM conceptos WHERE hash_pdf = ?",
+        [factura.hash_pdf],
+    ).fetchone()
+    assert fila == (None, pytest.approx(0.44))
+    con.close()
+
+
+def test_score_homologacion_por_defecto_es_null(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura)  # sin pasar scores_homologacion
+    score = con.execute(
+        "SELECT score_homologacion FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf]
+    ).fetchone()[0]
+    assert score is None
+    con.close()
+
+
+def test_alter_table_score_homologacion_es_idempotente(tmp_path):
+    ruta = tmp_path / "test.duckdb"
+    conectar(ruta).close()
+    conectar(ruta).close()  # conectar de nuevo no debe romper por la columna ya existente
 
 
 def test_reprocesar_no_duplica_conceptos(tmp_path):

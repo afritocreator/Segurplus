@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS conceptos (
     precio_unitario DOUBLE,
     importe DOUBLE,
 );
+ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS score_homologacion DOUBLE;
 CREATE TABLE IF NOT EXISTS recargos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
@@ -119,11 +120,21 @@ def guardar_factura(
     factura: FacturaExtraida,
     *,
     conceptos_normalizados: dict[int, str] | None = None,
+    scores_homologacion: dict[int, float] | None = None,
 ) -> None:
     """Guarda una factura YA VALIDADA (ver validar_factura) y sus conceptos.
     No hace ningún control aritmético acá -- eso ya pasó antes, este módulo
-    solo persiste."""
+    solo persiste.
+
+    `scores_homologacion`: el score de similitud que dio `homologar_concepto`
+    para cada línea (índice `i`), HAYA homologado o no. El score de las que
+    NO homologaron es el dato valioso para calibrar: dice si falta un alias
+    (score cerca del umbral, ej. 0.55) o si es un concepto genuinamente
+    nuevo (score bajo, ej. 0.12) -- ver `core/rehomologacion.py` y
+    `apps/segurplus/paginas/sin_clasificar.py`. Antes de esto el score se
+    calculaba y se descartaba en `core/pipeline.py`."""
     conceptos_normalizados = conceptos_normalizados or {}
+    scores_homologacion = scores_homologacion or {}
     con.execute(
         """INSERT OR REPLACE INTO facturas
            (hash_pdf, ruta_pdf, emisor, cuit, servicio, periodo_desde, periodo_hasta,
@@ -148,8 +159,8 @@ def guardar_factura(
         con.execute(
             """INSERT INTO conceptos
                (hash_pdf, orden, descripcion, concepto_normalizado, cantidad, unidad,
-                precio_unitario, importe)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                precio_unitario, importe, score_homologacion)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 factura.hash_pdf,
                 i,
@@ -159,6 +170,7 @@ def guardar_factura(
                 c.unidad,
                 c.precio_unitario,
                 c.importe,
+                scores_homologacion.get(i),
             ],
         )
 

@@ -118,12 +118,22 @@ def procesar_pdf(
         diccionario if diccionario is not None else cargar_diccionario(factura.servicio)
     )
     conceptos_normalizados = {}
+    scores_homologacion = {}
     for i, c in enumerate(factura.conceptos):
-        concepto, _score = homologar_concepto(c.descripcion, diccionario_a_usar)
+        concepto, score = homologar_concepto(c.descripcion, diccionario_a_usar)
+        # El score se guarda SIEMPRE, haya homologado o no -- el de las que
+        # no homologaron es el dato que permite calibrar (ver
+        # core/almacenamiento.py::guardar_factura).
+        scores_homologacion[i] = score
         if concepto:
             conceptos_normalizados[i] = concepto
 
-    guardar_factura(con, factura, conceptos_normalizados=conceptos_normalizados)
+    guardar_factura(
+        con,
+        factura,
+        conceptos_normalizados=conceptos_normalizados,
+        scores_homologacion=scores_homologacion,
+    )
 
     # Ítem duplicado se calcula UNA VEZ acá, sobre la factura individual --
     # no en la página de evolución (que ve una factura agregada sin

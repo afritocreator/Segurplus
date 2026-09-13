@@ -6,6 +6,8 @@ docs/fixtures/generar_fixtures.py)."""
 
 from pathlib import Path
 
+import pytest
+
 import core.pipeline as pipeline_mod
 from core.almacenamiento import conectar
 from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto
@@ -133,11 +135,34 @@ def test_homologacion_se_acota_al_servicio_de_la_factura(tmp_path, monkeypatch):
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
     assert resultado.estado == "guardada"
 
-    normalizado = con.execute(
-        "SELECT concepto_normalizado FROM conceptos WHERE hash_pdf = ? AND orden = 0",
+    fila = con.execute(
+        "SELECT concepto_normalizado, score_homologacion FROM conceptos "
+        "WHERE hash_pdf = ? AND orden = 0",
         [resultado.hash_pdf],
-    ).fetchone()[0]
-    assert normalizado is None  # sin clasificar -- correcto, "consumo_gas" no está en telefonia
+    ).fetchone()
+    assert fila[0] is None  # sin clasificar -- correcto, "consumo_gas" no está en telefonia
+    # El score se persiste IGUAL, aunque no haya homologado -- es el dato
+    # que permite calibrar (¿le faltó poco? ¿es un concepto nuevo de
+    # verdad?), ver core/almacenamiento.py::guardar_factura.
+    assert fila[1] is not None
+    con.close()
+
+
+def test_score_homologacion_se_persiste_para_concepto_homologado(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    filas = con.execute(
+        "SELECT concepto_normalizado, score_homologacion FROM conceptos "
+        "WHERE hash_pdf = ? ORDER BY orden",
+        [resultado.hash_pdf],
+    ).fetchall()
+    assert filas[0] == ("abono_movil", pytest.approx(0.8108108108108109))
+    assert filas[1] == ("consumo_datos", pytest.approx(0.7567567567567568))
     con.close()
 
 
