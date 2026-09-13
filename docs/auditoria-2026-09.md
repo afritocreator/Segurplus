@@ -874,6 +874,16 @@ volver a llamar a Gemini, después de editar `data/conceptos/*.yaml`. Se agregó
 agregar el alias. También se agregó `abono lineas moviles` a `abono_movil`, que sube el
 score de "Abono 4/5 líneas móviles" de 0,81 a 0,95.
 
+**Bloque 5 (facturas reales)**: nueva pantalla `apps/segurplus/paginas/sin_clasificar.py`
+("Conceptos sin clasificar" en el tablero) -- el circuito de calibración completo en un
+solo lugar: importe sin clasificar ordenado por plata, semáforo por score, snippet YAML
+listo para pegar (con `quitar_periodo` aplicado), histograma de scores con la línea del
+umbral, y un botón "Re-homologar ahora" que llama a `core.rehomologacion` sin salir del
+tablero ni gastar una llamada a Gemini. `evolucion.py` linkea a esta página cuando la
+comparación tiene conceptos sin clasificar. `core.analisis.homologacion._umbral_
+coincidencia` pasó a ser pública (`umbral_coincidencia`), la usa esta pantalla para el
+semáforo y la vline del histograma.
+
 Nota de proceso: el subagente `revisor-financiero` rehusó revisar este cambio (cuarta vez en
 este repo) — esta vez con el argumento de no tener cargado el `CLAUDE.md` de Segurplus, y
 sugirió resolver la extensión de su mandato con un ADR en Consultora en vez de pedirlo ad

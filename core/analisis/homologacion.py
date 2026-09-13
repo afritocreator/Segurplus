@@ -21,11 +21,15 @@ import yaml
 RUTA_HOMOLOGACION = Path(__file__).resolve().parents[2] / "data" / "homologacion.yaml"
 
 
-def _umbral_coincidencia() -> float:
+def umbral_coincidencia() -> float:
     """Sin cache y sin lectura a nivel de módulo, a propósito -- un YAML
     corrupto no debe tumbar el import ni la app Streamlit (mismo patrón que
     `core/analisis/alertas.py::_leer_umbrales`). Ver `data/homologacion.yaml`
-    para el valor y por qué es provisorio (docs/auditoria-2026-09.md, A-3)."""
+    para el valor y por qué es provisorio (docs/auditoria-2026-09.md, A-3).
+
+    Pública (no `_umbral_coincidencia`): la usa también
+    `apps/segurplus/paginas/sin_clasificar.py` para el semáforo de "le
+    falta poco" y la línea vertical del histograma de scores."""
     datos = yaml.safe_load(RUTA_HOMOLOGACION.read_text(encoding="utf-8"))
     if not isinstance(datos, dict) or "umbral_coincidencia" not in datos:
         raise ValueError(
@@ -130,7 +134,7 @@ def homologar_concepto(
     `quitar_periodo(candidato)` de cada lado -- ver esa función para el
     porqué (un mes/año pegado a la descripción no debe impedir el match).
     """
-    umbral = umbral if umbral is not None else _umbral_coincidencia()
+    umbral = umbral if umbral is not None else umbral_coincidencia()
     descripcion_sin_periodo = quitar_periodo(descripcion)
     mejor_concepto = None
     mejor_score = 0.0

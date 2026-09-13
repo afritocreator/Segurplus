@@ -20,6 +20,7 @@ import streamlit as st
 
 from core.almacenamiento import alertas_del_periodo, conectar, recargos_del_periodo
 from core.analisis.agregacion import (
+    PREFIJO_SIN_HOMOLOGAR,
     FilaConcepto,
     agregar_conceptos,
     conceptos_con_cantidad_neta_cero,
@@ -98,6 +99,20 @@ filas_1 = _filas_del_periodo(periodo_1)
 agregado_0 = agregar_conceptos(filas_0)
 agregado_1 = agregar_conceptos(filas_1)
 descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
+
+if any(d.concepto.startswith(PREFIJO_SIN_HOMOLOGAR) for d in descomposiciones):
+    try:
+        st.page_link(
+            "apps/segurplus/paginas/sin_clasificar.py",
+            label="Hay conceptos sin clasificar en esta comparación -- ver y agregar alias",
+            icon="🏷️",
+        )
+    except st.errors.StreamlitPageNotFoundError:
+        # st.page_link exige que la página esté registrada en st.navigation
+        # (streamlit_app.py) -- no pasa en producción (la app real siempre
+        # corre por ese entrypoint), pero sí al testear esta página standalone
+        # con AppTest.from_file (tests/apps/test_evolucion_app.py).
+        st.caption("Hay conceptos sin clasificar en esta comparación -- ver la página homónima.")
 
 # Conceptos cuya cantidad neta dio cero con importe distinto de cero (ver
 # core.analisis.agregacion, hallazgo A-20): no pierden plata (ya corregido),

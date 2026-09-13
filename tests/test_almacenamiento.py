@@ -6,6 +6,7 @@ import pytest
 from core.almacenamiento import (
     alertas_del_periodo,
     borrar_de_cuarentena,
+    conceptos_sin_clasificar,
     conectar,
     factura_ya_procesada,
     guardar_alertas,
@@ -229,4 +230,68 @@ def test_guardar_alertas_es_idempotente(tmp_path):
         "SELECT COUNT(*) FROM alertas WHERE hash_pdf = ?", [factura.hash_pdf]
     ).fetchone()[0]
     assert cantidad == 1
+    con.close()
+
+
+# --- conceptos_sin_clasificar: ordenado por plata (Bloque 5) --------------
+
+
+def test_conceptos_sin_clasificar_ordena_por_importe_descendente(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+
+    barato = _factura("h1")
+    barato.conceptos = [Concepto("Cargo raro chico", 1, None, 500.0, 500.0)]
+    guardar_factura(con, barato, scores_homologacion={0: 0.3})
+
+    caro = _factura("h2")
+    caro.conceptos = [Concepto("Cargo raro grande", 1, None, 8000.0, 8000.0)]
+    guardar_factura(con, caro, scores_homologacion={0: 0.4})
+
+    filas = conceptos_sin_clasificar(con)
+    assert [f[1] for f in filas] == ["Cargo raro grande", "Cargo raro chico"]
+    assert filas[0][3] == pytest.approx(8000.0)
+    con.close()
+
+
+def test_conceptos_sin_clasificar_agrupa_por_servicio_y_descripcion(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+
+    f1 = _factura("h1")
+    f1.periodo_desde = "2026-08-01"
+    f1.conceptos = [Concepto("Servicio de telefonía Agosto 2026", 1, None, 30000.0, 30000.0)]
+    guardar_factura(con, f1, scores_homologacion={0: 0.588})
+
+    f2 = _factura("h2")
+    f2.periodo_desde = "2026-09-01"
+    f2.conceptos = [Concepto("Servicio de telefonía Septiembre 2026", 1, None, 36000.0, 36000.0)]
+    guardar_factura(con, f2, scores_homologacion={0: 0.588})
+
+    filas = conceptos_sin_clasificar(con)
+    # Dos descripciones DISTINTAS (con el período incluido, tal como se
+    # guardaron) -- esta consulta lee la descripción cruda, la agrupación
+    # por concepto normalizado ya la hace core.analisis.agregacion.
+    assert len(filas) == 2
+    assert sum(f[3] for f in filas) == pytest.approx(66000.0)
+    con.close()
+
+
+def test_conceptos_sin_clasificar_excluye_los_ya_homologados(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, conceptos_normalizados={0: "abono_movil"})
+    assert conceptos_sin_clasificar(con) == []
+    con.close()
+
+
+def test_conceptos_sin_clasificar_acotado_por_servicio(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura("h1"), scores_homologacion={0: 0.3})
+    otro = _factura("h2")
+    otro.servicio = "gas"
+    otro.conceptos = [Concepto("Consumo de gas raro", 1, None, 1000.0, 1000.0)]
+    guardar_factura(con, otro, scores_homologacion={0: 0.3})
+
+    filas = conceptos_sin_clasificar(con, servicio="telefonia")
+    assert len(filas) == 1
+    assert filas[0][0] == "telefonia"
     con.close()

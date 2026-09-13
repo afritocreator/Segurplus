@@ -182,6 +182,33 @@ def guardar_factura(
         )
 
 
+def conceptos_sin_clasificar(
+    con: duckdb.DuckDBPyConnection, *, servicio: str | None = None
+) -> list[tuple[str, str, float, float, int, str]]:
+    """`(servicio, descripcion, score_maximo, importe_total, veces, ultimo_periodo)`
+    de los conceptos con `concepto_normalizado IS NULL`, agrupados por
+    `(servicio, descripcion)` y ORDENADOS POR IMPORTE TOTAL DESCENDENTE --
+    la plata manda: el alias que más conviene agregar a
+    `data/conceptos/*.yaml` es el que más plata deja sin clasificar (ver
+    `apps/segurplus/paginas/sin_clasificar.py` y `core/rehomologacion.py`,
+    el circuito de calibración de docs/auditoria-2026-09.md, Bloque 9)."""
+    condicion = "AND f.servicio = ?" if servicio is not None else ""
+    parametros = [servicio] if servicio is not None else []
+    filas = con.execute(
+        f"""SELECT f.servicio, c.descripcion, max(c.score_homologacion),
+                   sum(c.importe), count(*), max(f.periodo_desde)
+            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+            WHERE c.concepto_normalizado IS NULL {condicion}
+            GROUP BY f.servicio, c.descripcion
+            ORDER BY sum(c.importe) DESC""",
+        parametros,
+    ).fetchall()
+    return [
+        (servicio_fila, descripcion, score or 0.0, importe, veces, ultimo_periodo)
+        for servicio_fila, descripcion, score, importe, veces, ultimo_periodo in filas
+    ]
+
+
 def recargos_del_periodo(
     con: duckdb.DuckDBPyConnection, *, servicio: str, periodo_desde: str
 ) -> list[tuple[str, float]]:
