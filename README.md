@@ -105,17 +105,35 @@ secret configurado el tablero avisa que está en modo local.
 
 ### Crear la base Postgres gratis (Neon o Supabase)
 
-Cualquiera de los dos sirve; los pasos son casi idénticos. Con Neon:
+Cualquiera de los dos sirve. Con Neon es directo: creá un proyecto en
+[neon.tech](https://neon.tech) (plan gratuito), copiá la **connection string** del
+dashboard (`postgresql://...`) y pegala como `DATABASE_URL` en Secrets de Streamlit
+Community Cloud (paso 3 de arriba). Al primer `conectar()`, la app corre las
+migraciones (`_DDL`) sola — no hace falta crear tablas a mano.
 
-1. Entrá a [neon.tech](https://neon.tech) y creá un proyecto nuevo (plan gratuito).
-2. Copiá la **connection string** que te da el dashboard (empieza con `postgresql://`,
-   incluye usuario, contraseña, host y el nombre de la base).
-3. Pegala como `DATABASE_URL` en Secrets de Streamlit Community Cloud (paso 3 de arriba).
-4. Al primer `conectar()`, la app corre las migraciones (`_DDL`) sola — no hace falta
-   crear tablas a mano.
+**Con Supabase, dos cosas a tener en cuenta** (verificado a mano, no en la teoría):
 
-Con Supabase: `Project Settings → Database → Connection string` (elegí el modo
-"Session" o "Transaction pooling", ambos funcionan con `psycopg`), y el mismo paso 3.
+- **Usá el "Session pooler", no "Direct connection".** El botón **Connect** del
+  proyecto ofrece varias opciones; "Direct" (`db.xxxx.supabase.co`) resuelve solo por
+  IPv6, y Streamlit Community Cloud no tiene salida IPv6 — la conexión falla con un
+  `OperationalError` genérico. "Session pooler" (`aws-0-...pooler.supabase.com:5432`)
+  sí funciona.
+- **Si ese proyecto de Supabase ya tiene otros productos**, no uses el rol `postgres`
+  para Segurplus (compartiría schema y usuario con todo lo demás). Creá un schema y un
+  rol de base dedicados, para que quede completamente aislado:
+  ```sql
+  CREATE SCHEMA IF NOT EXISTS segurplus;
+  CREATE ROLE segurplus_app WITH LOGIN PASSWORD 'una-contraseña-solo-con-letras-y-numeros';
+  GRANT ALL ON SCHEMA segurplus TO segurplus_app;
+  ALTER ROLE segurplus_app SET search_path TO segurplus;
+  ```
+  (contraseña **sin** `@ : / ? # %` -- esos caracteres rompen el parseo de la URL si no
+  se codifican). Armá la `DATABASE_URL` con ese usuario nuevo, cambiando solo el
+  usuario y la contraseña en la URL del pooler que copiaste:
+  `postgresql://segurplus_app.<project-ref>:<contraseña>@aws-0-...pooler.supabase.com:5432/postgres`
+  -- el `search_path` ya queda atado al rol, no hace falta pasarlo en la URL (pasarlo
+  como `?options=-csearch_path%3D...` no funciona de forma confiable a través del
+  pooler).
 
 El PDF original, mientras tanto, se guarda en el disco del servidor (no es durable
 entre reinicios) — aceptable mientras se prueba, porque la carga es idempotente por

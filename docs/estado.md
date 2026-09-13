@@ -130,11 +130,14 @@ selectores en el sidebar, métricas + la frase de veredicto, y pestañas (Descom
   separadores de miles mezclados) y A-27 (alerta de período faltante asume
   periodicidad mensual, un servicio bimestral como el gas dispara falso positivo
   siempre).
-- **Pendiente de una acción externa (no automatizable)**: crear la cuenta gratuita en
-  Neon o Supabase y cargar la `DATABASE_URL` real en Secrets de Streamlit, para correr
-  la suite al menos una vez contra Postgres real -- el camino `ConexionPostgres` sigue
-  sin ejercitarse en CI, solo vigilado por un test que revisa el SQL en busca de `%`
-  sueltos (`tests/test_conexion_postgres.py`).
+- **Postgres real en producción — resuelto**: la app está conectada a un proyecto
+  Supabase gratuito ya existente, en su propio schema (`segurplus`) con un rol de base
+  dedicado (`segurplus_app`, permisos acotados a ese schema, `search_path` propio) para
+  no interferir con los otros productos que viven en ese mismo proyecto. Verificado en
+  el propio deploy: las tablas se crean solas al conectar y la app funciona de punta a
+  punta. El camino `ConexionPostgres` sigue sin tener un test automatizado en CI contra
+  Postgres real (solo el test estático que revisa el SQL en busca de `%` sueltos,
+  `tests/test_conexion_postgres.py`), pero ya está verificado a mano en producción.
 - **Evidencia del PDF no durable entre reinicios** (carpeta local por defecto) y **sin
   backups verificados** del proveedor gratuito elegido -- ver las limitaciones
   conocidas del addendum de ADR-003. Aceptable mientras se prueba, a revisar antes de
