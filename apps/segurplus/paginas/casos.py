@@ -15,7 +15,13 @@ con = conectar()
 try:
     casos = listar_casos_alerta(con)
     if not casos:
-        st.success("No hay casos operativos abiertos.")
+        st.success(
+            "No hay ningún caso todavía. Los casos se generan automáticamente a partir de "
+            "las alertas de facturas ya APROBADAS (ítem duplicado, recargos, salto de "
+            "cantidad, etc.) -- si esperabas ver alguno, revisá que la factura esté "
+            "aprobada en la página **Revisar facturas** (o que la revisión humana esté "
+            "desactivada en `data/operacion.yaml`) y que tenga alguna alerta."
+        )
         st.stop()
     filas = [
         {

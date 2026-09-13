@@ -283,7 +283,7 @@ def decision_factura(
     )
     _registrar_decision(con, hash_pdf, estado, actor, motivo)
     if estado == "aprobada":
-        _sincronizar_casos_alerta(con, hash_pdf)
+        sincronizar_casos_de_factura(con, hash_pdf)
 
 
 def aprobar_pendientes(
@@ -715,10 +715,16 @@ def _clave_caso(hash_pdf: str, alerta: Alerta) -> str:
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
-def _sincronizar_casos_alerta(
+def sincronizar_casos_de_factura(
     con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str
 ) -> None:
-    """Crea casos solo para alertas de una factura ya aprobada.
+    """Crea casos para las alertas de UNA factura -- llamar solo cuando esa
+    factura ya está aprobada (`decision_factura` lo hace al aprobar de a una
+    o en lote; `core.pipeline.procesar_pdf` lo hace también cuando
+    `data/operacion.yaml::revision_humana_obligatoria` está en false, porque
+    ahí la factura queda aprobada directo al guardarse, sin pasar nunca por
+    `decision_factura` -- sin este llamado extra, las alertas de una factura
+    aprobada directo nunca se convertían en caso).
 
     La clave es estable: reaprobar o reabrir no duplica trabajo operativo.
     """

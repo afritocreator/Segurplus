@@ -22,6 +22,7 @@ from core.almacenamiento import (
     guardar_en_cuarentena,
     guardar_factura,
     llamadas_ultima_hora,
+    sincronizar_casos_de_factura,
 )
 from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
@@ -151,6 +152,12 @@ def procesar_pdf(
         if resultado_homologacion.concepto:
             conceptos_normalizados[i] = resultado_homologacion.concepto
 
+    # Si `data/operacion.yaml::revision_humana_obligatoria` está en true, no
+    # alcanza para impactar el análisis sin que alguien la apruebe -- ver
+    # apps/segurplus/paginas/revision.py. Si está en false (el default de
+    # este piloto), queda aprobada directo; la auditoría de quién cargó qué
+    # se escribe igual en los dos casos (ver guardar_factura).
+    factura_queda_aprobada = not revision_humana_obligatoria()
     guardar_factura(
         con,
         factura,
@@ -158,17 +165,19 @@ def procesar_pdf(
         scores_homologacion=scores_homologacion,
         motivos_homologacion=motivos_homologacion,
         candidatos_empatados=candidatos_empatados,
-        # La extracción validada es confiable aritméticamente. Si
-        # `data/operacion.yaml::revision_humana_obligatoria` está en true, no
-        # alcanza para impactar el análisis sin que alguien la apruebe -- ver
-        # apps/segurplus/paginas/revision.py. Si está en false (el default de
-        # este piloto), queda aprobada directo; la auditoría de quién cargó
-        # qué se escribe igual en los dos casos (ver guardar_factura).
-        estado="requiere_revision" if revision_humana_obligatoria() else "aprobada",
+        estado="aprobada" if factura_queda_aprobada else "requiere_revision",
     )
 
     # Ítem duplicado se calcula UNA VEZ acá, sobre la factura individual --
     # no en la página de evolución (que ve una factura agregada sin
     # conceptos propios, ver docs/auditoria-2026-09.md, hallazgo A-6).
     guardar_alertas(con, factura.hash_pdf, alertas_por_item_duplicado(factura))
+    if factura_queda_aprobada:
+        # decision_factura ya hace esto mismo cuando la aprobación pasa por
+        # la revisión humana -- acá hace falta el mismo llamado porque la
+        # factura nunca pasa por decision_factura cuando queda aprobada
+        # directo (ver el comentario de arriba). Sin esto, las alertas de
+        # ítem duplicado de una factura aprobada directo no se convertían
+        # nunca en un caso operativo.
+        sincronizar_casos_de_factura(con, factura.hash_pdf)
     return ResultadoPipeline(ruta, factura.hash_pdf, estado="guardada")

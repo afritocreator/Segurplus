@@ -233,6 +233,37 @@ def test_item_duplicado_se_persiste_al_procesar(tmp_path, monkeypatch):
     con.close()
 
 
+def test_item_duplicado_se_convierte_en_caso_sin_pasar_por_revision(tmp_path, monkeypatch):
+    """Con revision_humana_obligatoria en false (default), la factura queda
+    aprobada directo en guardar_factura, SIN pasar nunca por
+    decision_factura -- que es el único lugar donde antes se sincronizaban
+    los casos de alerta. Sin el llamado agregado en procesar_pdf, un ítem
+    duplicado real nunca se convertía en un caso operativo visible en la
+    página Casos."""
+    from core.almacenamiento import listar_casos_alerta
+
+    factura = _factura_telefonia_julio()
+    factura.conceptos = [
+        Concepto("Abono", 1, None, 1000.0, 1000.0),
+        Concepto("Abono", 1, None, 1000.0, 1000.0),
+    ]
+    factura.subtotal = 2000.0
+    factura.total = 2420.0
+    factura.impuestos = [Impuesto("IVA 21%", importe=420.0)]
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
+    monkeypatch.setattr(pipeline_mod, "total_impreso", lambda texto: None)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert resultado.estado == "guardada"
+
+    casos = listar_casos_alerta(con)
+    assert len(casos) == 1
+    assert casos[0][1] == "item_duplicado"  # (clave, tipo, severidad, ...)
+    con.close()
+
+
 def test_pdf_corrupto_no_tumba_el_procesamiento(tmp_path, monkeypatch):
     # docs/auditoria-2026-09.md, hallazgo A-18: antes solo se atrapaba
     # PdfSinTextoError -- cualquier otra excepción al leer el PDF (acá
