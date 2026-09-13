@@ -4,6 +4,32 @@
 **Audiencia:** dirección operativa  
 **Criterio:** impacto y confiabilidad antes que automatización o estética.
 
+> **Nota posterior (2026-09-13)**: este documento se conserva tal como se escribió --
+> el análisis y la priorización siguen siendo válidos. Dos de las recomendaciones P0 se
+> adaptaron al implementarlas, por no encajar con una herramienta interna de una o dos
+> personas con "costo cero" ya prometido por escrito (la misma restricción que descartó
+> Vercel, ver `docs/estado.md`):
+>
+> - **PostgreSQL administrado pago → Postgres gratis** (Neon o Supabase). Resuelve el
+>   mismo problema (persistencia entre reinicios) sin costo; `ConexionPostgres` no
+>   distingue entre un plan gratis y uno pago, así que no hay nada que reescribir si el
+>   piloto crece. Ver el addendum de `docs/decisiones/ADR-003-persistencia-durable.md`.
+> - **Bucket S3 privado por defecto → opcional**. El PDF original va a una carpeta
+>   local mientras no haga falta más que eso (la carga es idempotente por hash);
+>   `boto3` pasó a un extra opcional (`pip install -e ".[s3]"`) en vez de dependencia
+>   obligatoria.
+> - La revisión humana (P0, sección "Flujo de aprobación") se implementó **completa**
+>   pero se hizo **opcional y configurable** (`data/operacion.yaml::revision_humana_
+>   obligatoria`, default `false`) en vez de forzada de a una factura por vez: con una
+>   o dos personas cargando y revisando su propia carga, exigirla generaba pura
+>   fricción sin beneficio real. El circuito (aprobación de a una o en lote, con
+>   motivo y actor, auditoría idéntica en los dos casos) queda listo para activarse el
+>   día que haya más gente cargando sin supervisión cruzada.
+>
+> El resto de las recomendaciones (casos operativos, composición del total,
+> postergar automatización/forecasting/ARCA/multicliente) se implementaron según lo
+> propuesto acá. Ver `docs/estado.md` para el estado consolidado.
+
 ## Conclusión ejecutiva
 
 Segurplus ya tenía una base analítica correcta: extracción estructurada, controles

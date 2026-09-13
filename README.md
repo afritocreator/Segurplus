@@ -133,9 +133,12 @@ dupliquen. El día que haga falta que también sea durable, un bucket S3 compati
 - `core/rehomologacion.py` — recalcula la homologación de facturas ya guardadas sin llamar
   a Gemini (ver "Cómo calibrar la homologación" más arriba).
 - `core/deflactor/`, `core/macro/` — copiados de Consultora (ajuste por IPC).
-- `core/almacenamiento.py` — PostgreSQL administrado en producción y DuckDB local en
-  desarrollo; conserva decisiones, correcciones y casos operativos.
-- `core/evidencia.py` — PDF original en almacenamiento privado S3 compatible.
+- `core/almacenamiento.py` — Postgres (gratis, Neon/Supabase) en producción y DuckDB
+  local en desarrollo; conserva decisiones, correcciones y casos operativos.
+- `core/evidencia.py` — PDF original: carpeta local por defecto, bucket S3 compatible
+  opcional (extra `s3`).
+- `core/operacion.py` — parámetros operativos del piloto (`data/operacion.yaml`), como
+  si la revisión humana es obligatoria.
 - `apps/segurplus/estilo.py` — paleta institucional y formato compartido de los gráficos.
 - `scripts/rehomologar.py` — CLI para re-homologar desde la terminal.
 - `docs/fixtures/` — generador de facturas sintéticas en PDF (nunca reales) para los tests.
