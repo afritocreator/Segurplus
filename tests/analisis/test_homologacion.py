@@ -3,7 +3,7 @@ Dice, más los casos de uso reales de homologación de conceptos."""
 
 import pytest
 
-from core.analisis.homologacion import homologar_concepto, similitud
+from core.analisis.homologacion import homologar_concepto, normalizar, quitar_periodo, similitud
 
 
 def test_similitud_identica_da_uno():
@@ -78,3 +78,74 @@ def test_umbral_explicito_pisa_al_del_yaml():
         "Cargo por gestion administrativa", DICCIONARIO, umbral=0.01
     )
     assert concepto is not None  # con un umbral irrisorio, homologa cualquier cosa
+
+
+# --- quitar_periodo: el período pegado a la descripción (caso real Movistar) ---
+
+
+def test_normalizar_no_cambio_su_contrato():
+    # Candado: normalizar() NO debe tocarse para sacar el período -- eso es
+    # trabajo de quitar_periodo(), que corre después. Si este test se rompe,
+    # alguien mezcló las dos responsabilidades.
+    assert normalizar("Servicio de telefonía Agosto 2026") == "servicio de telefonia agosto 2026"
+
+
+def test_quitar_periodo_saca_mes_y_anio():
+    assert quitar_periodo("Servicio de telefonía Agosto 2026") == "servicio de telefonia"
+    assert quitar_periodo("Servicio de telefonía Septiembre 2026") == "servicio de telefonia"
+
+
+def test_quitar_periodo_formato_barra():
+    assert quitar_periodo("Consumo periodo 08/2026") == "consumo periodo"
+    assert quitar_periodo("Consumo periodo 09/2026") == "consumo periodo"
+
+
+def test_quitar_periodo_abreviatura_con_guion():
+    assert quitar_periodo("Abono ago-2026") == "abono"
+    assert quitar_periodo("Abono sep-2026") == "abono"
+
+
+def test_quitar_periodo_no_fusiona_planes_con_numero_pegado():
+    # "Plan 5GB" y "Plan 20GB" son conceptos DISTINTOS -- el dígito pegado a
+    # la letra (sin espacio) no matchea el patrón de período.
+    assert quitar_periodo("Plan 5GB") == "plan 5gb"
+    assert quitar_periodo("Plan 20GB") == "plan 20gb"
+    assert quitar_periodo("Plan 5GB") != quitar_periodo("Plan 20GB")
+
+
+def test_quitar_periodo_no_fusiona_lineas_ni_medidores_numerados():
+    # A diferencia de una versión "agresiva" (sacar todo dígito suelto), acá
+    # "Línea 1" y "Línea 2" tienen que seguir siendo distintos -- una empresa
+    # con varias líneas facturadas por separado necesita esa granularidad.
+    assert quitar_periodo("Línea 1") != quitar_periodo("Línea 2")
+    assert quitar_periodo("Medidor 1 planta") != quitar_periodo("Medidor 2 depósito")
+
+
+def test_quitar_periodo_conserva_numero_pegado_a_letra():
+    assert quitar_periodo("Consumo m3 gas") == "consumo m3 gas"
+
+
+def test_quitar_periodo_descripcion_solo_periodo_no_rompe():
+    # Guarda: si sacar el período dejaría el string vacío, se devuelve el
+    # texto normalizado sin tocar -- nunca una clave vacía "(sin_homologar) ".
+    assert quitar_periodo("Agosto 2026") == "agosto 2026"
+
+
+def test_quitar_periodo_par_real_da_similitud_uno():
+    a = quitar_periodo("Servicio de telefonía Agosto 2026")
+    b = quitar_periodo("Servicio de telefonía Septiembre 2026")
+    assert similitud(a, b) == pytest.approx(1.0)
+
+
+def test_homologar_concepto_ignora_el_periodo_de_la_descripcion():
+    # Con el diccionario real de telefonía, agosto y septiembre dan el MISMO
+    # score (0.588) -- sigue bajo el umbral 0.60 (ningún alias "servicio de
+    # telefonia" todavía), pero ahora es CONSISTENTE entre los dos meses, que
+    # es lo que garantiza una clave de agrupamiento estable en agregacion.py.
+    from core.analisis.diccionario import cargar_diccionario
+
+    diccionario_real = cargar_diccionario("telefonia")
+    _c0, score_0 = homologar_concepto("Servicio de telefonía Agosto 2026", diccionario_real)
+    _c1, score_1 = homologar_concepto("Servicio de telefonía Septiembre 2026", diccionario_real)
+    assert score_0 == pytest.approx(score_1)
+    assert score_0 == pytest.approx(0.5882352941176471)
