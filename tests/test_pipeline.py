@@ -161,7 +161,10 @@ def test_score_homologacion_se_persiste_para_concepto_homologado(tmp_path, monke
         "WHERE hash_pdf = ? ORDER BY orden",
         [resultado.hash_pdf],
     ).fetchall()
-    assert filas[0] == ("abono_movil", pytest.approx(0.8108108108108109))
+    # Scores con el diccionario real (Bloque 4 agregó el alias "abono
+    # lineas moviles" a telefonia.yaml, que sube este score respecto de
+    # antes de esa calibración).
+    assert filas[0] == ("abono_movil", pytest.approx(0.95))
     assert filas[1] == ("consumo_datos", pytest.approx(0.7567567567567568))
     con.close()
 

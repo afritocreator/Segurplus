@@ -2,12 +2,37 @@
 # con comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
 # Se completa con las primeras facturas reales que se procesen (ver
 # docs/estado.md) -- estos son solo los alias más obvios para arrancar.
+#
+# Cómo agregar un alias nuevo: mirar la pantalla "Conceptos sin
+# clasificar" del tablero (ordenada por plata), agregarlo acá, y correr
+# `python scripts/rehomologar.py --aplicar` para que también se aplique a
+# las facturas ya cargadas (ver core/rehomologacion.py). Después de tocar
+# este archivo, correr `pytest tests/analisis/test_homologacion.py` --
+# `test_umbral_por_defecto_se_lee_del_yaml_real` es el tripwire que avisa
+# si el alias nuevo le robó el match a otro concepto (ver
+# docs/auditoria-2026-09.md, hallazgo A-3).
+#
+# NUNCA un alias de un proveedor que no vimos todavía: un alias inventado
+# que homologa mal absorbe en silencio un cargo que debería alertar --
+# exactamente lo que A-3 vino a evitar.
+
+servicio_telefonia:
+  # Caso real (Movistar), docs/auditoria-2026-09.md hallazgo A-28: el
+  # proveedor factura el concepto pegando el período a la descripción
+  # ("Servicio de telefonía Agosto 2026"). Verificado: con este alias,
+  # homologa a score 1.0 (antes de agregarlo, 0.588 -- bajo el umbral
+  # 0.60) y no mueve la guarda de A-3 ("Recargo por reconexion" sigue en
+  # 0.5714285714285714).
+  - servicio de telefonia
+  - servicio telefonico
+  - abono telefonia
 
 abono_movil:
   - abono linea movil
   - cargo fijo movil
   - abono plan control
   - abono telefonico
+  - abono lineas moviles  # "Abono 4/5 líneas móviles" -> score 0.95 (el número no molesta)
 
 consumo_datos:
   - consumo de datos

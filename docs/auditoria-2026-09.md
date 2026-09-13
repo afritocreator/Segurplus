@@ -864,6 +864,16 @@ cualquier proveedor, con o sin alias en el diccionario. Test de punta a punta co
 mano (`tests/analisis/test_variacion.py`): agosto $30.000, septiembre $36.000, sin homologar
 → una sola fila de descomposición, `efecto_precio == 6000.0`, `efecto_cantidad == 0.0`.
 
+**Bloque 3 y 4 (facturas reales)**: se agregó `score_homologacion` a la tabla `conceptos`
+(persistido siempre, homologue o no) y `core/rehomologacion.py` +
+`scripts/rehomologar.py` para recalcular la homologación de facturas YA guardadas sin
+volver a llamar a Gemini, después de editar `data/conceptos/*.yaml`. Se agregó el alias
+`servicio_telefonia` (`servicio de telefonia`, `servicio telefonico`, `abono telefonia`) a
+`data/conceptos/telefonia.yaml`: el caso real de Movistar ahora homologa a score **1,0**
+(antes 0,588, sin homologar). Verificado que la guarda de A-3 sigue intacta después de
+agregar el alias. También se agregó `abono lineas moviles` a `abono_movil`, que sube el
+score de "Abono 4/5 líneas móviles" de 0,81 a 0,95.
+
 Nota de proceso: el subagente `revisor-financiero` rehusó revisar este cambio (cuarta vez en
 este repo) — esta vez con el argumento de no tener cargado el `CLAUDE.md` de Segurplus, y
 sugirió resolver la extensión de su mandato con un ADR en Consultora en vez de pedirlo ad

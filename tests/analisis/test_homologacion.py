@@ -139,13 +139,16 @@ def test_quitar_periodo_par_real_da_similitud_uno():
 
 def test_homologar_concepto_ignora_el_periodo_de_la_descripcion():
     # Con el diccionario real de telefonía, agosto y septiembre dan el MISMO
-    # score (0.588) -- sigue bajo el umbral 0.60 (ningún alias "servicio de
-    # telefonia" todavía), pero ahora es CONSISTENTE entre los dos meses, que
-    # es lo que garantiza una clave de agrupamiento estable en agregacion.py.
+    # score -- eso es lo que garantiza una clave de agrupamiento estable en
+    # agregacion.py, independientemente de si el diccionario ya tiene o no
+    # un alias para este concepto (docs/auditoria-2026-09.md, A-28: desde
+    # que se agregó el alias "servicio de telefonia" -- Bloque 4 -- ambos
+    # homologan a servicio_telefonia con score 1.0; antes de ese alias,
+    # ambos daban 0.588, sin homologar, pero YA consistentes entre sí).
     from core.analisis.diccionario import cargar_diccionario
 
     diccionario_real = cargar_diccionario("telefonia")
-    _c0, score_0 = homologar_concepto("Servicio de telefonía Agosto 2026", diccionario_real)
-    _c1, score_1 = homologar_concepto("Servicio de telefonía Septiembre 2026", diccionario_real)
-    assert score_0 == pytest.approx(score_1)
-    assert score_0 == pytest.approx(0.5882352941176471)
+    c0, score_0 = homologar_concepto("Servicio de telefonía Agosto 2026", diccionario_real)
+    c1, score_1 = homologar_concepto("Servicio de telefonía Septiembre 2026", diccionario_real)
+    assert c0 == c1 == "servicio_telefonia"
+    assert score_0 == pytest.approx(score_1) == pytest.approx(1.0)
