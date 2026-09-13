@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -38,6 +39,14 @@ def umbral_coincidencia() -> float:
     return float(datos["umbral_coincidencia"])
 
 
+def margen_cerca_del_umbral() -> float:
+    """Margen configurable para marcar un concepto como candidato a alias."""
+    datos = yaml.safe_load(RUTA_HOMOLOGACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "margen_cerca_del_umbral" not in datos:
+        raise ValueError(f"{RUTA_HOMOLOGACION} no tiene 'margen_cerca_del_umbral'")
+    return float(datos["margen_cerca_del_umbral"])
+
+
 def normalizar(texto: str) -> str:
     texto = texto.lower()
     texto = unicodedata.normalize("NFD", texto)
@@ -49,8 +58,20 @@ def normalizar(texto: str) -> str:
 
 _MESES = (
     r"enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|"
-    r"octubre|noviembre|diciembre|ene|feb|mar|abr|jun|jul|ago|sep|set|oct|nov|dic"
+    r"octubre|noviembre|diciembre|ene|feb|mar|abr|may|jun|jul|ago|sep|sept|set|oct|nov|dic"
 )
+
+
+@dataclass(frozen=True)
+class ResultadoHomologacion:
+    concepto: str | None
+    score: float
+    candidatos_empatados: tuple[str, ...] = ()
+
+    def __iter__(self):
+        """Compatibilidad transitoria con los llamadores que desempaquetan dos valores."""
+        yield self.concepto
+        yield self.score
 
 
 def quitar_periodo(texto: str) -> str:
@@ -117,7 +138,7 @@ def similitud(a: str, b: str) -> float:
 
 def homologar_concepto(
     descripcion: str, diccionario: dict[str, list[str]], *, umbral: float | None = None
-) -> tuple[str | None, float]:
+) -> ResultadoHomologacion:
     """Busca el concepto normalizado más parecido a `descripcion` dentro de
     `diccionario` ({concepto_normalizado: [alias, alias, ...]}).
 
@@ -125,7 +146,7 @@ def homologar_concepto(
     (`umbral_coincidencia`) -- se puede pasar explícito para tests, sin
     depender del archivo.
 
-    Devuelve `(None, score)` si el mejor score queda por debajo del umbral —
+    Devuelve un resultado sin concepto si el mejor score queda por debajo del umbral —
     eso NO se descarta silenciosamente: en `core/analisis/alertas.py` se
     convierte en la alerta "concepto nuevo sin clasificar", que suele ser
     justo el cargo que se coló.
@@ -136,15 +157,20 @@ def homologar_concepto(
     """
     umbral = umbral if umbral is not None else umbral_coincidencia()
     descripcion_sin_periodo = quitar_periodo(descripcion)
-    mejor_concepto = None
     mejor_score = 0.0
+    mejores: list[str] = []
     for concepto, alias in diccionario.items():
         candidatos = [concepto, *alias]
         score = max(similitud(descripcion_sin_periodo, quitar_periodo(c)) for c in candidatos)
         if score > mejor_score:
             mejor_score = score
-            mejor_concepto = concepto
+            mejores = [concepto]
+        elif score == mejor_score:
+            mejores.append(concepto)
 
     if mejor_score < umbral:
-        return None, mejor_score
-    return mejor_concepto, mejor_score
+        return ResultadoHomologacion(None, mejor_score)
+    if len(mejores) != 1:
+        # No elegir por el orden incidental del YAML: requiere revisión humana.
+        return ResultadoHomologacion(None, mejor_score, tuple(sorted(mejores)))
+    return ResultadoHomologacion(mejores[0], mejor_score)

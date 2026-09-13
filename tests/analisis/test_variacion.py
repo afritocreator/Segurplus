@@ -186,6 +186,14 @@ def test_efecto_dominante_sin_variacion():
     assert proporcion == 0.0
 
 
+def test_efecto_dominante_efectos_opuestos_es_compensado():
+    # Precio +$1.000 y cantidad -$900: el neto no debe convertirse en 1000%.
+    d = descomponer_variacion("x", cantidad_0=10, precio_0=100, cantidad_1=1, precio_1=200)
+    tipo, proporcion = efecto_dominante([d], umbral=0.60)
+    assert tipo == "compensado"
+    assert proporcion == 0.0
+
+
 def test_efecto_dominante_suma_varios_conceptos():
     # Dos conceptos, cada uno solo con efecto precio -> la suma también es
     # 100% precio.

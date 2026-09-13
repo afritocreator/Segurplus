@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS conceptos (
     importe DOUBLE,
 );
 ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS score_homologacion DOUBLE;
+ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS motivo_homologacion VARCHAR;
+ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS candidatos_empatados VARCHAR;
 CREATE TABLE IF NOT EXISTS recargos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
@@ -121,6 +123,8 @@ def guardar_factura(
     *,
     conceptos_normalizados: dict[int, str] | None = None,
     scores_homologacion: dict[int, float] | None = None,
+    motivos_homologacion: dict[int, str] | None = None,
+    candidatos_empatados: dict[int, str] | None = None,
 ) -> None:
     """Guarda una factura YA VALIDADA (ver validar_factura) y sus conceptos.
     No hace ningún control aritmético acá -- eso ya pasó antes, este módulo
@@ -135,6 +139,8 @@ def guardar_factura(
     calculaba y se descartaba en `core/pipeline.py`."""
     conceptos_normalizados = conceptos_normalizados or {}
     scores_homologacion = scores_homologacion or {}
+    motivos_homologacion = motivos_homologacion or {}
+    candidatos_empatados = candidatos_empatados or {}
     con.execute(
         """INSERT OR REPLACE INTO facturas
            (hash_pdf, ruta_pdf, emisor, cuit, servicio, periodo_desde, periodo_hasta,
@@ -159,8 +165,9 @@ def guardar_factura(
         con.execute(
             """INSERT INTO conceptos
                (hash_pdf, orden, descripcion, concepto_normalizado, cantidad, unidad,
-                precio_unitario, importe, score_homologacion)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                precio_unitario, importe, score_homologacion, motivo_homologacion,
+                candidatos_empatados)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 factura.hash_pdf,
                 i,
@@ -171,6 +178,8 @@ def guardar_factura(
                 c.precio_unitario,
                 c.importe,
                 scores_homologacion.get(i),
+                motivos_homologacion.get(i),
+                candidatos_empatados.get(i),
             ],
         )
 
@@ -184,7 +193,7 @@ def guardar_factura(
 
 def conceptos_sin_clasificar(
     con: duckdb.DuckDBPyConnection, *, servicio: str | None = None
-) -> list[tuple[str, str, float, float, int, str]]:
+) -> list[tuple[str, str, float | None, float, int, str]]:
     """`(servicio, descripcion, score_maximo, importe_total, veces, ultimo_periodo)`
     de los conceptos con `concepto_normalizado IS NULL`, agrupados por
     `(servicio, descripcion)` y ORDENADOS POR IMPORTE TOTAL DESCENDENTE --
@@ -203,10 +212,28 @@ def conceptos_sin_clasificar(
             ORDER BY sum(c.importe) DESC""",
         parametros,
     ).fetchall()
-    return [
-        (servicio_fila, descripcion, score or 0.0, importe, veces, ultimo_periodo)
-        for servicio_fila, descripcion, score, importe, veces, ultimo_periodo in filas
-    ]
+    # NULL significa "no se midió" en una carga anterior, no score cero.
+    return filas
+
+
+def filas_sin_clasificar_por_periodo(
+    con: duckdb.DuckDBPyConnection,
+) -> list[tuple[str | None, str, float | None, float, str]]:
+    """Filas sin clasificar sin mezclar períodos; la calibración las deflacta después."""
+    return con.execute(
+        """SELECT f.servicio, c.descripcion, c.score_homologacion, c.importe, f.periodo_desde
+           FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+           WHERE c.concepto_normalizado IS NULL AND f.periodo_desde IS NOT NULL"""
+    ).fetchall()
+
+
+def importes_por_periodo(con: duckdb.DuckDBPyConnection) -> list[tuple[float, str]]:
+    """Todos los importes de conceptos con su período, para totales comparables."""
+    return con.execute(
+        """SELECT c.importe, f.periodo_desde FROM conceptos c
+           JOIN facturas f ON f.hash_pdf = c.hash_pdf
+           WHERE f.periodo_desde IS NOT NULL"""
+    ).fetchall()
 
 
 def totales_por_periodo(con: duckdb.DuckDBPyConnection, *, servicio: str) -> dict[str, float]:

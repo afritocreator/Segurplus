@@ -105,6 +105,32 @@ def test_quitar_periodo_abreviatura_con_guion():
     assert quitar_periodo("Abono sep-2026") == "abono"
 
 
+def test_quitar_periodo_cubre_todas_las_abreviaturas_de_factura():
+    for mes in (
+        "ene",
+        "feb",
+        "mar",
+        "abr",
+        "may",
+        "jun",
+        "jul",
+        "ago",
+        "sep",
+        "sept",
+        "set",
+        "oct",
+        "nov",
+        "dic",
+    ):
+        assert quitar_periodo(f"Cargo {mes} 2026") == "cargo"
+
+
+def test_homologacion_empate_no_depende_del_orden_del_yaml():
+    resultado = homologar_concepto("abono", {"zeta": ["abono"], "alfa": ["abono"]}, umbral=0.6)
+    assert resultado.concepto is None
+    assert resultado.candidatos_empatados == ("alfa", "zeta")
+
+
 def test_quitar_periodo_no_fusiona_planes_con_numero_pegado():
     # "Plan 5GB" y "Plan 20GB" son conceptos DISTINTOS -- el dígito pegado a
     # la letra (sin espacio) no matchea el patrón de período.

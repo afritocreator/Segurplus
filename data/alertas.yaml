@@ -1,7 +1,7 @@
 # Umbrales de alertas -- CLAUDE.md: nunca hardcodear estos números en el código.
 # vigencia_desde: desde cuándo rige este set de umbrales (por si se recalibran).
 
-vigencia_desde: "2026-09-01"
+vigencia_desde: "2026-09-13"
 
 # Puntos porcentuales por encima de la inflación del período que disparan
 # la alerta de "precio unitario aumentó más que el IPC".

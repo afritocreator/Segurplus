@@ -37,9 +37,10 @@ def aplicar_estilo(fig: go.Figure, *, formato_moneda: bool = True) -> go.Figure:
         hovermode="x unified",
         margin={"l": 40, "r": 20, "t": 40, "b": 40},
         plot_bgcolor="white",
-        paper_bgcolor="white",
+        paper_bgcolor=FONDO,
+        separators=",.",
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
     )
     if formato_moneda:
-        fig.update_yaxes(tickprefix="$", separatethousands=True)
+        fig.update_yaxes(tickprefix="$", tickformat=",.2f", separatethousands=True)
     return fig

@@ -70,7 +70,7 @@ def test_pagina_muestra_el_importe_sin_clasificar(base_con_conceptos_sin_clasifi
     at = _app()
     at.run()
     metricas = {m.label: m.value for m in at.metric}
-    assert metricas["Importe sin clasificar"] == "$30,000.00"
+    assert metricas["Importe sin clasificar"] == "$30.000,00"
 
 
 def test_boton_rehomologar_actualiza_concepto(base_con_conceptos_sin_clasificar, monkeypatch):
@@ -82,7 +82,9 @@ def test_boton_rehomologar_actualiza_concepto(base_con_conceptos_sin_clasificar,
 
     at = _app()
     at.run()
-    at.button[0].click().run()
+    at.button[0].click().run()  # previsualizar
+    at.checkbox[0].check().run()
+    at.button[1].click().run()  # aplicar confirmado
 
     con = conectar()
     concepto = con.execute("SELECT concepto_normalizado FROM conceptos").fetchone()[0]

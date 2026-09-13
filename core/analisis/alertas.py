@@ -17,6 +17,7 @@ import yaml
 
 from core.analisis.variacion import DescomposicionVariacion
 from core.extraccion.esquema import FacturaExtraida
+from core.formato import pesos_ars
 
 RUTA_ALERTAS = Path(__file__).resolve().parents[2] / "data" / "alertas.yaml"
 
@@ -49,7 +50,7 @@ def alertas_por_recargos(factura: FacturaExtraida) -> list[Alerta]:
         Alerta(
             tipo="recargo",
             severidad="alta",
-            mensaje=f'Recargo "{r.nombre}" por ${r.importe:,.2f}',
+            mensaje=f'Recargo "{r.nombre}" por {pesos_ars(r.importe)}',
         )
         for r in factura.recargos
     ]
@@ -66,7 +67,7 @@ def alertas_por_concepto_nuevo_o_desaparecido(
                 Alerta(
                     tipo="concepto_nuevo",
                     severidad="media",
-                    mensaje=f'Concepto nuevo: "{d.concepto}" (${d.total_1:,.2f})',
+                    mensaje=f'Concepto nuevo: "{d.concepto}" ({pesos_ars(d.total_1)})',
                     concepto=d.concepto,
                 )
             )
@@ -268,4 +269,7 @@ def ordenar_por_severidad(alertas: list[Alerta]) -> list[Alerta]:
     `generar_alertas()` las fue componiendo. Estable: dentro de la misma
     severidad, conserva el orden relativo original (`sorted` de Python es
     estable)."""
-    return sorted(alertas, key=lambda a: _ORDEN_SEVERIDAD.get(a.severidad, 99))
+    desconocidas = {a.severidad for a in alertas} - set(_ORDEN_SEVERIDAD)
+    if desconocidas:
+        raise ValueError(f"Severidad desconocida: {', '.join(sorted(desconocidas))}")
+    return sorted(alertas, key=lambda a: _ORDEN_SEVERIDAD[a.severidad])

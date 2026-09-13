@@ -97,7 +97,14 @@ def _acumular(filas: list[FilaConcepto]) -> dict[tuple[str, str | None], list[fl
     return acumulado
 
 
-def agregar_conceptos(filas: list[FilaConcepto]) -> dict[str, tuple[float, float]]:
+def acumular_conceptos(filas: list[FilaConcepto]) -> dict[tuple[str, str | None], list[float]]:
+    """Acumulado reutilizable para todos los resúmenes de un mismo período."""
+    return _acumular(filas)
+
+
+def agregar_conceptos(
+    filas: list[FilaConcepto], *, acumulado: dict[tuple[str, str | None], list[float]] | None = None
+) -> dict[str, tuple[float, float]]:
     """Suma cantidad e importe de todas las filas con el mismo concepto
     normalizado Y LA MISMA UNIDAD (puede haber más de una factura del mismo
     servicio en un período, ej. dos líneas separadas), y calcula el precio
@@ -107,9 +114,9 @@ def agregar_conceptos(filas: list[FilaConcepto]) -> dict[str, tuple[float, float
     si todas las filas agregadas comparten unidad -- por eso se agrupa por
     (concepto, unidad), no solo por concepto (ver `_clave`).
 
-    Las filas sin homologar (`concepto_normalizado is None`) se agrupan bajo
-    su propia descripción tal cual, para no perderlas del análisis -- van a
-    aparecer como "concepto nuevo" en las alertas, que es la señal correcta.
+    Las filas sin homologar usan una clave estable derivada de la descripción
+    sin período (`quitar_periodo`), nunca la descripción cruda. Así una misma
+    línea facturada en meses distintos no se parte en conceptos fantasma.
 
     Caso borde -- cantidad neta cero con importe distinto de cero (una nota
     de crédito o un ajuste que cancela la cantidad de un concepto dentro del
@@ -126,7 +133,9 @@ def agregar_conceptos(filas: list[FilaConcepto]) -> dict[str, tuple[float, float
     `(0.0, 0.0)`.
     """
     resultado: dict[str, tuple[float, float]] = {}
-    for (concepto, unidad), (cantidad_total, importe_total) in _acumular(filas).items():
+    for (concepto, unidad), (cantidad_total, importe_total) in (
+        acumulado or _acumular(filas)
+    ).items():
         if cantidad_total == 0 and importe_total != 0:
             cantidad_total, precio_unitario = 1.0, importe_total
         elif cantidad_total == 0:
@@ -137,7 +146,9 @@ def agregar_conceptos(filas: list[FilaConcepto]) -> dict[str, tuple[float, float
     return resultado
 
 
-def conceptos_con_cantidad_neta_cero(filas: list[FilaConcepto]) -> list[str]:
+def conceptos_con_cantidad_neta_cero(
+    filas: list[FilaConcepto], *, acumulado: dict[tuple[str, str | None], list[float]] | None = None
+) -> list[str]:
     """Etiquetas de los conceptos (ver `_etiqueta`) cuya cantidad total dio
     cero pero cuyo importe total NO es cero -- típico de una nota de
     crédito o un ajuste dentro del mismo período. Es una anomalía real que
@@ -145,12 +156,16 @@ def conceptos_con_cantidad_neta_cero(filas: list[FilaConcepto]) -> list[str]:
     docstring de `agregar_conceptos`, hallazgo A-20)."""
     return [
         _etiqueta(concepto, unidad)
-        for (concepto, unidad), (cantidad_total, importe_total) in _acumular(filas).items()
+        for (concepto, unidad), (cantidad_total, importe_total) in (
+            acumulado or _acumular(filas)
+        ).items()
         if cantidad_total == 0 and importe_total != 0
     ]
 
 
-def conceptos_con_cantidad_neta_negativa(filas: list[FilaConcepto]) -> list[str]:
+def conceptos_con_cantidad_neta_negativa(
+    filas: list[FilaConcepto], *, acumulado: dict[tuple[str, str | None], list[float]] | None = None
+) -> list[str]:
     """Etiquetas de los conceptos cuya cantidad total dio NEGATIVA (una nota
     de crédito mayor que el cargo original del mismo período, ej. `+4/
     $10.000` y `-6/-$15.000` da cantidad neta `-2`). La identidad
@@ -164,6 +179,8 @@ def conceptos_con_cantidad_neta_negativa(filas: list[FilaConcepto]) -> list[str]
     anomalía en silencio."""
     return [
         _etiqueta(concepto, unidad)
-        for (concepto, unidad), (cantidad_total, _importe_total) in _acumular(filas).items()
+        for (concepto, unidad), (cantidad_total, _importe_total) in (
+            acumulado or _acumular(filas)
+        ).items()
         if cantidad_total < 0
     ]

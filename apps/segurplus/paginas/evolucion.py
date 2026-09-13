@@ -29,6 +29,7 @@ from core.almacenamiento import (
 from core.analisis.agregacion import (
     PREFIJO_SIN_HOMOLOGAR,
     FilaConcepto,
+    acumular_conceptos,
     agregar_conceptos,
     conceptos_con_cantidad_neta_cero,
     conceptos_con_cantidad_neta_negativa,
@@ -47,6 +48,7 @@ from core.analisis.variacion import (
     top_conceptos_por_variacion,
 )
 from core.extraccion.esquema import FacturaExtraida, Recargo
+from core.formato import pesos_ars
 from core.macro.ipc import leer_ipc
 from core.reportes.excel import generar_reporte_excel
 
@@ -96,11 +98,21 @@ if len(periodos) < 2:
     con.close()
     st.stop()
 
-alertas_periodo_faltante = alertas_por_periodo_faltante([date.fromisoformat(p) for p in periodos])
+try:
+    fechas_periodos = [date.fromisoformat(p) for p in periodos]
+except ValueError:
+    fechas_periodos = []
+    st.caption(
+        "No se pudieron calcular alertas de período: hay una fecha guardada con formato inválido."
+    )
+alertas_periodo_faltante = alertas_por_periodo_faltante(fechas_periodos) if fechas_periodos else []
 
 with st.sidebar:
-    periodo_0 = st.selectbox("Período base", periodos, index=max(0, len(periodos) - 2))
-    periodo_1 = st.selectbox("Período de comparación", periodos, index=len(periodos) - 1)
+    periodo_0 = st.selectbox("Período base", periodos[:-1], index=len(periodos) - 2)
+    periodos_posteriores = [p for p in periodos if p > periodo_0]
+    periodo_1 = st.selectbox(
+        "Período de comparación", periodos_posteriores, index=len(periodos_posteriores) - 1
+    )
 
 
 def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
@@ -115,8 +127,10 @@ def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
 
 filas_0 = _filas_del_periodo(periodo_0)
 filas_1 = _filas_del_periodo(periodo_1)
-agregado_0 = agregar_conceptos(filas_0)
-agregado_1 = agregar_conceptos(filas_1)
+acumulado_0 = acumular_conceptos(filas_0)
+acumulado_1 = acumular_conceptos(filas_1)
+agregado_0 = agregar_conceptos(filas_0, acumulado=acumulado_0)
+agregado_1 = agregar_conceptos(filas_1, acumulado=acumulado_1)
 descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
 
 if any(d.concepto.startswith(PREFIJO_SIN_HOMOLOGAR) for d in descomposiciones):
@@ -140,12 +154,12 @@ if any(d.concepto.startswith(PREFIJO_SIN_HOMOLOGAR) for d in descomposiciones):
 # alertas_por_salto_de_cantidad invertiría el signo del mensaje si se la
 # deja competir con un período de cantidad positiva -- se excluye de esa
 # alerta más abajo, igual que las de cantidad cero.
-anomalos_0 = conceptos_con_cantidad_neta_cero(filas_0) + conceptos_con_cantidad_neta_negativa(
-    filas_0
-)
-anomalos_1 = conceptos_con_cantidad_neta_cero(filas_1) + conceptos_con_cantidad_neta_negativa(
-    filas_1
-)
+anomalos_0 = conceptos_con_cantidad_neta_cero(
+    filas_0, acumulado=acumulado_0
+) + conceptos_con_cantidad_neta_negativa(filas_0, acumulado=acumulado_0)
+anomalos_1 = conceptos_con_cantidad_neta_cero(
+    filas_1, acumulado=acumulado_1
+) + conceptos_con_cantidad_neta_negativa(filas_1, acumulado=acumulado_1)
 if anomalos_0 or anomalos_1:
     etiquetas = sorted({etiqueta_legible(a) for a in anomalos_0 + anomalos_1})
     st.warning(
@@ -229,11 +243,11 @@ alertas_totales = (
 with st.container(border=True):
     st.subheader(f"{servicio}: {periodo_0} → {periodo_1}")
     col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("Total período base", f"${total_0:,.2f}")
+    col_a.metric("Total período base", pesos_ars(total_0))
     col_b.metric(
         "Total período comparado",
-        f"${total_1:,.2f}",
-        delta=f"{total_1 - total_0:+,.2f} (variación nominal)",
+        pesos_ars(total_1),
+        delta=f"{pesos_ars(total_1 - total_0, signo=True)} (variación nominal)",
     )
     if vr is not None:
         col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
@@ -244,21 +258,29 @@ with st.container(border=True):
     # mirando el gráfico apilado concepto por concepto.
     tipo_dominante, proporcion_dominante = efecto_dominante(descomposiciones)
     variacion_total_pesos = total_1 - total_0
+    cambio_formateado = pesos_ars(variacion_total_pesos, signo=True)
     if tipo_dominante == "precio":
         st.caption(
-            f"El cambio de ${variacion_total_pesos:+,.2f} fue mayormente por **PRECIO** "
+            f"El cambio de {cambio_formateado} fue mayormente por **PRECIO** "
             f"({abs(proporcion_dominante):.0%})."
         )
     elif tipo_dominante == "cantidad":
         st.caption(
-            f"El cambio de ${variacion_total_pesos:+,.2f} fue mayormente por **CANTIDAD** "
+            f"El cambio de {cambio_formateado} fue mayormente por **CANTIDAD** "
             f"({abs(proporcion_dominante):.0%})."
         )
     elif tipo_dominante == "mixto":
         st.caption(
-            f"El cambio de ${variacion_total_pesos:+,.2f} fue una **mezcla** de cantidad y "
+            f"El cambio de {cambio_formateado} fue una **mezcla** de cantidad y "
             "precio -- ningún efecto explica la mayor parte por sí solo."
         )
+    elif tipo_dominante == "compensado":
+        st.caption(
+            "Los efectos de precio, cantidad y/o cruce se **compensan**; "
+            "no se muestra un porcentaje neto engañoso."
+        )
+    else:
+        st.caption("No hubo variación nominal entre los períodos seleccionados.")
 
 tab_descomposicion, tab_serie, tab_alertas, tab_detalle = st.tabs(
     ["Descomposición", "Serie histórica", "Alertas", "Detalle"]
@@ -358,21 +380,26 @@ with tab_detalle:
 
 cuarentena_actual = con.execute("SELECT ruta_pdf, motivos FROM cuarentena").fetchall()
 
-buffer_excel = BytesIO()
-generar_reporte_excel(
-    servicio=servicio,
-    periodo_0=periodo_0,
-    periodo_1=periodo_1,
-    descomposiciones=descomposiciones,
-    alertas=alertas_totales,
-    cuarentena=cuarentena_actual,
-    ruta_salida=buffer_excel,
-)
-st.download_button(
-    "⬇️ Descargar reporte en Excel",
-    data=buffer_excel,
-    file_name=f"segurplus_{servicio}_{periodo_0}_{periodo_1}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+clave_excel = (servicio, periodo_0, periodo_1, len(descomposiciones), len(alertas_totales))
+if st.button("Preparar reporte en Excel"):
+    buffer_excel = BytesIO()
+    generar_reporte_excel(
+        servicio=servicio,
+        periodo_0=periodo_0,
+        periodo_1=periodo_1,
+        descomposiciones=descomposiciones,
+        alertas=alertas_totales,
+        cuarentena=cuarentena_actual,
+        ruta_salida=buffer_excel,
+    )
+    st.session_state["excel_preparado"] = (clave_excel, buffer_excel.getvalue())
+excel_preparado = st.session_state.get("excel_preparado")
+if excel_preparado and excel_preparado[0] == clave_excel:
+    st.download_button(
+        "⬇️ Descargar reporte en Excel",
+        data=excel_preparado[1],
+        file_name=f"segurplus_{servicio}_{periodo_0}_{periodo_1}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 con.close()

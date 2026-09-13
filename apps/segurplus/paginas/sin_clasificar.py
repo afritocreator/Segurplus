@@ -1,116 +1,196 @@
-"""Página "Conceptos sin clasificar": el circuito de calibración de la
-homologación (docs/auditoria-2026-09.md, Bloque 9 del plan de
-correcciones). Muestra qué descripciones de factura NO homologaron a
-ningún concepto normalizado, ordenadas por cuánta plata dejan sin
-clasificar -- el alias que más conviene agregar a `data/conceptos/*.yaml`
-es el que más arriba aparece acá.
-
-Cáscara fina: la consulta vive en `core.almacenamiento.conceptos_sin_
-clasificar`, el recálculo en `core.rehomologacion` -- ningún cálculo nuevo
-vive en este archivo.
-"""
+"""Pantalla de calibración; toda escritura se previsualiza antes de aplicar."""
 
 from __future__ import annotations
 
+import hashlib
+from datetime import date
+
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 from apps.segurplus.estilo import DORADO, aplicar_estilo
-from core.almacenamiento import conceptos_sin_clasificar, conectar
+from core.almacenamiento import (
+    conceptos_sin_clasificar,
+    conectar,
+    filas_sin_clasificar_por_periodo,
+    importes_por_periodo,
+)
+from core.analisis.calibracion import resumir_sin_clasificar, total_en_pesos_constantes
 from core.analisis.diccionario import cargar_diccionario
-from core.analisis.homologacion import quitar_periodo, umbral_coincidencia
+from core.analisis.homologacion import margen_cerca_del_umbral, quitar_periodo, umbral_coincidencia
+from core.formato import pesos_ars
+from core.macro.ipc import leer_ipc
 from core.rehomologacion import aplicar_cambios, leer_filas_a_rehomologar, recalcular
+
+
+def _firma_diccionarios(diccionarios: dict[str, dict[str, list[str]]]) -> str:
+    """Huella estable: evita aplicar una previsualización contra YAML cambiado."""
+    partes = []
+    for servicio, conceptos in sorted(diccionarios.items()):
+        partes.append(servicio)
+        for concepto, aliases in sorted(conceptos.items()):
+            partes.append(f"{concepto}:{'|'.join(sorted(aliases))}")
+    return hashlib.sha256("\n".join(partes).encode()).hexdigest()
+
 
 st.title("🏷️ Conceptos sin clasificar")
 st.caption(
-    "Descripciones de factura que ningún alias de data/conceptos/*.yaml reconoció todavía "
-    "-- ordenadas por importe, porque el alias que más conviene agregar es el que más "
-    "plata deja sin clasificar."
+    "Priorizá aliases por importe. Los scores sin medición se separan para no sesgar el histograma."
 )
 
 con = conectar()
-filas = conceptos_sin_clasificar(con)
+try:
+    filas = conceptos_sin_clasificar(con)
+    if not filas:
+        st.success("No hay conceptos sin clasificar.")
+        st.stop()
 
-if not filas:
-    st.success("No hay conceptos sin clasificar.")
-    con.close()
-    st.stop()
+    umbral = umbral_coincidencia()
+    margen = margen_cerca_del_umbral()
+    importe_total = sum(importe for _s, _d, _sc, importe, _v, _u in filas)
+    porcentaje_sin_clasificar = None
+    try:
+        filas_reales = [
+            (servicio, descripcion, score, importe, date.fromisoformat(periodo))
+            for servicio, descripcion, score, importe, periodo in filas_sin_clasificar_por_periodo(
+                con
+            )
+        ]
+        fecha_base = max(fila[4] for fila in filas_reales)
+        df_ipc = leer_ipc()
+        resumen_real, importe_total = resumir_sin_clasificar(
+            filas_reales, fecha_base=fecha_base, df_ipc=df_ipc
+        )
+        total_real = total_en_pesos_constantes(
+            [
+                (importe, date.fromisoformat(periodo))
+                for importe, periodo in importes_por_periodo(con)
+            ],
+            fecha_base=fecha_base,
+            df_ipc=df_ipc,
+        )
+        porcentaje_sin_clasificar = importe_total / total_real if total_real else None
+        filas = [
+            (
+                r.servicio,
+                r.descripcion,
+                r.score,
+                r.importe_real,
+                r.veces,
+                r.ultimo_periodo.isoformat(),
+            )
+            for r in resumen_real
+        ]
+    except (ValueError, requests.exceptions.RequestException):
+        st.warning(
+            "No hay IPC válido para priorizar entre períodos; los importes se muestran nominales."
+        )
+    con_score = [score for _s, _d, score, _i, _v, _u in filas if score is not None]
+    sin_score = len(filas) - len(con_score)
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Importe sin clasificar", pesos_ars(importe_total))
+    col_b.metric("Conceptos distintos", len(filas))
+    col_c.metric(
+        "% del total" if porcentaje_sin_clasificar is not None else "Sin score medido",
+        f"{porcentaje_sin_clasificar:.1%}" if porcentaje_sin_clasificar is not None else sin_score,
+    )
+    if sin_score:
+        st.info(
+            "Hay conceptos de cargas anteriores sin score: "
+            "re-homologalos antes de calibrar el umbral."
+        )
 
-umbral = umbral_coincidencia()
-importe_total_sin_clasificar = sum(importe for _s, _d, _sc, importe, _v, _u in filas)
+    st.dataframe(
+        [
+            {
+                "Servicio": servicio or "(sin servicio)",
+                "Descripción": descripcion,
+                "Score": round(score, 3) if score is not None else "sin medición",
+                "¿Le falta poco?": "⚪ falta medir"
+                if score is None
+                else "🟡 agregá un alias"
+                if score >= umbral - margen
+                else "⚪ concepto nuevo",
+                "Importe total": pesos_ars(importe),
+                "Veces": veces,
+                "Último período": ultimo_periodo,
+            }
+            for servicio, descripcion, score, importe, veces, ultimo_periodo in filas
+        ],
+        width="stretch",
+    )
 
-col_a, col_b = st.columns(2)
-col_a.metric("Importe sin clasificar", f"${importe_total_sin_clasificar:,.2f}")
-col_b.metric("Conceptos distintos", len(filas))
+    servicios_presentes = sorted({s for s, *_ in filas if s})
+    if servicios_presentes:
+        st.subheader("Snippet para pegar en data/conceptos/<servicio>.yaml")
+        servicio_elegido = st.selectbox("Servicio", servicios_presentes)
+        aliases = sorted({quitar_periodo(d) for s, d, *_ in filas if s == servicio_elegido})
+        st.code("concepto_nuevo:\n" + "\n".join(f"  - {a}" for a in aliases), language="yaml")
 
-st.dataframe(
-    [
-        {
-            "Servicio": servicio or "(sin servicio)",
-            "Descripción": descripcion,
-            "Score": round(score, 3),
-            "¿Le falta poco?": "🟡 agregá un alias"
-            if score >= umbral - 0.15
-            else "⚪ concepto nuevo",
-            "Importe total": importe,
-            "Veces": veces,
-            "Último período": ultimo_periodo,
-        }
-        for servicio, descripcion, score, importe, veces, ultimo_periodo in filas
-    ],
-    width="stretch",
-)
+    st.subheader("Distribución de scores medidos")
+    fig = go.Figure()
+    fig.add_histogram(x=con_score, name="Score")
+    fig.add_vline(
+        x=umbral, line_dash="dash", line_color=DORADO, annotation_text=f"Umbral ({umbral:.2f})"
+    )
+    fig.update_layout(xaxis_title="Score de similitud", yaxis_title="Cantidad de conceptos")
+    st.plotly_chart(aplicar_estilo(fig, formato_moneda=False), width="stretch")
 
-st.subheader("Snippet para pegar en data/conceptos/<servicio>.yaml")
-servicios_presentes = sorted({s for s, *_ in filas if s})
-servicio_elegido = st.selectbox("Servicio", servicios_presentes) if servicios_presentes else None
-if servicio_elegido:
-    descripciones_del_servicio = [d for s, d, *_ in filas if s == servicio_elegido]
-    alias_sugeridos = sorted({quitar_periodo(d) for d in descripciones_del_servicio})
-    snippet = "concepto_nuevo:\n" + "\n".join(f"  - {a}" for a in alias_sugeridos)
-    st.code(snippet, language="yaml")
+    st.divider()
+    st.subheader("Re-homologar ahora")
+    if st.button("Previsualizar cambios", type="primary"):
+        filas_rehomologar = leer_filas_a_rehomologar(con)
+        servicios = {f.servicio for f in filas_rehomologar}
+        if None in servicios:
+            st.error("No se puede re-homologar: hay filas sin servicio asignado.")
+        else:
+            diccionarios = {s: cargar_diccionario(s) for s in servicios}
+            inseguros = sorted(s for s, d in diccionarios.items() if not d)
+            if inseguros:
+                st.error(
+                    f"No se puede re-homologar: diccionario vacío para {', '.join(inseguros)}."
+                )
+            else:
+                st.session_state["rehomologacion_preview"] = recalcular(
+                    filas_rehomologar, diccionarios, umbral=umbral
+                )
+                st.session_state["rehomologacion_firma"] = _firma_diccionarios(diccionarios)
 
-st.subheader("Distribución de scores")
-fig = go.Figure()
-fig.add_histogram(x=[score for _s, _d, score, _i, _v, _u in filas], name="Score")
-fig.add_vline(
-    x=umbral, line_dash="dash", line_color=DORADO, annotation_text=f"Umbral ({umbral:.2f})"
-)
-fig.update_layout(xaxis_title="Score de similitud", yaxis_title="Cantidad de conceptos")
-aplicar_estilo(fig, formato_moneda=False)
-st.plotly_chart(fig, width="stretch")
-
-st.divider()
-st.subheader("Re-homologar ahora")
-st.caption(
-    "Recalcula la homologación de TODO lo ya guardado con el diccionario actual -- sin "
-    "llamar a Gemini ni gastar la cuota de llamadas por hora."
-)
-if st.button("Re-homologar ahora", type="primary"):
-    filas_a_rehomologar = leer_filas_a_rehomologar(con)
-    servicios = {f.servicio for f in filas_a_rehomologar}
-    diccionarios = {s: cargar_diccionario(s) for s in servicios}
-    cambios = recalcular(filas_a_rehomologar, diccionarios)
-    cambiados = [c for c in cambios if c.tipo != "sin_cambio"]
-
-    if not cambiados:
-        st.info("Nada cambió -- el diccionario actual da los mismos resultados que antes.")
-    else:
-        aplicar_cambios(con, cambios)
+    preview = st.session_state.get("rehomologacion_preview")
+    if preview is not None:
+        cambiados = [c for c in preview if c.tipo != "sin_cambio"]
         regresiones = [c for c in cambiados if c.tipo == "regresion"]
+        st.info(f"Previsualización: {len(preview)} filas evaluadas; {len(cambiados)} cambios.")
+        for c in cambiados:
+            empate = (
+                f" (empate: {', '.join(c.candidatos_empatados)})" if c.candidatos_empatados else ""
+            )
+            antes = c.concepto_antes or "(sin clasificar)"
+            despues = c.concepto_despues or "(sin clasificar)"
+            st.write(f"- **{c.descripcion}**: {antes} → {despues}{empate}")
         if regresiones:
             st.warning(
-                f"{len(regresiones)} concepto(s) que antes homologaban ahora NO lo hacen "
-                "-- revisar si un alias nuevo le robó el match a otro concepto:"
+                f"Hay {len(regresiones)} regresión(es). "
+                "Confirmá que fueron intencionales antes de aplicar."
             )
-            for c in regresiones:
-                st.write(f"- **{c.descripcion}**: {c.concepto_antes} → sin clasificar")
-        nuevos_o_cambiados = [c for c in cambiados if c.tipo in ("nuevo", "cambio")]
-        if nuevos_o_cambiados:
-            st.success(f"{len(nuevos_o_cambiados)} concepto(s) actualizados:")
-            for c in nuevos_o_cambiados:
-                antes = c.concepto_antes or "(sin clasificar)"
-                st.write(f"- **{c.descripcion}**: {antes} → {c.concepto_despues}")
-        st.rerun()
-
-con.close()
+        confirmar = st.checkbox("Entiendo que esta acción modifica la base de facturas.")
+        if st.button("Aplicar cambios confirmados", disabled=not confirmar):
+            servicios_actuales = {f.servicio for f in leer_filas_a_rehomologar(con)}
+            diccionarios_actuales = {s: cargar_diccionario(s) for s in servicios_actuales if s}
+            if _firma_diccionarios(diccionarios_actuales) != st.session_state.get(
+                "rehomologacion_firma"
+            ):
+                st.error("El diccionario cambió desde la previsualización. Volvé a previsualizar.")
+                del st.session_state["rehomologacion_preview"]
+            else:
+                tocadas = aplicar_cambios(con, preview)
+                st.session_state["rehomologacion_resultado"] = (
+                    f"Aplicado: {tocadas} fila(s) actualizada(s)."
+                )
+                del st.session_state["rehomologacion_preview"]
+                st.rerun()
+    if resultado := st.session_state.get("rehomologacion_resultado"):
+        st.success(resultado)
+finally:
+    con.close()

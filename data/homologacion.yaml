@@ -21,3 +21,6 @@
 # puede subir o bajar con evidencia en vez de a ojo. Ver también
 # core/rehomologacion.py y "Cómo calibrar la homologación" en README.md.
 umbral_coincidencia: 0.60
+
+# Distancia debajo del umbral que la pantalla usa para sugerir revisar aliases.
+margen_cerca_del_umbral: 0.15

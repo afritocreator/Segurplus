@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.almacenamiento import RUTA_BASE, conectar  # noqa: E402
 from core.analisis.diccionario import cargar_diccionario  # noqa: E402
+from core.analisis.homologacion import umbral_coincidencia  # noqa: E402
 from core.rehomologacion import (  # noqa: E402
     aplicar_cambios,
     leer_filas_a_rehomologar,
@@ -68,9 +69,19 @@ def main() -> int:
             return 0
 
         servicios = {f.servicio for f in filas}
+        if None in servicios:
+            print("No se re-homologa: hay filas sin servicio asignado.", file=sys.stderr)
+            return 2
         diccionarios = {s: cargar_diccionario(s) for s in servicios}
+        inseguros = sorted(s for s, d in diccionarios.items() if not d)
+        if inseguros:
+            print(
+                f"No se re-homologa: diccionario vacío para {', '.join(inseguros)}.",
+                file=sys.stderr,
+            )
+            return 2
 
-        cambios = recalcular(filas, diccionarios)
+        cambios = recalcular(filas, diccionarios, umbral=umbral_coincidencia())
         conteo = Counter(c.tipo for c in cambios)
         print(f"Filas evaluadas: {len(cambios)}")
         print(f"  nuevo:      {conteo['nuevo']}")
@@ -85,7 +96,8 @@ def main() -> int:
             for c in regresiones:
                 print(
                     f"  {c.descripcion!r}: {c.concepto_antes} "
-                    f"({c.score_antes:.3f}) -> sin clasificar ({c.score_despues:.3f})"
+                    f"({f'{c.score_antes:.3f}' if c.score_antes is not None else 'sin medición'}) "
+                    f"-> sin clasificar ({c.score_despues:.3f})"
                 )
             print()
 

@@ -103,7 +103,7 @@ def test_recalcular_tipo_cambio():
     assert cambios[0].concepto_despues == "consumo_datos"
 
 
-def test_recalcular_servicio_sin_diccionario_da_diccionario_vacio():
+def test_recalcular_servicio_sin_diccionario_falla_seguro():
     fila = FilaARehomologar(
         hash_pdf="h1",
         orden=0,
@@ -112,9 +112,8 @@ def test_recalcular_servicio_sin_diccionario_da_diccionario_vacio():
         concepto_actual=None,
         score_actual=None,
     )
-    cambios = recalcular([fila], {"telefonia": DICCIONARIO})
-    assert cambios[0].concepto_despues is None
-    assert cambios[0].score_despues == 0.0
+    with pytest.raises(ValueError, match="Diccionario inseguro"):
+        recalcular([fila], {"telefonia": DICCIONARIO})
 
 
 # --- contra DuckDB real (temporal) -----------------------------------------

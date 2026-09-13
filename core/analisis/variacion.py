@@ -144,7 +144,7 @@ def efecto_dominante(
 
         Σefecto_cantidad + Σefecto_precio + Σefecto_cruzado == variación total
 
-    Devuelve `("cantidad" | "precio" | "mixto" | "sin_variacion",
+    Devuelve `("cantidad" | "precio" | "mixto" | "compensado" | "sin_variacion",
     proporción)`, donde `proporción` es la fracción de la variación total
     que explica ese efecto (`Σefecto_precio / variación_total` para
     "precio", etc.) -- "mixto" cuando ningún efecto solo llega al umbral
@@ -158,6 +158,12 @@ def efecto_dominante(
 
     if variacion_total == 0:
         return "sin_variacion", 0.0
+
+    efectos = (suma_cantidad, suma_precio, suma_cruzado)
+    if any(a * b < 0 for i, a in enumerate(efectos) for b in efectos[i + 1 :]):
+        # Dividir por el cambio neto cuando los efectos se compensan produce
+        # porcentajes mayores a 100%, que no explican nada al usuario.
+        return "compensado", 0.0
 
     proporcion_cantidad = suma_cantidad / variacion_total
     proporcion_precio = suma_precio / variacion_total

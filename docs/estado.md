@@ -92,6 +92,12 @@ una sola pantalla larga.
   puede mostrar un porcentaje sin sentido cuando los efectos de cantidad y precio tienen
   signos opuestos (A-30). Los dos, más A-31/A-33/A-40, conviene resolverlos antes de cargar
   la primera factura real.
+- **Correcciones A-29 a A-48**: el período abreviado reconoce también `may`
+  y `sept`; el veredicto no calcula porcentajes cuando los efectos se
+  compensan; la re-homologación exige previsualización y confirmación, usa
+  transacción y bloquea diccionarios inseguros; los scores no medidos se
+  distinguen en la pantalla de calibración. A-26 y A-27 siguen diferidos
+  hasta contar con facturas reales.
 - **Persistencia en la nube**: el disco de Streamlit Community Cloud gratuito no es
   durable entre reinicios (ver ADR-002). No es grave para probar, sí para depender de
   esto en el día a día — a resolver cuando se decida usarlo en producción.

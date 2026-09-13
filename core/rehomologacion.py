@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 import duckdb
 
-from core.analisis.homologacion import homologar_concepto
+from core.analisis.homologacion import homologar_concepto, umbral_coincidencia
 
 
 @dataclass
@@ -48,6 +48,7 @@ class CambioHomologacion:
     score_antes: float | None
     concepto_despues: str | None
     score_despues: float
+    candidatos_empatados: tuple[str, ...] = ()
 
     @property
     def tipo(self) -> str:
@@ -70,6 +71,8 @@ class CambioHomologacion:
 def recalcular(
     filas: list[FilaARehomologar],
     diccionarios_por_servicio: dict[str | None, dict[str, list[str]]],
+    *,
+    umbral: float | None = None,
 ) -> list[CambioHomologacion]:
     """Puro -- no toca DuckDB ni el filesystem, los diccionarios ya vienen
     cargados. `diccionarios_por_servicio`: mapea cada `servicio` (o `None`)
@@ -77,10 +80,13 @@ def recalcular(
     carga UNA VEZ por servicio afuera de acá, no una vez por fila (con
     decenas de conceptos por servicio, releer el YAML por cada uno sería
     decenas de lecturas de disco redundantes)."""
+    umbral = umbral if umbral is not None else umbral_coincidencia()
     cambios = []
     for fila in filas:
-        diccionario = diccionarios_por_servicio.get(fila.servicio, {})
-        concepto, score = homologar_concepto(fila.descripcion, diccionario)
+        if fila.servicio is None or not diccionarios_por_servicio.get(fila.servicio):
+            raise ValueError(f"Diccionario inseguro o servicio ausente: {fila.servicio!r}")
+        diccionario = diccionarios_por_servicio[fila.servicio]
+        resultado = homologar_concepto(fila.descripcion, diccionario, umbral=umbral)
         cambios.append(
             CambioHomologacion(
                 hash_pdf=fila.hash_pdf,
@@ -89,8 +95,9 @@ def recalcular(
                 servicio=fila.servicio,
                 concepto_antes=fila.concepto_actual,
                 score_antes=fila.score_actual,
-                concepto_despues=concepto,
-                score_despues=score,
+                concepto_despues=resultado.concepto,
+                score_despues=resultado.score,
+                candidatos_empatados=resultado.candidatos_empatados,
             )
         )
     return cambios
@@ -127,14 +134,20 @@ def leer_filas_a_rehomologar(
 
 
 def aplicar_cambios(con: duckdb.DuckDBPyConnection, cambios: list[CambioHomologacion]) -> int:
-    """Escribe `concepto_normalizado` y `score_homologacion` para cada
-    cambio, identificado por `(hash_pdf, orden)`. Devuelve cuántas filas se
-    tocaron. Idempotente: aplicar la misma lista dos veces deja el mismo
-    resultado."""
-    for c in cambios:
-        con.execute(
-            "UPDATE conceptos SET concepto_normalizado = ?, score_homologacion = ? "
-            "WHERE hash_pdf = ? AND orden = ?",
-            [c.concepto_despues, c.score_despues, c.hash_pdf, c.orden],
-        )
-    return len(cambios)
+    """Aplica solo cambios semánticos, en una única transacción."""
+    tocados = [c for c in cambios if c.tipo != "sin_cambio"]
+    if not tocados:
+        return 0
+    con.execute("BEGIN")
+    try:
+        for c in tocados:
+            con.execute(
+                "UPDATE conceptos SET concepto_normalizado = ?, score_homologacion = ? "
+                "WHERE hash_pdf = ? AND orden = ?",
+                [c.concepto_despues, c.score_despues, c.hash_pdf, c.orden],
+            )
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    return len(tocados)

@@ -84,8 +84,8 @@ def test_pagina_muestra_totales_de_ambos_periodos(base_con_dos_periodos):
     at = _app()
     at.run()
     metricas = {m.label: m.value for m in at.metric}
-    assert metricas["Total período base"] == "$10,000.00"
-    assert metricas["Total período comparado"] == "$11,200.00"
+    assert metricas["Total período base"] == "$10.000,00"
+    assert metricas["Total período comparado"] == "$11.200,00"
 
 
 def test_sin_facturas_muestra_mensaje_informativo(tmp_path, monkeypatch):

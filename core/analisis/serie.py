@@ -20,6 +20,7 @@ from datetime import date
 import polars as pl
 
 from core.deflactor import a_pesos_constantes
+from core.macro.ipc import leer_ipc
 
 
 @dataclass
@@ -40,6 +41,7 @@ def serie_nominal_y_real(
 
     En el punto que coincide con `fecha_base`, `total_real == total_nominal`
     exactamente (el coeficiente de ajuste contra sí mismo es 1)."""
+    df_ipc = df_ipc if df_ipc is not None else leer_ipc()
     return [
         PuntoSerie(
             periodo=periodo,
