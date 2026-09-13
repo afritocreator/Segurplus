@@ -44,6 +44,30 @@ ruff check .
 streamlit run streamlit_app.py
 ```
 
+## Cómo calibrar la homologación de conceptos
+
+Cada proveedor describe sus conceptos distinto ("Abono Línea Móvil", "Cargo fijo móvil",
+"Servicio de telefonía Agosto 2026"...). `core/analisis/homologacion.py` los mapea a un
+concepto normalizado (`abono_movil`) contra el diccionario de `data/conceptos/*.yaml`. Con
+facturas reales, siempre va a faltar algún alias. El circuito para completarlo:
+
+1. Cargá las facturas del proveedor nuevo (página **Cargar facturas**).
+2. Abrí la página **Sin clasificar** del tablero: muestra qué descripciones no homologaron
+   a ningún concepto, ordenadas por cuánta plata dejan sin clasificar -- el alias que más
+   conviene agregar es el que aparece primero. Trae un snippet YAML listo para pegar y un
+   histograma de scores con el umbral marcado, para calibrar `data/homologacion.yaml` con
+   evidencia en vez de a ciegas.
+3. Agregá el alias que falte a `data/conceptos/<servicio>.yaml`.
+4. Volvé a "Sin clasificar" y apretá **"Re-homologar ahora"** -- recalcula la homologación
+   de TODO lo ya guardado con el diccionario nuevo, sin volver a llamar a Gemini ni gastar
+   la cuota de `MAX_LLAMADAS_POR_HORA`. Lo mismo se puede hacer desde la terminal con
+   `python scripts/rehomologar.py --aplicar` (por defecto corre en modo dry-run, sin
+   escribir nada -- ver `python scripts/rehomologar.py --help`).
+5. Repetir con cada proveedor nuevo. Después de tocar `data/conceptos/*.yaml`, correr
+   `pytest tests/analisis/test_homologacion.py` -- hay un test que fija el score exacto de
+   un caso límite conocido (A-3, `docs/auditoria-2026-09.md`) y avisa si un alias nuevo le
+   robó el match a otro concepto.
+
 ## Publicar en Streamlit Community Cloud (gratis, accesible desde cualquier compu)
 
 No usamos Vercel: Segurplus es Python + Streamlit (para reutilizar el análisis financiero
@@ -84,10 +108,14 @@ en el día a día hay que decidir dónde persiste la base de verdad — ver `doc
 
 - `core/extraccion/` — esquema canónico, llamada a Gemini, validación aritmética.
 - `core/ingesta/` — lectura de texto de PDF, doble lectura del total, hash para idempotencia.
-- `core/analisis/` — homologación de conceptos, descomposición precio/cantidad, variación
-  real (deflactada por IPC), alertas.
+- `core/analisis/` — homologación de conceptos, descomposición precio/cantidad, serie
+  temporal, variación real (deflactada por IPC), alertas.
+- `core/rehomologacion.py` — recalcula la homologación de facturas ya guardadas sin llamar
+  a Gemini (ver "Cómo calibrar la homologación" más arriba).
 - `core/deflactor/`, `core/macro/` — copiados de Consultora (ajuste por IPC).
 - `core/almacenamiento.py` — persistencia en DuckDB (`data/reales/facturas.duckdb`,
   excluida de git).
+- `apps/segurplus/estilo.py` — paleta institucional y formato compartido de los gráficos.
+- `scripts/rehomologar.py` — CLI para re-homologar desde la terminal.
 - `docs/fixtures/` — generador de facturas sintéticas en PDF (nunca reales) para los tests.
 - `data/reales/` — PDFs y base de datos reales. **Nunca se commitea** (ver CLAUDE.md).

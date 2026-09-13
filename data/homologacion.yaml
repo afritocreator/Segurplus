@@ -11,7 +11,13 @@
 # a 0.60 tras la auditoría de 2026-09 (hallazgo A-3): con 0.45, cargos como
 # "Recargo por reconexión" se absorbían en silencio como cargo_fijo (score
 # 0.571) en vez de alertar. La calibración definitiva de este valor queda
-# para cuando haya facturas reales de varios proveedores (Bloque 9 del plan
-# de correcciones) -- 0.60 es un valor conservador elegido sin esos datos,
-# no uno calibrado.
+# para cuando haya facturas reales de varios proveedores -- 0.60 es un valor
+# conservador elegido sin esos datos, no uno calibrado.
+#
+# Desde que se agregó `score_homologacion` (persistido en la tabla
+# `conceptos`, haya homologado o no -- ver core/almacenamiento.py), ya NO
+# hace falta calibrar a ciegas: la página "Sin clasificar" del tablero
+# muestra el histograma real de scores con este umbral marcado, así se
+# puede subir o bajar con evidencia en vez de a ojo. Ver también
+# core/rehomologacion.py y "Cómo calibrar la homologación" en README.md.
 umbral_coincidencia: 0.60
