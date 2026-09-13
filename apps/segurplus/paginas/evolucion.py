@@ -22,8 +22,10 @@ import streamlit as st
 from apps.segurplus.estilo import aplicar_estilo
 from core.almacenamiento import (
     alertas_del_periodo,
+    componentes_financieros_periodo,
     conectar,
     recargos_del_periodo,
+    sincronizar_casos_alertas,
     totales_por_periodo,
 )
 from core.analisis.agregacion import (
@@ -72,7 +74,8 @@ con = conectar()
 servicios = [
     r[0]
     for r in con.execute(
-        "SELECT DISTINCT servicio FROM facturas WHERE servicio IS NOT NULL ORDER BY 1"
+        "SELECT DISTINCT servicio FROM facturas "
+        "WHERE servicio IS NOT NULL AND estado = 'aprobada' ORDER BY 1"
     ).fetchall()
 ]
 
@@ -88,7 +91,7 @@ periodos = [
     r[0]
     for r in con.execute(
         "SELECT DISTINCT periodo_desde FROM facturas "
-        "WHERE servicio = ? AND periodo_desde IS NOT NULL ORDER BY 1",
+        "WHERE servicio = ? AND periodo_desde IS NOT NULL AND estado = 'aprobada' ORDER BY 1",
         [servicio],
     ).fetchall()
 ]
@@ -119,7 +122,7 @@ def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
     filas = con.execute(
         """SELECT c.concepto_normalizado, c.descripcion, c.cantidad, c.importe, c.unidad
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde = ?""",
+           WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
         [servicio, periodo],
     ).fetchall()
     return [FilaConcepto(cn, desc, cant, imp, unidad) for cn, desc, cant, imp, unidad in filas]
@@ -239,6 +242,11 @@ alertas_totales = (
     + alertas_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
     + alertas_periodo_faltante
 )
+sincronizar_casos_alertas(
+    con,
+    referencia=f"comparacion:{servicio}:{periodo_0}:{periodo_1}",
+    alertas=alertas_totales,
+)
 
 with st.container(border=True):
     st.subheader(f"{servicio}: {periodo_0} → {periodo_1}")
@@ -282,8 +290,8 @@ with st.container(border=True):
     else:
         st.caption("No hubo variación nominal entre los períodos seleccionados.")
 
-tab_descomposicion, tab_serie, tab_alertas, tab_detalle = st.tabs(
-    ["Descomposición", "Serie histórica", "Alertas", "Detalle"]
+tab_descomposicion, tab_composicion, tab_serie, tab_alertas, tab_detalle = st.tabs(
+    ["Descomposición", "Composición total", "Serie histórica", "Alertas", "Detalle"]
 )
 
 with tab_descomposicion:
@@ -303,6 +311,33 @@ with tab_descomposicion:
     fig.update_layout(barmode="relative", title="Descomposición de la variación por concepto")
     aplicar_estilo(fig)
     st.plotly_chart(fig, width="stretch")
+
+with tab_composicion:
+    st.caption(
+        "El análisis precio/cantidad usa consumos comparables. Esta vista explica además "
+        "impuestos, recargos, créditos y el total pagable de cada período."
+    )
+    componentes_0 = componentes_financieros_periodo(con, servicio=servicio, periodo_desde=periodo_0)
+    componentes_1 = componentes_financieros_periodo(con, servicio=servicio, periodo_desde=periodo_1)
+    filas_composicion = []
+    for componente, etiqueta in [
+        ("consumos", "Consumos / abonos"),
+        ("impuestos", "Impuestos"),
+        ("recargos", "Recargos"),
+        ("creditos", "Créditos / descuentos"),
+        ("total_pagable", "Total pagable"),
+    ]:
+        valor_0 = componentes_0[componente]
+        valor_1 = componentes_1[componente]
+        filas_composicion.append(
+            {
+                "Componente": etiqueta,
+                periodo_0: pesos_ars(valor_0),
+                periodo_1: pesos_ars(valor_1),
+                "Variación": pesos_ars(valor_1 - valor_0),
+            }
+        )
+    st.dataframe(filas_composicion, width="stretch", hide_index=True)
 
 with tab_serie:
     st.caption(

@@ -81,28 +81,27 @@ lo que sí resuelve Streamlit Community Cloud, gratis, mismo patrón que ya usa 
    **Marcala como pública, no privada** — el plan gratis solo permite una app privada por
    workspace y ese lugar ya lo ocupa Consultora (ver el addendum de
    `docs/decisiones/ADR-002-deploy.md`).
-3. En **Advanced settings → Secrets**, pegá:
+3. En **Advanced settings → Secrets**, configurá como mínimo:
    ```toml
    GEMINI_API_KEY = "la-api-key-real"
-   APP_PASSWORD = "una-clave-que-compartas-por-fuera-de-github"
+   DATABASE_URL = "postgresql://..."
+   S3_BUCKET = "segurplus-evidencia-privada"
    ```
    (ver `.streamlit/secrets.toml.example` para el formato — ese archivo real nunca se
-   commitea, solo se carga acá). `APP_PASSWORD` es la contraseña que la app pide antes de
-   mostrar cualquier pantalla, ya que queda pública — **sin esto configurado, cualquiera
-   con el link entra directo**, así que no te olvides de cargarlo.
+   commitea, solo se carga acá). Para producción configurá además OIDC y los roles por
+   e-mail; `APP_PASSWORD` queda solo como transición del piloto.
 4. Deploy. Queda accesible por un link (tipo `segurplus.streamlit.app`) desde cualquier
    computadora con navegador, sin instalar nada — y sin la contraseña, no se puede usar.
 
-**Sobre la contraseña**: es una barrera simple, no control de acceso real — no hay
-usuarios ni registro de quién entró. Alcanza para que la app no quede abierta a cualquiera
-que encuentre el link, pero si en algún momento maneja información más sensible, conviene
-pagar el plan con apps privadas de verdad (ver el addendum del ADR).
+**Identidad y trazabilidad**: con `OIDC_PROVIDER`, la aplicación usa el login individual
+de Streamlit y asigna roles de cargador, revisor, responsable o administrador. Sin OIDC se
+mantiene la contraseña compartida únicamente para el piloto y se la identifica como acceso
+transitorio, sin atribución individual.
 
-**Importante sobre los datos**: el disco de la app en la nube NO es persistente entre
-reinicios del servidor gratuito — `data/reales/facturas.duckdb` puede perderse si el
-servidor se reinicia por inactividad. Mientras se prueba esto no es grave (se puede
-recargar el mismo lote de PDFs, es idempotente por hash), pero antes de depender de esto
-en el día a día hay que decidir dónde persiste la base de verdad — ver `docs/estado.md`.
+**Importante sobre los datos**: el disco de Streamlit no es persistente. La operación usa
+PostgreSQL administrado como fuente de verdad y un bucket privado S3 compatible para los
+PDF originales; el tablero avisa cuando esos dos secrets no están configurados. Ver
+[`ADR-003`](docs/decisiones/ADR-003-persistencia-durable.md).
 
 ## Estructura
 
@@ -113,8 +112,9 @@ en el día a día hay que decidir dónde persiste la base de verdad — ver `doc
 - `core/rehomologacion.py` — recalcula la homologación de facturas ya guardadas sin llamar
   a Gemini (ver "Cómo calibrar la homologación" más arriba).
 - `core/deflactor/`, `core/macro/` — copiados de Consultora (ajuste por IPC).
-- `core/almacenamiento.py` — persistencia en DuckDB (`data/reales/facturas.duckdb`,
-  excluida de git).
+- `core/almacenamiento.py` — PostgreSQL administrado en producción y DuckDB local en
+  desarrollo; conserva decisiones, correcciones y casos operativos.
+- `core/evidencia.py` — PDF original en almacenamiento privado S3 compatible.
 - `apps/segurplus/estilo.py` — paleta institucional y formato compartido de los gráficos.
 - `scripts/rehomologar.py` — CLI para re-homologar desde la terminal.
 - `docs/fixtures/` — generador de facturas sintéticas en PDF (nunca reales) para los tests.

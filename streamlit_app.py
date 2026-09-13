@@ -34,11 +34,21 @@ pagina_cargar = st.Page(
 pagina_evolucion = st.Page(
     "apps/segurplus/paginas/evolucion.py", title="Evolución por servicio", icon="📊"
 )
+pagina_revision = st.Page("apps/segurplus/paginas/revision.py", title="Revisar facturas", icon="✅")
+pagina_casos = st.Page("apps/segurplus/paginas/casos.py", title="Casos", icon="📌")
 pagina_cuarentena = st.Page("apps/segurplus/paginas/cuarentena.py", title="Cuarentena", icon="🧾")
 pagina_sin_clasificar = st.Page(
     "apps/segurplus/paginas/sin_clasificar.py", title="Sin clasificar", icon="🏷️"
 )
 
 st.navigation(
-    [pagina_cargar, pagina_evolucion, pagina_sin_clasificar, pagina_cuarentena], position="top"
+    [
+        pagina_cargar,
+        pagina_revision,
+        pagina_evolucion,
+        pagina_casos,
+        pagina_sin_clasificar,
+        pagina_cuarentena,
+    ],
+    position="top",
 ).run()

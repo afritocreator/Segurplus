@@ -70,6 +70,24 @@ una sola pantalla larga.
 
 ## Falta (siguiente trabajo)
 
+## Piloto operativo confiable (implementado)
+
+- La carga validada pasa a **requiere revisión**: no impacta Evolución, alertas ni Excel
+  hasta que un revisor la aprueba con motivo. Rechazos y correcciones de cabecera quedan
+  registrados con actor, momento, valor anterior y evidencia.
+- La fuente de verdad productiva se configura por `DATABASE_URL` (PostgreSQL administrado)
+  y `S3_BUCKET` (PDF original privado); DuckDB es solamente el modo local de desarrollo.
+  La decisión operativa está en `docs/decisiones/ADR-003-persistencia-durable.md`.
+- Se persisten impuestos, recargos y créditos por separado. Evolución agrega una pestaña
+  de composición del total pagable, además de la descomposición de consumos comparables.
+- Las alertas de facturas aprobadas y de comparaciones generan casos deduplicados,
+  asignables y trazables en la página **Casos**. La notificación automática sigue fuera
+  de alcance.
+- OIDC es el mecanismo productivo de identidad y roles; la contraseña compartida subsiste
+  solo como compatibilidad explícita del piloto.
+
+## Falta (siguiente trabajo)
+
 - **Fase 6** — motor por reglas 100% local, solo si hace falta (ver punto de decisión
   pendiente en `docs/PLAN.md`).
 - **Todavía no se cargó ninguna factura real** (aunque ya se revisaron a mano y de ahí

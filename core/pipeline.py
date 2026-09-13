@@ -26,6 +26,7 @@ from core.almacenamiento import (
 from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
+from core.evidencia import guardar_pdf
 from core.extraccion.gemini import MAX_LLAMADAS_POR_HORA, ExtraccionError, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
 from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto, total_impreso
@@ -91,8 +92,9 @@ def procesar_pdf(
             ),
         )
 
+    contenido_pdf = ruta.read_bytes()
     try:
-        factura = extraer_con_gemini(ruta.read_bytes(), api_key=api_key)
+        factura = extraer_con_gemini(contenido_pdf, api_key=api_key)
     except ExtraccionError as exc:
         return ResultadoPipeline(
             ruta, documento.hash_sha256, estado="error_extraccion", detalle=str(exc)
@@ -100,12 +102,25 @@ def procesar_pdf(
 
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)
+    try:
+        factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf)
+    except Exception as exc:  # noqa: BLE001 -- no se acepta evidencia silenciosamente rota
+        return ResultadoPipeline(
+            ruta,
+            documento.hash_sha256,
+            estado="error_extraccion",
+            detalle=f"No se pudo guardar evidencia: {exc}",
+        )
 
     resultado = validar_factura(factura, total_impreso=total_impreso(documento.texto))
 
     if not resultado.factura_valida:
         guardar_en_cuarentena(
-            con, hash_pdf=factura.hash_pdf, ruta_pdf=factura.ruta_pdf, resultado=resultado
+            con,
+            hash_pdf=factura.hash_pdf,
+            ruta_pdf=factura.ruta_pdf,
+            resultado=resultado,
+            ruta_evidencia=factura.ruta_evidencia,
         )
         return ResultadoPipeline(
             ruta,
@@ -140,6 +155,9 @@ def procesar_pdf(
         scores_homologacion=scores_homologacion,
         motivos_homologacion=motivos_homologacion,
         candidatos_empatados=candidatos_empatados,
+        # La extracción validada es confiable aritméticamente, pero la primera
+        # carga real debe tener aprobación humana antes de alterar el análisis.
+        estado="requiere_revision",
     )
 
     # Ítem duplicado se calcula UNA VEZ acá, sobre la factura individual --

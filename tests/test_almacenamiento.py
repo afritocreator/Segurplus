@@ -4,16 +4,23 @@ data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 import pytest
 
 from core.almacenamiento import (
+    actualizar_caso_alerta,
     alertas_del_periodo,
     borrar_de_cuarentena,
     conceptos_sin_clasificar,
     conectar,
+    decision_factura,
     factura_ya_procesada,
     guardar_alertas,
     guardar_en_cuarentena,
     guardar_factura,
+    listar_casos_alerta,
+    listar_facturas_pendientes,
     llamadas_ultima_hora,
     recargos_del_periodo,
+    registrar_correccion,
+    resumen_financiero_factura,
+    sincronizar_casos_alertas,
 )
 from core.extraccion.esquema import Concepto, FacturaExtraida
 from core.extraccion.validacion import validar_factura
@@ -339,4 +346,158 @@ def test_totales_por_periodo_acotado_por_servicio(tmp_path):
     guardar_factura(con, otro_servicio)
 
     assert totales_por_periodo(con, servicio="gas") == {"2026-08-01": pytest.approx(3000.0)}
+    con.close()
+
+
+# --- piloto operativo: revisión, evidencia y casos ------------------------
+
+
+def test_factura_en_revision_no_impacta_serie_hasta_aprobacion(tmp_path):
+    from core.almacenamiento import totales_por_periodo
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision", actor="ana@empresa.test")
+
+    assert listar_facturas_pendientes(con)[0][0] == factura.hash_pdf
+    assert totales_por_periodo(con, servicio="telefonia") == {}
+
+    decision_factura(
+        con,
+        hash_pdf=factura.hash_pdf,
+        estado="aprobada",
+        actor="ana@empresa.test",
+        motivo="Conciliada contra el PDF original.",
+    )
+    assert totales_por_periodo(con, servicio="telefonia") == {"2026-08-01": pytest.approx(10000)}
+    decisiones = con.execute(
+        "SELECT accion, actor FROM decisiones_factura WHERE hash_pdf = ? ORDER BY creado_en",
+        [factura.hash_pdf],
+    ).fetchall()
+    assert decisiones[-1] == ("aprobada", "ana@empresa.test")
+    con.close()
+
+
+def test_correccion_de_cabecera_conserva_valor_anterior(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    registrar_correccion(
+        con,
+        hash_pdf=factura.hash_pdf,
+        campo="periodo_desde",
+        valor_nuevo="2026-07-01",
+        motivo="El modelo confundió la fecha de emisión.",
+        actor="revisor@empresa.test",
+    )
+    assert (
+        con.execute(
+            "SELECT periodo_desde FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == "2026-07-01"
+    )
+    assert con.execute(
+        "SELECT valor_anterior, valor_nuevo, actor FROM correcciones_factura WHERE hash_pdf = ?",
+        [factura.hash_pdf],
+    ).fetchone() == ("2026-08-01", "2026-07-01", "revisor@empresa.test")
+    con.close()
+
+
+def test_alerta_aprobada_crea_caso_deduplicado_y_asignable(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    guardar_alertas(
+        con,
+        factura.hash_pdf,
+        [
+            Alerta(
+                tipo="item_duplicado", severidad="media", mensaje="Abono repetido", concepto="Abono"
+            )
+        ],
+    )
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="aprobada", actor="ana", motivo="Validada"
+    )
+    casos = listar_casos_alerta(con)
+    assert len(casos) == 1
+    actualizar_caso_alerta(
+        con,
+        clave=casos[0][0],
+        estado="en_analisis",
+        responsable="compras@empresa.test",
+        vencimiento="2026-09-20",
+        evidencia="Se pidió nota de crédito al proveedor.",
+    )
+    actualizado = listar_casos_alerta(con)[0]
+    assert actualizado[5:] == (
+        "en_analisis",
+        "compras@empresa.test",
+        "2026-09-20",
+        "Se pidió nota de crédito al proveedor.",
+    )
+    con.close()
+
+
+def test_alertas_de_comparacion_crean_un_solo_caso_por_referencia(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    alertas = [
+        Alerta(tipo="precio_sobre_ipc", severidad="alta", mensaje="Suba real", concepto="Abono")
+    ]
+    for _ in range(2):
+        sincronizar_casos_alertas(
+            con,
+            referencia="comparacion:telefonia:2026-08-01:2026-09-01",
+            alertas=alertas,
+        )
+    assert len(listar_casos_alerta(con)) == 1
+    con.close()
+
+
+def test_resumen_financiero_separa_impuestos_recargos_y_creditos(tmp_path):
+    from core.extraccion.esquema import Credito, Impuesto, Recargo
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    factura.impuestos = [Impuesto("IVA", 2100)]
+    factura.recargos = [Recargo("Mora", 100)]
+    factura.creditos = [Credito("Bonificación", 200)]
+    factura.total = 12000
+    guardar_factura(con, factura)
+    assert resumen_financiero_factura(con, factura.hash_pdf) == {
+        "consumos": 10000.0,
+        "impuestos": 2100.0,
+        "recargos": 100.0,
+        "creditos": 200.0,
+        "total_pagable": 12000.0,
+    }
+    con.close()
+
+
+def test_componentes_financieros_excluye_facturas_no_aprobadas(tmp_path):
+    from core.almacenamiento import componentes_financieros_periodo
+    from core.extraccion.esquema import Impuesto
+
+    con = conectar(tmp_path / "test.duckdb")
+    aprobada = _factura("ok")
+    aprobada.impuestos = [Impuesto("IVA", 2100)]
+    aprobada.total = 12100
+    guardar_factura(con, aprobada, estado="aprobada")
+    pendiente = _factura("pendiente")
+    pendiente.conceptos = [Concepto("Otro", 1, None, 5000, 5000)]
+    pendiente.subtotal = pendiente.total = 5000
+    guardar_factura(con, pendiente, estado="requiere_revision")
+    assert componentes_financieros_periodo(
+        con, servicio="telefonia", periodo_desde="2026-08-01"
+    ) == {
+        "consumos": 10000.0,
+        "impuestos": 2100.0,
+        "recargos": 0.0,
+        "creditos": 0.0,
+        "total_pagable": 12100.0,
+    }
     con.close()

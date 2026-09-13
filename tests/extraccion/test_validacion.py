@@ -96,6 +96,17 @@ def test_recargo_se_suma_al_total_esperado():
     assert resultado.total_ok
 
 
+def test_credito_resta_del_total_esperado():
+    from core.extraccion.esquema import Credito
+
+    factura = _factura_ok()
+    factura.creditos = [Credito("Bonificación comercial", importe=300.0)]
+    factura.total = 13978.0  # 11.800 + 2.478 - 300
+    resultado = validar_factura(factura)
+    assert resultado.suma_creditos == 300.0
+    assert resultado.total_ok
+
+
 def test_doble_lectura_del_total_discrepante_va_a_cuarentena():
     resultado = validar_factura(_factura_ok(), total_impreso=99999.0)
     assert not resultado.total_impreso_ok

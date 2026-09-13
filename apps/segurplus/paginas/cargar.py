@@ -14,6 +14,7 @@ import streamlit as st
 
 from apps.segurplus.secretos import leer_secret
 from core.almacenamiento import conectar
+from core.evidencia import persistencia_durable_configurada
 from core.pipeline import ResultadoPipeline, procesar_pdf
 
 st.title("📥 Cargar facturas")
@@ -22,6 +23,11 @@ st.caption(
     "antes de entrar al análisis -- si algo no cierra, va a la cola de Cuarentena "
     "en vez de mostrarse como si fuera un dato confiable."
 )
+if not persistencia_durable_configurada():
+    st.info(
+        "Modo local de desarrollo: configurá DATABASE_URL y S3_BUCKET antes de usar facturas "
+        "reales de forma cotidiana. El disco de Streamlit no es una fuente durable."
+    )
 
 api_key = leer_secret("GEMINI_API_KEY")
 if not api_key:

@@ -23,7 +23,11 @@ archivo temporal sin tocar la base real.
 
 from __future__ import annotations
 
+import hashlib
+import os
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -43,51 +47,154 @@ CREATE TABLE IF NOT EXISTS facturas (
     periodo_desde VARCHAR,
     periodo_hasta VARCHAR,
     fecha_emision VARCHAR,
+    fecha_vencimiento VARCHAR,
     numero_comprobante VARCHAR,
-    subtotal DOUBLE,
-    total DOUBLE,
+    moneda VARCHAR,
+    subtotal DOUBLE PRECISION,
+    total DOUBLE PRECISION,
+    estado VARCHAR DEFAULT 'aprobada',
+    ruta_evidencia VARCHAR,
+    modelo_extraccion VARCHAR,
+    version_prompt VARCHAR,
+    version_esquema VARCHAR,
+    respuesta_extraida VARCHAR
 );
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT now();
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS actualizado_en TIMESTAMP DEFAULT now();
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS fecha_vencimiento VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS moneda VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS estado VARCHAR DEFAULT 'aprobada';
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS ruta_evidencia VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS modelo_extraccion VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS version_prompt VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS version_esquema VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS respuesta_extraida VARCHAR;
 CREATE TABLE IF NOT EXISTS conceptos (
     hash_pdf VARCHAR,
     orden INTEGER,
     descripcion VARCHAR,
     concepto_normalizado VARCHAR,
-    cantidad DOUBLE,
+    cantidad DOUBLE PRECISION,
     unidad VARCHAR,
-    precio_unitario DOUBLE,
-    importe DOUBLE,
+    precio_unitario DOUBLE PRECISION,
+    importe DOUBLE PRECISION
 );
-ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS score_homologacion DOUBLE;
+ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS score_homologacion DOUBLE PRECISION;
 ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS motivo_homologacion VARCHAR;
 ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS candidatos_empatados VARCHAR;
 CREATE TABLE IF NOT EXISTS recargos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
-    importe DOUBLE,
+    importe DOUBLE PRECISION
+);
+CREATE TABLE IF NOT EXISTS impuestos (
+    hash_pdf VARCHAR,
+    nombre VARCHAR,
+    importe DOUBLE PRECISION
+);
+CREATE TABLE IF NOT EXISTS creditos (
+    hash_pdf VARCHAR,
+    nombre VARCHAR,
+    importe DOUBLE PRECISION
 );
 CREATE TABLE IF NOT EXISTS alertas (
     hash_pdf VARCHAR,
     tipo VARCHAR,
     severidad VARCHAR,
     mensaje VARCHAR,
-    concepto VARCHAR,
+    concepto VARCHAR
 );
 CREATE TABLE IF NOT EXISTS cuarentena (
     hash_pdf VARCHAR PRIMARY KEY,
     ruta_pdf VARCHAR,
     motivos VARCHAR,
+    ruta_evidencia VARCHAR
 );
 ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT now();
+ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS ruta_evidencia VARCHAR;
+CREATE TABLE IF NOT EXISTS decisiones_factura (
+    id VARCHAR,
+    hash_pdf VARCHAR,
+    accion VARCHAR,
+    actor VARCHAR,
+    motivo VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS correcciones_factura (
+    id VARCHAR,
+    hash_pdf VARCHAR,
+    campo VARCHAR,
+    valor_anterior VARCHAR,
+    valor_nuevo VARCHAR,
+    motivo VARCHAR,
+    actor VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS casos_alerta (
+    clave VARCHAR PRIMARY KEY,
+    hash_pdf VARCHAR,
+    tipo VARCHAR,
+    severidad VARCHAR,
+    mensaje VARCHAR,
+    concepto VARCHAR,
+    estado VARCHAR DEFAULT 'abierto',
+    responsable VARCHAR,
+    vencimiento VARCHAR,
+    evidencia VARCHAR,
+    creado_en TIMESTAMP DEFAULT now(),
+    actualizado_en TIMESTAMP DEFAULT now()
+);
 """
 
+ESTADOS_FACTURA = frozenset(
+    {"recibida", "extraida", "requiere_revision", "aprobada", "rechazada", "cuarentena"}
+)
+ESTADOS_CASO = frozenset({"abierto", "en_analisis", "resuelto", "descartado"})
 
-def conectar(ruta: Path | None = None) -> duckdb.DuckDBPyConnection:
-    """Abre (creando si hace falta) la base de facturas y asegura el schema."""
+
+class ConexionPostgres:
+    """Adaptador mínimo para usar la misma capa SQL con PostgreSQL administrado.
+
+    Se activa únicamente con ``DATABASE_URL``. En desarrollo y tests se mantiene
+    DuckDB; producción no debe arrancar con esa ruta local como fuente de verdad.
+    """
+
+    def __init__(self, url: str) -> None:
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - depende del deploy
+            raise RuntimeError("DATABASE_URL requiere instalar psycopg.") from exc
+        self._con = psycopg.connect(url, autocommit=True)
+
+    def execute(self, sql: str, params: list[Any] | None = None) -> Any:
+        return self._con.execute(sql.replace("?", "%s"), params)
+
+    def close(self) -> None:
+        self._con.close()
+
+
+def _ejecutar_ddl(con: duckdb.DuckDBPyConnection | ConexionPostgres) -> None:
+    """Ejecuta migraciones aditivas una instrucción por vez."""
+    for sentencia in _DDL.split(";"):
+        if sentencia.strip():
+            con.execute(sentencia)
+
+
+def conectar(ruta: Path | None = None) -> duckdb.DuckDBPyConnection | ConexionPostgres:
+    """Abre la fuente de verdad configurada y asegura migraciones aditivas.
+
+    ``DATABASE_URL`` apunta a PostgreSQL administrado. DuckDB queda como modo
+    local explícito para desarrollo, fixtures y análisis sin conexión externa.
+    """
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        con = ConexionPostgres(url)
+        _ejecutar_ddl(con)
+        return con
     ruta = ruta or RUTA_BASE
     ruta.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(ruta))
-    con.execute(_DDL)
+    _ejecutar_ddl(con)
     return con
 
 
@@ -117,6 +224,165 @@ def factura_ya_procesada(con: duckdb.DuckDBPyConnection, hash_pdf: str) -> bool:
     return en_facturas is not None or en_cuarentena is not None
 
 
+def _id_auditoria(hash_pdf: str, accion: str) -> str:
+    return f"{hash_pdf}:{accion}:{datetime.now().isoformat(timespec='microseconds')}"
+
+
+def _registrar_decision(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    hash_pdf: str,
+    accion: str,
+    actor: str,
+    motivo: str | None = None,
+) -> None:
+    """Escribe un evento de auditoría; no se edita ni se borra al revisar."""
+    con.execute(
+        "INSERT INTO decisiones_factura (id, hash_pdf, accion, actor, motivo) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [_id_auditoria(hash_pdf, accion), hash_pdf, accion, actor, motivo],
+    )
+
+
+def listar_facturas_pendientes(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+) -> list[tuple[str, str | None, str | None, str | None, float | None, str | None]]:
+    """Facturas que requieren decisión humana, ordenadas por antigüedad."""
+    return con.execute(
+        """SELECT hash_pdf, emisor, servicio, periodo_desde, total, ruta_evidencia
+           FROM facturas WHERE estado = 'requiere_revision' ORDER BY creado_en"""
+    ).fetchall()
+
+
+def decision_factura(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    hash_pdf: str,
+    estado: str,
+    actor: str,
+    motivo: str,
+) -> None:
+    """Aprueba o rechaza una factura pendiente y conserva el motivo y actor."""
+    if estado not in {"aprobada", "rechazada"}:
+        raise ValueError("Una decisión solo puede aprobar o rechazar una factura.")
+    fila = con.execute("SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]).fetchone()
+    if fila is None:
+        raise ValueError("No existe la factura a decidir.")
+    if fila[0] != "requiere_revision":
+        raise ValueError("Solo se pueden decidir facturas que requieren revisión.")
+    con.execute(
+        "UPDATE facturas SET estado = ?, actualizado_en = now() WHERE hash_pdf = ?",
+        [estado, hash_pdf],
+    )
+    _registrar_decision(con, hash_pdf, estado, actor, motivo)
+    if estado == "aprobada":
+        _sincronizar_casos_alerta(con, hash_pdf)
+
+
+def registrar_correccion(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    hash_pdf: str,
+    campo: str,
+    valor_nuevo: str | None,
+    motivo: str,
+    actor: str,
+) -> None:
+    """Corrige una cabecera en revisión, dejando valor anterior y evidencia."""
+    permitidos = {
+        "emisor",
+        "cuit",
+        "servicio",
+        "periodo_desde",
+        "periodo_hasta",
+        "fecha_emision",
+        "fecha_vencimiento",
+        "numero_comprobante",
+        "moneda",
+    }
+    if campo not in permitidos:
+        raise ValueError(f"Campo no editable en revisión: {campo}")
+    fila = con.execute(
+        f"SELECT {campo}, estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchone()
+    if fila is None or fila[1] != "requiere_revision":
+        raise ValueError("La factura no está disponible para corrección.")
+    con.execute(
+        f"UPDATE facturas SET {campo} = ?, actualizado_en = now() WHERE hash_pdf = ?",
+        [valor_nuevo, hash_pdf],
+    )
+    con.execute(
+        """INSERT INTO correcciones_factura
+           (id, hash_pdf, campo, valor_anterior, valor_nuevo, motivo, actor)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            _id_auditoria(hash_pdf, "correccion"),
+            hash_pdf,
+            campo,
+            fila[0],
+            valor_nuevo,
+            motivo,
+            actor,
+        ],
+    )
+    _registrar_decision(con, hash_pdf, "correccion", actor, motivo)
+
+
+def resumen_financiero_factura(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str
+) -> dict[str, float]:
+    """Componentes del total de una factura para revisión y reporte."""
+    consultas = {
+        "consumos": "SELECT coalesce(sum(importe), 0) FROM conceptos WHERE hash_pdf = ?",
+        "impuestos": "SELECT coalesce(sum(importe), 0) FROM impuestos WHERE hash_pdf = ?",
+        "recargos": "SELECT coalesce(sum(importe), 0) FROM recargos WHERE hash_pdf = ?",
+        "creditos": "SELECT coalesce(sum(importe), 0) FROM creditos WHERE hash_pdf = ?",
+    }
+    resultado = {
+        clave: float(con.execute(sql, [hash_pdf]).fetchone()[0]) for clave, sql in consultas.items()
+    }
+    resultado["total_pagable"] = (
+        resultado["consumos"]
+        + resultado["impuestos"]
+        + resultado["recargos"]
+        - resultado["creditos"]
+    )
+    return resultado
+
+
+def componentes_financieros_periodo(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, *, servicio: str, periodo_desde: str
+) -> dict[str, float]:
+    """Separa el total pagable aprobado sin duplicar joins de líneas.
+
+    ``total = consumos + impuestos + recargos - créditos``. Cada componente
+    se consulta de forma independiente porque unir varias tablas de detalle
+    multiplicaría importes cuando una factura tiene más de una línea.
+    """
+    tablas = {
+        "consumos": "conceptos",
+        "impuestos": "impuestos",
+        "recargos": "recargos",
+        "creditos": "creditos",
+    }
+    resultado: dict[str, float] = {}
+    for clave, tabla in tablas.items():
+        resultado[clave] = float(
+            con.execute(
+                f"""SELECT coalesce(sum(x.importe), 0) FROM {tabla} x
+                   JOIN facturas f ON f.hash_pdf = x.hash_pdf
+                   WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
+                [servicio, periodo_desde],
+            ).fetchone()[0]
+        )
+    resultado["total_pagable"] = (
+        resultado["consumos"]
+        + resultado["impuestos"]
+        + resultado["recargos"]
+        - resultado["creditos"]
+    )
+    return resultado
+
+
 def guardar_factura(
     con: duckdb.DuckDBPyConnection,
     factura: FacturaExtraida,
@@ -125,6 +391,8 @@ def guardar_factura(
     scores_homologacion: dict[int, float] | None = None,
     motivos_homologacion: dict[int, str] | None = None,
     candidatos_empatados: dict[int, str] | None = None,
+    estado: str = "aprobada",
+    actor: str = "sistema",
 ) -> None:
     """Guarda una factura YA VALIDADA (ver validar_factura) y sus conceptos.
     No hace ningún control aritmético acá -- eso ya pasó antes, este módulo
@@ -137,15 +405,30 @@ def guardar_factura(
     nuevo (score bajo, ej. 0.12) -- ver `core/rehomologacion.py` y
     `apps/segurplus/paginas/sin_clasificar.py`. Antes de esto el score se
     calculaba y se descartaba en `core/pipeline.py`."""
+    if estado not in ESTADOS_FACTURA:
+        raise ValueError(f"Estado de factura inválido: {estado}")
     conceptos_normalizados = conceptos_normalizados or {}
     scores_homologacion = scores_homologacion or {}
     motivos_homologacion = motivos_homologacion or {}
     candidatos_empatados = candidatos_empatados or {}
     con.execute(
-        """INSERT OR REPLACE INTO facturas
+        """INSERT INTO facturas
            (hash_pdf, ruta_pdf, emisor, cuit, servicio, periodo_desde, periodo_hasta,
-            fecha_emision, numero_comprobante, subtotal, total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            fecha_emision, fecha_vencimiento, numero_comprobante, moneda, subtotal, total,
+            estado, ruta_evidencia, modelo_extraccion, version_prompt, version_esquema,
+            respuesta_extraida, actualizado_en)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+           ON CONFLICT (hash_pdf) DO UPDATE SET
+             ruta_pdf = excluded.ruta_pdf, emisor = excluded.emisor, cuit = excluded.cuit,
+             servicio = excluded.servicio, periodo_desde = excluded.periodo_desde,
+             periodo_hasta = excluded.periodo_hasta, fecha_emision = excluded.fecha_emision,
+             fecha_vencimiento = excluded.fecha_vencimiento,
+             numero_comprobante = excluded.numero_comprobante, moneda = excluded.moneda,
+             subtotal = excluded.subtotal, total = excluded.total, estado = excluded.estado,
+             ruta_evidencia = excluded.ruta_evidencia,
+             modelo_extraccion = excluded.modelo_extraccion,
+             version_prompt = excluded.version_prompt, version_esquema = excluded.version_esquema,
+             respuesta_extraida = excluded.respuesta_extraida, actualizado_en = now()""",
         [
             factura.hash_pdf,
             factura.ruta_pdf,
@@ -155,9 +438,17 @@ def guardar_factura(
             factura.periodo_desde,
             factura.periodo_hasta,
             factura.fecha_emision,
+            factura.fecha_vencimiento,
             factura.numero_comprobante,
+            factura.moneda,
             factura.subtotal,
             factura.total,
+            estado,
+            factura.ruta_evidencia,
+            factura.modelo_extraccion,
+            factura.version_prompt,
+            factura.version_esquema,
+            factura.respuesta_extraida,
         ],
     )
     con.execute("DELETE FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf])
@@ -189,6 +480,19 @@ def guardar_factura(
             "INSERT INTO recargos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
             [factura.hash_pdf, r.nombre, r.importe],
         )
+    con.execute("DELETE FROM impuestos WHERE hash_pdf = ?", [factura.hash_pdf])
+    for impuesto in factura.impuestos:
+        con.execute(
+            "INSERT INTO impuestos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
+            [factura.hash_pdf, impuesto.nombre, impuesto.importe],
+        )
+    con.execute("DELETE FROM creditos WHERE hash_pdf = ?", [factura.hash_pdf])
+    for credito in factura.creditos:
+        con.execute(
+            "INSERT INTO creditos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
+            [factura.hash_pdf, credito.nombre, credito.importe],
+        )
+    _registrar_decision(con, factura.hash_pdf, "carga", actor, f"estado inicial: {estado}")
 
 
 def conceptos_sin_clasificar(
@@ -250,7 +554,7 @@ def totales_por_periodo(con: duckdb.DuckDBPyConnection, *, servicio: str) -> dic
     filas = con.execute(
         """SELECT f.periodo_desde, sum(c.importe)
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde IS NOT NULL
+           WHERE f.servicio = ? AND f.periodo_desde IS NOT NULL AND f.estado = 'aprobada'
            GROUP BY f.periodo_desde""",
         [servicio],
     ).fetchall()
@@ -266,7 +570,7 @@ def recargos_del_periodo(
     filas = con.execute(
         """SELECT r.nombre, r.importe FROM recargos r
            JOIN facturas f ON f.hash_pdf = r.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde = ?""",
+           WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
         [servicio, periodo_desde],
     ).fetchall()
     return [(nombre, importe) for nombre, importe in filas]
@@ -286,6 +590,89 @@ def guardar_alertas(con: duckdb.DuckDBPyConnection, hash_pdf: str, alertas: list
         )
 
 
+def _clave_caso(hash_pdf: str, alerta: Alerta) -> str:
+    base = "|".join([hash_pdf, alerta.tipo, alerta.concepto or "", alerta.mensaje])
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def _sincronizar_casos_alerta(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str
+) -> None:
+    """Crea casos solo para alertas de una factura ya aprobada.
+
+    La clave es estable: reaprobar o reabrir no duplica trabajo operativo.
+    """
+    alertas = con.execute(
+        "SELECT tipo, severidad, mensaje, concepto FROM alertas WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchall()
+    sincronizar_casos_alertas(
+        con,
+        referencia=hash_pdf,
+        alertas=[
+            Alerta(tipo=tipo, severidad=severidad, mensaje=mensaje, concepto=concepto)
+            for tipo, severidad, mensaje, concepto in alertas
+        ],
+    )
+
+
+def sincronizar_casos_alertas(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    referencia: str,
+    alertas: list[Alerta],
+) -> None:
+    """Materializa alertas aprobadas en casos, sin duplicar una comparación."""
+    for alerta in alertas:
+        clave = _clave_caso(referencia, alerta)
+        con.execute(
+            """INSERT INTO casos_alerta
+               (clave, hash_pdf, tipo, severidad, mensaje, concepto, actualizado_en)
+               VALUES (?, ?, ?, ?, ?, ?, now())
+               ON CONFLICT (clave) DO UPDATE SET severidad = excluded.severidad,
+                 mensaje = excluded.mensaje, actualizado_en = now()""",
+            [
+                clave,
+                referencia,
+                alerta.tipo,
+                alerta.severidad,
+                alerta.mensaje,
+                alerta.concepto,
+            ],
+        )
+
+
+def listar_casos_alerta(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+) -> list[tuple[str, str, str, str, str | None, str, str | None, str | None, str | None]]:
+    """Casos abiertos y cerrados con los datos necesarios para su gestión."""
+    return con.execute(
+        """SELECT clave, tipo, severidad, mensaje, concepto, estado, responsable,
+                  vencimiento, evidencia
+           FROM casos_alerta
+           ORDER BY CASE severidad WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END,
+           creado_en"""
+    ).fetchall()
+
+
+def actualizar_caso_alerta(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    clave: str,
+    estado: str,
+    responsable: str | None,
+    vencimiento: str | None,
+    evidencia: str | None,
+) -> None:
+    """Asigna y cierra un caso sin borrar su historia operativa."""
+    if estado not in ESTADOS_CASO:
+        raise ValueError(f"Estado de caso inválido: {estado}")
+    con.execute(
+        """UPDATE casos_alerta SET estado = ?, responsable = ?, vencimiento = ?, evidencia = ?,
+           actualizado_en = now() WHERE clave = ?""",
+        [estado, responsable, vencimiento, evidencia, clave],
+    )
+
+
 def alertas_del_periodo(
     con: duckdb.DuckDBPyConnection, *, servicio: str, periodo_desde: str
 ) -> list[Alerta]:
@@ -295,7 +682,7 @@ def alertas_del_periodo(
     filas = con.execute(
         """SELECT a.tipo, a.severidad, a.mensaje, a.concepto FROM alertas a
            JOIN facturas f ON f.hash_pdf = a.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde = ?""",
+           WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
         [servicio, periodo_desde],
     ).fetchall()
     return [
@@ -320,11 +707,15 @@ def guardar_en_cuarentena(
     hash_pdf: str,
     ruta_pdf: str,
     resultado: ResultadoValidacion,
+    ruta_evidencia: str | None = None,
 ) -> None:
     """Guarda una factura que NO pasó la validación aritmética, con el
     detalle de qué falló -- CLAUDE.md: nunca entra al análisis."""
     motivos = "; ".join(resultado.motivos_de_falla())
     con.execute(
-        "INSERT OR REPLACE INTO cuarentena (hash_pdf, ruta_pdf, motivos) VALUES (?, ?, ?)",
-        [hash_pdf, ruta_pdf, motivos],
+        """INSERT INTO cuarentena (hash_pdf, ruta_pdf, motivos, ruta_evidencia)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (hash_pdf) DO UPDATE SET ruta_pdf = excluded.ruta_pdf,
+             motivos = excluded.motivos, ruta_evidencia = excluded.ruta_evidencia""",
+        [hash_pdf, ruta_pdf, motivos, ruta_evidencia],
     )

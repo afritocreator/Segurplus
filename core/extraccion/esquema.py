@@ -54,6 +54,14 @@ class Recargo:
 
 
 @dataclass
+class Credito:
+    """Bonificación, nota de crédito o descuento que reduce el total a pagar."""
+
+    nombre: str
+    importe: float
+
+
+@dataclass
 class FacturaExtraida:
     """Resultado de extraer una factura, ya en el esquema canónico.
 
@@ -73,10 +81,16 @@ class FacturaExtraida:
     conceptos: list[Concepto] = field(default_factory=list)
     impuestos: list[Impuesto] = field(default_factory=list)
     recargos: list[Recargo] = field(default_factory=list)
+    creditos: list[Credito] = field(default_factory=list)
     subtotal: float | None = None
     total: float | None = None
     hash_pdf: str | None = None
     ruta_pdf: str | None = None
+    ruta_evidencia: str | None = None
+    modelo_extraccion: str | None = None
+    version_prompt: str | None = None
+    version_esquema: str | None = None
+    respuesta_extraida: str | None = None
 
 
 def esquema_json_para_modelo() -> dict:
@@ -159,6 +173,15 @@ def esquema_json_para_modelo() -> dict:
                     "required": ["nombre", "importe"],
                 },
             },
+            "creditos": {
+                "type": "array",
+                "description": "Bonificaciones, descuentos o notas de crédito que reducen el total",
+                "items": {
+                    "type": "object",
+                    "properties": {"nombre": {"type": "string"}, "importe": {"type": "number"}},
+                    "required": ["nombre", "importe"],
+                },
+            },
             "subtotal": {"type": ["number", "null"]},
             "total": {"type": ["number", "null"]},
         },
@@ -225,6 +248,9 @@ def factura_desde_json(
     recargos = [
         Recargo(nombre=r["nombre"], importe=float(r["importe"])) for r in datos.get("recargos", [])
     ]
+    creditos = [
+        Credito(nombre=c["nombre"], importe=float(c["importe"])) for c in datos.get("creditos", [])
+    ]
 
     return FacturaExtraida(
         emisor=datos.get("emisor"),
@@ -239,6 +265,7 @@ def factura_desde_json(
         conceptos=conceptos,
         impuestos=impuestos,
         recargos=recargos,
+        creditos=creditos,
         subtotal=datos.get("subtotal"),
         total=datos.get("total"),
         hash_pdf=hash_pdf,

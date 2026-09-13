@@ -30,6 +30,8 @@ import os
 from core.extraccion.esquema import FacturaExtraida, esquema_json_para_modelo, factura_desde_json
 
 MODELO = "gemini-3.6-flash"  # fijo, no "latest" -- ver docstring del módulo
+VERSION_PROMPT = "2026-09-operacion-1"
+VERSION_ESQUEMA = "2026-09-operacion-1"
 MAX_LLAMADAS_POR_HORA = 30
 
 PROMPT_EXTRACCION = """\
@@ -47,6 +49,8 @@ formato pedido. Reglas importantes:
   conceptos.
 - Los cargos por mora, intereses o refacturación van en "recargos", NO como conceptos \
   normales -- son distintos de un consumo regular.
+- Las bonificaciones, descuentos y notas de crédito van en "creditos", con importe positivo; \
+  reducen el total y nunca se mezclan con consumo normal.
 - Si un dato no está en la factura, usá null en vez de inventarlo.
 - Los montos van en pesos argentinos, sin separador de miles, con punto decimal \
   (ej: 1234.50).
@@ -102,4 +106,11 @@ def extraer_con_gemini(pdf_bytes: bytes, *, api_key: str | None = None) -> Factu
     except json.JSONDecodeError as exc:
         raise ExtraccionError(f"La respuesta de Gemini no es JSON válido: {exc}") from exc
 
-    return factura_desde_json(datos)
+    factura = factura_desde_json(datos)
+    # Estos metadatos permiten reconstruir cómo se produjo cada extracción,
+    # aun cuando se actualice el prompt o se rote el modelo en el futuro.
+    factura.modelo_extraccion = MODELO
+    factura.version_prompt = VERSION_PROMPT
+    factura.version_esquema = VERSION_ESQUEMA
+    factura.respuesta_extraida = texto
+    return factura

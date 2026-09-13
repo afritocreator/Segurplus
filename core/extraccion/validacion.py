@@ -49,6 +49,7 @@ class ResultadoValidacion:
     suma_conceptos: float = 0.0
     suma_impuestos: float = 0.0
     suma_recargos: float = 0.0
+    suma_creditos: float = 0.0
     subtotal_ok: bool = True
     total_ok: bool = True
     total_impreso_ok: bool = True
@@ -121,6 +122,7 @@ def validar_factura(
     suma_conceptos = sum(c.importe for c in factura.conceptos)
     suma_impuestos = sum(i.importe for i in factura.impuestos)
     suma_recargos = sum(r.importe for r in factura.recargos)
+    suma_creditos = sum(c.importe for c in factura.creditos)
 
     # subtotal_presente/total_presente son deliberadamente independientes de
     # subtotal_ok/total_ok -- ver docstring de ResultadoValidacion.factura_valida
@@ -134,7 +136,8 @@ def validar_factura(
     subtotal_ok = abs(suma_conceptos - subtotal_referencia) <= tol_subtotal
 
     total_presente = factura.total is not None
-    total_calculado = subtotal_referencia + suma_impuestos + suma_recargos
+    # Fórmula contable: los créditos/bonificaciones reducen el total exigible.
+    total_calculado = subtotal_referencia + suma_impuestos + suma_recargos - suma_creditos
     total_referencia = factura.total if total_presente else total_calculado
     tol_total = max(tolerancia_linea, abs(total_referencia) * tolerancia_total_ratio)
     total_ok = abs(total_calculado - total_referencia) <= tol_total
@@ -150,6 +153,7 @@ def validar_factura(
         suma_conceptos=suma_conceptos,
         suma_impuestos=suma_impuestos,
         suma_recargos=suma_recargos,
+        suma_creditos=suma_creditos,
         subtotal_ok=subtotal_ok,
         total_ok=total_ok,
         total_impreso_ok=total_impreso_ok,
