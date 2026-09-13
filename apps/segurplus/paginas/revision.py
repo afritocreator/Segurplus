@@ -6,6 +6,7 @@ import streamlit as st
 
 from apps.segurplus.autenticacion import requerir_rol, usuario_actual
 from core.almacenamiento import (
+    aprobar_pendientes,
     conectar,
     decision_factura,
     listar_facturas_pendientes,
@@ -13,21 +14,50 @@ from core.almacenamiento import (
     resumen_financiero_factura,
 )
 from core.formato import pesos_ars
+from core.operacion import revision_humana_obligatoria
 
 st.title("✅ Revisar facturas")
-st.caption(
-    "Una factura validada por reglas todavía necesita aprobación humana. Solo las aprobadas "
-    "entran en Evolución, alertas y Excel."
-)
 requerir_rol("revisor", "responsable", "administrador")
 
 con = conectar()
 try:
+    if revision_humana_obligatoria():
+        st.caption(
+            "La revisión humana está OBLIGATORIA (`data/operacion.yaml`): una factura "
+            "validada por reglas no impacta Evolución, alertas ni Excel hasta que se "
+            "aprueba acá, de a una o en lote."
+        )
+    else:
+        st.caption(
+            "La revisión humana está OPCIONAL (`data/operacion.yaml`): las facturas nuevas "
+            "ya se guardan aprobadas y aparecen directo en Evolución. Esta pantalla solo "
+            "muestra facturas que quedaron pendientes de una carga anterior con la "
+            "revisión obligatoria activada, o que fueron rechazadas y corregidas."
+        )
+
     pendientes = listar_facturas_pendientes(con)
     if not pendientes:
         st.success("No hay facturas pendientes de revisión.")
         st.stop()
 
+    st.subheader("Aprobar todas las pendientes")
+    st.caption(
+        f"Hay {len(pendientes)} factura(s) pendiente(s). Aprobarlas en lote registra el "
+        "mismo rastro de auditoría (actor, motivo, momento) que aprobarlas una por una."
+    )
+    with st.form("aprobar_lote"):
+        motivo_lote = st.text_input("Motivo para el lote completo")
+        aprobar_lote_enviado = st.form_submit_button("Aprobar todas las pendientes", type="primary")
+    if aprobar_lote_enviado:
+        if not motivo_lote.strip():
+            st.error("La aprobación en lote también necesita una breve constancia.")
+        else:
+            cantidad = aprobar_pendientes(con, actor=usuario_actual(), motivo=motivo_lote)
+            st.success(f"{cantidad} factura(s) aprobada(s).")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Revisar de a una")
     opciones = {
         f"{emisor or '(sin emisor)'} · {periodo or '(sin período)'} · {hash_pdf[:10]}": hash_pdf
         for hash_pdf, emisor, _servicio, periodo, _total, _evidencia in pendientes

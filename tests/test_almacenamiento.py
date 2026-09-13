@@ -6,6 +6,7 @@ import pytest
 from core.almacenamiento import (
     actualizar_caso_alerta,
     alertas_del_periodo,
+    aprobar_pendientes,
     borrar_de_cuarentena,
     conceptos_sin_clasificar,
     conectar,
@@ -375,6 +376,43 @@ def test_factura_en_revision_no_impacta_serie_hasta_aprobacion(tmp_path):
         [factura.hash_pdf],
     ).fetchall()
     assert decisiones[-1] == ("aprobada", "ana@empresa.test")
+    con.close()
+
+
+def test_aprobar_pendientes_aprueba_todo_el_lote_con_el_mismo_motivo(tmp_path):
+    """Aprobar en lote (apps/segurplus/paginas/revision.py, botón "Aprobar
+    todas las pendientes") tiene que dejar el mismo rastro de auditoría que
+    aprobar cada factura a mano -- ver core.almacenamiento.aprobar_pendientes."""
+    from core.almacenamiento import totales_por_periodo
+
+    con = conectar(tmp_path / "test.duckdb")
+    f1 = _factura("h1")
+    f2 = _factura("h2")
+    f2.periodo_desde = "2026-09-01"
+    guardar_factura(con, f1, estado="requiere_revision")
+    guardar_factura(con, f2, estado="requiere_revision")
+
+    cantidad = aprobar_pendientes(con, actor="ana@empresa.test", motivo="Carga inicial revisada")
+
+    assert cantidad == 2
+    assert listar_facturas_pendientes(con) == []
+    assert totales_por_periodo(con, servicio="telefonia") == {
+        "2026-08-01": pytest.approx(10000.0),
+        "2026-09-01": pytest.approx(10000.0),
+    }
+    for hash_pdf in (f1.hash_pdf, f2.hash_pdf):
+        decisiones = con.execute(
+            "SELECT accion, actor, motivo FROM decisiones_factura WHERE hash_pdf = ?",
+            [hash_pdf],
+        ).fetchall()
+        assert ("aprobada", "ana@empresa.test", "Carga inicial revisada") in decisiones
+    con.close()
+
+
+def test_aprobar_pendientes_sin_pendientes_no_hace_nada(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(), estado="aprobada")
+    assert aprobar_pendientes(con, actor="ana", motivo="sin pendientes") == 0
     con.close()
 
 

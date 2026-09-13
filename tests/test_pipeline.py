@@ -68,6 +68,33 @@ def test_factura_valida_se_guarda(tmp_path, monkeypatch):
         "SELECT emisor, total FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
     assert fila == ("Comunicaciones Sur S.A.", 12584.0)
+    fila_estado = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    # data/operacion.yaml::revision_humana_obligatoria default es false -- una
+    # factura procesada queda aprobada directo, sin paso manual intermedio.
+    assert fila_estado == ("aprobada",)
+    con.close()
+
+
+def test_factura_con_revision_obligatoria_queda_pendiente(tmp_path, monkeypatch):
+    """Con `revision_humana_obligatoria` en true (data/operacion.yaml), la
+    misma factura válida queda `requiere_revision` en vez de `aprobada` --
+    no impacta Evolución/alertas/Excel hasta que alguien la apruebe (ver
+    apps/segurplus/paginas/revision.py)."""
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    monkeypatch.setattr(pipeline_mod, "revision_humana_obligatoria", lambda: True)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "guardada"
+    fila_estado = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    assert fila_estado == ("requiere_revision",)
     con.close()
 
 

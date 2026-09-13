@@ -1,0 +1,14 @@
+# Parámetros operativos del piloto -- CLAUDE.md: nunca hardcodear esto en el código.
+
+# Si es true, toda factura recién procesada queda en estado "requiere_revision"
+# y no impacta Evolución, alertas ni el Excel hasta que alguien la aprueba
+# (de a una o en lote) desde la página "Revisar facturas" -- ver
+# core/almacenamiento.py::decision_factura / aprobar_pendientes.
+#
+# En false (el default de este piloto, con una o dos personas cargando y
+# revisando su propia carga), la factura queda "aprobada" directo al
+# guardarse -- el registro de auditoría (quién cargó, cuándo) se sigue
+# escribiendo igual en los dos casos, así que no se pierde trazabilidad al
+# apagar este interruptor. Se prevé encenderlo cuando haya más de una
+# persona cargando facturas sin supervisión cruzada.
+revision_humana_obligatoria: false

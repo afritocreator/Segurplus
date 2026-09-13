@@ -30,6 +30,7 @@ from core.evidencia import guardar_pdf
 from core.extraccion.gemini import MAX_LLAMADAS_POR_HORA, ExtraccionError, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
 from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto, total_impreso
+from core.operacion import revision_humana_obligatoria
 
 
 @dataclass
@@ -155,9 +156,13 @@ def procesar_pdf(
         scores_homologacion=scores_homologacion,
         motivos_homologacion=motivos_homologacion,
         candidatos_empatados=candidatos_empatados,
-        # La extracción validada es confiable aritméticamente, pero la primera
-        # carga real debe tener aprobación humana antes de alterar el análisis.
-        estado="requiere_revision",
+        # La extracción validada es confiable aritméticamente. Si
+        # `data/operacion.yaml::revision_humana_obligatoria` está en true, no
+        # alcanza para impactar el análisis sin que alguien la apruebe -- ver
+        # apps/segurplus/paginas/revision.py. Si está en false (el default de
+        # este piloto), queda aprobada directo; la auditoría de quién cargó
+        # qué se escribe igual en los dos casos (ver guardar_factura).
+        estado="requiere_revision" if revision_humana_obligatoria() else "aprobada",
     )
 
     # Ítem duplicado se calcula UNA VEZ acá, sobre la factura individual --

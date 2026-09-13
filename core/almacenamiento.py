@@ -278,6 +278,30 @@ def decision_factura(
         _sincronizar_casos_alerta(con, hash_pdf)
 
 
+def aprobar_pendientes(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, *, actor: str, motivo: str
+) -> int:
+    """Aprueba TODAS las facturas en `requiere_revision`, con el mismo motivo
+    para el lote -- para cuando la revisión de a una (`decision_factura`) es
+    más fricción de la que el piloto necesita (una o dos personas cargando y
+    revisando su propia carga, ver `data/operacion.yaml`).
+
+    Reusa `decision_factura` fila por fila, así que cada aprobación deja el
+    mismo rastro de auditoría (actor, motivo, momento) que si se hubiera
+    hecho a mano una por una -- no se pierde trazabilidad por aprobar en
+    lote. No corre dentro de una única transacción de base (tampoco lo hace
+    el resto de este módulo): si el proceso se interrumpe a mitad, algunas
+    facturas quedan aprobadas y otras siguen pendientes, exactamente como si
+    se hubiera interrumpido una revisión manual a mitad de camino -- no es
+    un estado peor que ese.
+
+    Devuelve cuántas facturas se aprobaron."""
+    pendientes = listar_facturas_pendientes(con)
+    for hash_pdf, *_resto in pendientes:
+        decision_factura(con, hash_pdf=hash_pdf, estado="aprobada", actor=actor, motivo=motivo)
+    return len(pendientes)
+
+
 def registrar_correccion(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
     *,
