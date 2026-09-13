@@ -122,6 +122,8 @@ def procesar_pdf(
             ruta_pdf=factura.ruta_pdf,
             resultado=resultado,
             ruta_evidencia=factura.ruta_evidencia,
+            emisor=factura.emisor,
+            servicio=factura.servicio,
         )
         return ResultadoPipeline(
             ruta,

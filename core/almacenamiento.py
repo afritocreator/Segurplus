@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS cuarentena (
 );
 ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT now();
 ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS ruta_evidencia VARCHAR;
+ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS emisor VARCHAR;
+ALTER TABLE cuarentena ADD COLUMN IF NOT EXISTS servicio VARCHAR;
 CREATE TABLE IF NOT EXISTS decisiones_factura (
     id VARCHAR,
     hash_pdf VARCHAR,
@@ -561,6 +563,94 @@ def filas_sin_clasificar_por_periodo(
     ).fetchall()
 
 
+def metricas_por_proveedor(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+) -> list[tuple[str, int, int, int, int, float]]:
+    """Cifras crudas por `emisor` (nunca proporciones -- eso es cálculo,
+    va a `core.analisis.calibracion.MetricasProveedor`, con test):
+    `(emisor, facturas_cargadas, facturas_en_cuarentena, conceptos_totales,
+    conceptos_sin_homologar, importe_sin_homologar)`.
+
+    Sirve para responder "¿la herramienta está leyendo bien a ESTE
+    proveedor?" -- una tasa alta de cuarentena o de conceptos sin
+    homologar en un emisor puntual señala dónde ajustar el prompt de
+    extracción o `data/conceptos/*.yaml`, en vez de mirar el agregado de
+    todos los proveedores mezclados. `emisor IS NULL` se agrupa aparte
+    (una extracción que no pudo leer el emisor sigue siendo información).
+
+    Cuatro consultas simples combinadas en Python en vez de un único JOIN
+    con FULL OUTER: mezclar `facturas` y `cuarentena` (que no comparten
+    columnas de conceptos) en un solo JOIN sería más difícil de leer que
+    combinar los conteos ya agregados."""
+    facturas_por_emisor = dict(
+        con.execute("SELECT emisor, count(*) FROM facturas GROUP BY emisor").fetchall()
+    )
+    cuarentena_por_emisor = dict(
+        con.execute("SELECT emisor, count(*) FROM cuarentena GROUP BY emisor").fetchall()
+    )
+    conceptos_por_emisor = dict(
+        con.execute(
+            """SELECT f.emisor, count(*)
+               FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+               GROUP BY f.emisor"""
+        ).fetchall()
+    )
+    sin_homologar_por_emisor = dict(
+        con.execute(
+            """SELECT f.emisor, count(*)
+               FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+               WHERE c.concepto_normalizado IS NULL
+               GROUP BY f.emisor"""
+        ).fetchall()
+    )
+    importe_sin_homologar_por_emisor = dict(
+        con.execute(
+            """SELECT f.emisor, sum(c.importe)
+               FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+               WHERE c.concepto_normalizado IS NULL
+               GROUP BY f.emisor"""
+        ).fetchall()
+    )
+
+    emisores = (
+        set(facturas_por_emisor)
+        | set(cuarentena_por_emisor)
+        | set(conceptos_por_emisor)
+        | set(sin_homologar_por_emisor)
+    )
+    return [
+        (
+            emisor if emisor is not None else "(sin emisor)",
+            facturas_por_emisor.get(emisor, 0),
+            cuarentena_por_emisor.get(emisor, 0),
+            conceptos_por_emisor.get(emisor, 0),
+            sin_homologar_por_emisor.get(emisor, 0),
+            importe_sin_homologar_por_emisor.get(emisor, 0.0) or 0.0,
+        )
+        for emisor in sorted(emisores, key=lambda e: e or "")
+    ]
+
+
+def motivos_cuarentena_por_proveedor(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+) -> list[tuple[str, str, int]]:
+    """`(emisor, motivo, veces)` -- por qué fue a cuarentena cada proveedor,
+    no solo cuántas veces. `motivos` guarda varios motivos separados por
+    "; " en una sola factura (ver `guardar_en_cuarentena`), así que cada
+    motivo individual se cuenta por separado."""
+    filas = con.execute(
+        "SELECT coalesce(emisor, '(sin emisor)'), motivos FROM cuarentena"
+    ).fetchall()
+    conteo: dict[tuple[str, str], int] = {}
+    for emisor, motivos in filas:
+        for motivo in (motivos or "").split("; "):
+            motivo = motivo.strip()
+            if motivo:
+                clave = (emisor, motivo)
+                conteo[clave] = conteo.get(clave, 0) + 1
+    return [(emisor, motivo, veces) for (emisor, motivo), veces in sorted(conteo.items())]
+
+
 def importes_por_periodo(con: duckdb.DuckDBPyConnection) -> list[tuple[float, str]]:
     """Todos los importes de conceptos con su período, para totales comparables."""
     return con.execute(
@@ -738,14 +828,22 @@ def guardar_en_cuarentena(
     ruta_pdf: str,
     resultado: ResultadoValidacion,
     ruta_evidencia: str | None = None,
+    emisor: str | None = None,
+    servicio: str | None = None,
 ) -> None:
     """Guarda una factura que NO pasó la validación aritmética, con el
-    detalle de qué falló -- CLAUDE.md: nunca entra al análisis."""
+    detalle de qué falló -- CLAUDE.md: nunca entra al análisis.
+
+    `emisor`/`servicio`: aunque la factura no haya validado aritméticamente,
+    la extracción sí pudo leer quién la emitió y de qué servicio se trata --
+    guardarlos permite `metricas_por_proveedor` (core/almacenamiento.py) sin
+    tener que adivinar de qué proveedor viene una cuarentena."""
     motivos = "; ".join(resultado.motivos_de_falla())
     con.execute(
-        """INSERT INTO cuarentena (hash_pdf, ruta_pdf, motivos, ruta_evidencia)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO cuarentena (hash_pdf, ruta_pdf, motivos, ruta_evidencia, emisor, servicio)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (hash_pdf) DO UPDATE SET ruta_pdf = excluded.ruta_pdf,
-             motivos = excluded.motivos, ruta_evidencia = excluded.ruta_evidencia""",
-        [hash_pdf, ruta_pdf, motivos, ruta_evidencia],
+             motivos = excluded.motivos, ruta_evidencia = excluded.ruta_evidencia,
+             emisor = excluded.emisor, servicio = excluded.servicio""",
+        [hash_pdf, ruta_pdf, motivos, ruta_evidencia, emisor, servicio],
     )

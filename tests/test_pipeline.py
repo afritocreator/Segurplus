@@ -110,6 +110,13 @@ def test_factura_rota_va_a_cuarentena(tmp_path, monkeypatch):
         "SELECT 1 FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
     assert en_facturas is None
+    fila_cuarentena = con.execute(
+        "SELECT emisor, servicio FROM cuarentena WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    # Aunque la factura no haya validado aritméticamente, la extracción sí
+    # pudo leer emisor y servicio -- se guardan para poder calcular métricas
+    # de calidad de lectura por proveedor (core.almacenamiento.metricas_por_proveedor).
+    assert fila_cuarentena == ("Comunicaciones Sur S.A.", "telefonia")
     con.close()
 
 

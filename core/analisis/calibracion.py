@@ -63,3 +63,54 @@ def total_en_pesos_constantes(
         a_pesos_constantes(importe, periodo, fecha_base, df_ipc=df_ipc)
         for importe, periodo in filas
     )
+
+
+@dataclass(frozen=True)
+class MetricasProveedor:
+    """Cifras de calidad de lectura de UN proveedor -- responde "¿la
+    herramienta está leyendo bien a este emisor?" en vez de mirar el
+    agregado de todos mezclados. Las cifras crudas vienen de
+    `core.almacenamiento.metricas_por_proveedor`; las proporciones (cálculo,
+    no consulta) se calculan acá, con test de valor a mano."""
+
+    emisor: str
+    facturas_cargadas: int
+    facturas_en_cuarentena: int
+    conceptos_totales: int
+    conceptos_sin_homologar: int
+    importe_sin_homologar: float
+
+    @property
+    def total_facturas_vistas(self) -> int:
+        """Cargadas + cuarentena -- el universo real de PDFs de este
+        proveedor que pasaron por el pipeline, para poder calcular una tasa."""
+        return self.facturas_cargadas + self.facturas_en_cuarentena
+
+    @property
+    def tasa_cuarentena(self) -> float | None:
+        """Proporción de PDFs de este proveedor que NO cerraron
+        aritméticamente. `None` si nunca se vio ningún PDF de este emisor
+        (evita una división por cero sin sentido)."""
+        if self.total_facturas_vistas == 0:
+            return None
+        return self.facturas_en_cuarentena / self.total_facturas_vistas
+
+    @property
+    def tasa_sin_homologar(self) -> float | None:
+        """Proporción de conceptos de las facturas YA CARGADAS de este
+        proveedor que no homologaron a ningún concepto normalizado. `None`
+        si el proveedor no tiene ningún concepto cargado todavía (solo
+        cuarentena, o nada)."""
+        if self.conceptos_totales == 0:
+            return None
+        return self.conceptos_sin_homologar / self.conceptos_totales
+
+
+def metricas_por_proveedor(
+    filas: list[tuple[str, int, int, int, int, float]],
+) -> list[MetricasProveedor]:
+    """Envuelve las filas crudas de `core.almacenamiento.metricas_por_proveedor`
+    en `MetricasProveedor`, ordenadas por tasa de cuarentena descendente (el
+    proveedor que más falla primero -- la prioridad de dónde mirar)."""
+    metricas = [MetricasProveedor(*fila) for fila in filas]
+    return sorted(metricas, key=lambda m: m.tasa_cuarentena or 0.0, reverse=True)

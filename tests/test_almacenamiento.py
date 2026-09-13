@@ -18,6 +18,8 @@ from core.almacenamiento import (
     listar_casos_alerta,
     listar_facturas_pendientes,
     llamadas_ultima_hora,
+    metricas_por_proveedor,
+    motivos_cuarentena_por_proveedor,
     recargos_del_periodo,
     registrar_correccion,
     resumen_financiero_factura,
@@ -538,4 +540,70 @@ def test_componentes_financieros_excluye_facturas_no_aprobadas(tmp_path):
         "creditos": 0.0,
         "total_pagable": 12100.0,
     }
+    con.close()
+
+
+# --- métricas por proveedor (Bloque 5) -------------------------------------
+
+
+def test_metricas_por_proveedor_combina_cargadas_cuarentena_y_sin_homologar(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+
+    # Movistar: 1 factura cargada con 1 concepto sin homologar, 1 en cuarentena.
+    movistar_ok = _factura("movistar_ok")
+    guardar_factura(con, movistar_ok, conceptos_normalizados={})  # no homologó nada
+    movistar_rota = _factura("movistar_rota")
+    movistar_rota.conceptos[0].importe = 999999.0
+    resultado = validar_factura(movistar_rota)
+    guardar_en_cuarentena(
+        con,
+        hash_pdf=movistar_rota.hash_pdf,
+        ruta_pdf=movistar_rota.ruta_pdf,
+        resultado=resultado,
+        emisor=movistar_rota.emisor,
+        servicio=movistar_rota.servicio,
+    )
+
+    # Edesur: 1 factura cargada, homologada del todo (0 sin homologar).
+    edesur = _factura("edesur_ok")
+    edesur.emisor = "Edesur"
+    guardar_factura(con, edesur, conceptos_normalizados={0: "abono_movil"})
+
+    filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
+
+    assert filas["Movistar"] == ("Movistar", 1, 1, 1, 1, 10000.0)
+    assert filas["Edesur"] == ("Edesur", 1, 0, 1, 0, 0.0)
+    con.close()
+
+
+def test_metricas_por_proveedor_agrupa_emisor_desconocido(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    sin_emisor = _factura("sin_emisor")
+    sin_emisor.emisor = None
+    guardar_factura(con, sin_emisor)
+
+    filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
+    assert filas["(sin emisor)"][1] == 1
+    con.close()
+
+
+def test_motivos_cuarentena_por_proveedor_desglosa_cada_motivo(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura("rota_dos_motivos")
+    factura.conceptos[0].importe = 999999.0
+    factura.total = 1.0  # agrega un segundo motivo de falla
+    resultado = validar_factura(factura)
+    assert len(resultado.motivos_de_falla()) >= 2
+    guardar_en_cuarentena(
+        con,
+        hash_pdf=factura.hash_pdf,
+        ruta_pdf=factura.ruta_pdf,
+        resultado=resultado,
+        emisor="Movistar",
+        servicio="telefonia",
+    )
+    motivos = motivos_cuarentena_por_proveedor(con)
+    assert len(motivos) == len(resultado.motivos_de_falla())
+    assert all(emisor == "Movistar" for emisor, _motivo, _veces in motivos)
+    assert all(veces == 1 for _emisor, _motivo, veces in motivos)
     con.close()

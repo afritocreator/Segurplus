@@ -15,8 +15,16 @@ from core.almacenamiento import (
     conectar,
     filas_sin_clasificar_por_periodo,
     importes_por_periodo,
+    motivos_cuarentena_por_proveedor,
 )
-from core.analisis.calibracion import resumir_sin_clasificar, total_en_pesos_constantes
+from core.almacenamiento import (
+    metricas_por_proveedor as metricas_por_proveedor_db,
+)
+from core.analisis.calibracion import (
+    metricas_por_proveedor,
+    resumir_sin_clasificar,
+    total_en_pesos_constantes,
+)
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import margen_cerca_del_umbral, quitar_periodo, umbral_coincidencia
 from core.formato import pesos_ars
@@ -41,6 +49,46 @@ st.caption(
 
 con = conectar()
 try:
+    st.subheader("Calidad de lectura por proveedor")
+    st.caption(
+        "¿La herramienta está leyendo bien a ESTE proveedor? Ordenado por tasa de "
+        "cuarentena descendente -- el que más falla, primero."
+    )
+    metricas = metricas_por_proveedor(metricas_por_proveedor_db(con))
+    if not metricas:
+        st.info("Todavía no se cargó ninguna factura.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "Proveedor": m.emisor,
+                    "Facturas cargadas": m.facturas_cargadas,
+                    "Facturas en cuarentena": m.facturas_en_cuarentena,
+                    "Tasa de cuarentena": (
+                        f"{m.tasa_cuarentena:.0%}" if m.tasa_cuarentena is not None else "—"
+                    ),
+                    "Conceptos sin homologar": m.conceptos_sin_homologar,
+                    "Tasa sin homologar": (
+                        f"{m.tasa_sin_homologar:.0%}" if m.tasa_sin_homologar is not None else "—"
+                    ),
+                    "Importe sin homologar": pesos_ars(m.importe_sin_homologar),
+                }
+                for m in metricas
+            ],
+            width="stretch",
+        )
+        motivos = motivos_cuarentena_por_proveedor(con)
+        if motivos:
+            with st.expander("Por qué fue a cuarentena cada proveedor"):
+                st.dataframe(
+                    [
+                        {"Proveedor": emisor, "Motivo": motivo, "Veces": veces}
+                        for emisor, motivo, veces in motivos
+                    ],
+                    width="stretch",
+                )
+    st.divider()
+
     filas = conceptos_sin_clasificar(con)
     if not filas:
         st.success("No hay conceptos sin clasificar.")
