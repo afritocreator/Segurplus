@@ -37,7 +37,13 @@ def resumir_sin_clasificar(
         if clave not in acumulado:
             acumulado[clave] = [score, 0.0, 0, periodo]
         actual = acumulado[clave]
-        actual[0] = max((actual[0], score), key=lambda x: x is not None)
+        # max() con key=lambda x: x is not None NO calcula el máximo real: entre
+        # dos valores no nulos, ambas keys valen True y max() devuelve el PRIMERO
+        # (docs/auditoria-2026-09-rediseno.md, hallazgo de la revisión del Bloque
+        # de Codex -- verificado con (0.30, 0.90): guardaba 0.30). El máximo
+        # ignorando None hay que calcularlo filtrando los None antes.
+        candidatos = [v for v in (actual[0], score) if v is not None]
+        actual[0] = max(candidatos) if candidatos else None
         actual[1] = float(actual[1]) + real
         actual[2] = int(actual[2]) + 1
         actual[3] = max(actual[3], periodo)

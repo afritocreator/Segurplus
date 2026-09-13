@@ -144,12 +144,24 @@ def efecto_dominante(
 
         Σefecto_cantidad + Σefecto_precio + Σefecto_cruzado == variación total
 
-    Devuelve `("cantidad" | "precio" | "mixto" | "compensado" | "sin_variacion",
-    proporción)`, donde `proporción` es la fracción de la variación total
-    que explica ese efecto (`Σefecto_precio / variación_total` para
-    "precio", etc.) -- "mixto" cuando ningún efecto solo llega al umbral
-    de `data/alertas.yaml` (`umbral_efecto_dominante`, nunca hardcodeado,
-    CLAUDE.md), "sin_variacion" si la variación total es exactamente 0."""
+    Devuelve `("cantidad" | "precio" | "mixto" | "sin_variacion",
+    proporción)`, donde `proporción` es la fracción del MOVIMIENTO TOTAL
+    (no de la variación neta) que explica ese efecto -- "mixto" cuando
+    ningún efecto solo llega al umbral de `data/alertas.yaml`
+    (`umbral_efecto_dominante`, nunca hardcodeado, CLAUDE.md),
+    "sin_variacion" si la variación total es exactamente 0.
+
+    El denominador es `Σ|efecto_cantidad| + Σ|efecto_precio| + Σ|efecto_cruzado|`,
+    NO la variación total (`Σefecto_cantidad + Σefecto_precio + Σefecto_cruzado`).
+    Son lo mismo cuando todos los efectos tienen el mismo signo, pero
+    difieren -- y mucho -- cuando cantidad y precio se mueven en direcciones
+    opuestas (docs/auditoria-2026-09-rediseno.md, A-30): si bajan líneas
+    mientras sube el precio, la variación neta puede quedar cerca de cero
+    aunque los dos movimientos hayan sido grandes, y dividir por ese casi-cero
+    da un porcentaje sin sentido (el caso verificado: "mayormente por PRECIO
+    (1000%)"). Dividir por la suma de valores absolutos acota el resultado a
+    [0, 1] siempre, y sigue respondiendo la pregunta correcta: "de todo lo que
+    se movió, ¿qué parte fue precio y qué parte fue cantidad?"."""
     umbral = umbral if umbral is not None else _umbral_dominancia()
     suma_cantidad = sum(d.efecto_cantidad for d in descomposiciones)
     suma_precio = sum(d.efecto_precio for d in descomposiciones)
@@ -159,14 +171,12 @@ def efecto_dominante(
     if variacion_total == 0:
         return "sin_variacion", 0.0
 
-    efectos = (suma_cantidad, suma_precio, suma_cruzado)
-    if any(a * b < 0 for i, a in enumerate(efectos) for b in efectos[i + 1 :]):
-        # Dividir por el cambio neto cuando los efectos se compensan produce
-        # porcentajes mayores a 100%, que no explican nada al usuario.
-        return "compensado", 0.0
+    denominador = abs(suma_cantidad) + abs(suma_precio) + abs(suma_cruzado)
+    if denominador == 0:
+        return "sin_variacion", 0.0
 
-    proporcion_cantidad = suma_cantidad / variacion_total
-    proporcion_precio = suma_precio / variacion_total
+    proporcion_cantidad = suma_cantidad / denominador
+    proporcion_precio = suma_precio / denominador
 
     if abs(proporcion_precio) >= umbral:
         return "precio", proporcion_precio

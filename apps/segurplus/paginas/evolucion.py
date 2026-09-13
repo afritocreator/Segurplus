@@ -282,11 +282,6 @@ with st.container(border=True):
             f"El cambio de {cambio_formateado} fue una **mezcla** de cantidad y "
             "precio -- ningún efecto explica la mayor parte por sí solo."
         )
-    elif tipo_dominante == "compensado":
-        st.caption(
-            "Los efectos de precio, cantidad y/o cruce se **compensan**; "
-            "no se muestra un porcentaje neto engañoso."
-        )
     else:
         st.caption("No hubo variación nominal entre los períodos seleccionados.")
 

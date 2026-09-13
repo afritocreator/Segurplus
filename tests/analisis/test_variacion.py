@@ -186,12 +186,36 @@ def test_efecto_dominante_sin_variacion():
     assert proporcion == 0.0
 
 
-def test_efecto_dominante_efectos_opuestos_es_compensado():
-    # Precio +$1.000 y cantidad -$900: el neto no debe convertirse en 1000%.
+def test_efecto_dominante_efectos_opuestos_no_explota():
+    """docs/auditoria-2026-09-rediseno.md, A-30: dividir por la variación NETA
+    (en vez de por la suma de valores absolutos) cuando cantidad y precio se
+    mueven en direcciones opuestas puede dar un porcentaje sin sentido -- el
+    caso verificado fue "mayormente por PRECIO (1000%)" para una variación
+    neta de apenas $100. Acá: cantidad baja de 10 a 1 (efecto_cantidad=-900),
+    precio sube de 100 a 200 (efecto_precio=1000, efecto_cruzado=-900),
+    variación neta=-800. Denominador = 900+1000+900=2800 (nunca la variación
+    neta) -> proporcion_precio = 1000/2800 = 0.357, proporcion_cantidad =
+    -900/2800 = -0.321 -- ninguno llega al umbral 0.60, es genuinamente
+    mixto, y el resultado queda acotado a [-1, 1]."""
     d = descomponer_variacion("x", cantidad_0=10, precio_0=100, cantidad_1=1, precio_1=200)
     tipo, proporcion = efecto_dominante([d], umbral=0.60)
-    assert tipo == "compensado"
-    assert proporcion == 0.0
+    assert tipo == "mixto"
+    assert proporcion == pytest.approx(1000.0 / 2800.0)
+    assert abs(proporcion) <= 1.0
+
+
+def test_efecto_dominante_efectos_opuestos_cantidad_domina():
+    """Mismo tipo de caso (cantidad y precio en direcciones opuestas), pero
+    acá el efecto cantidad SÍ es abrumador: más líneas (10->20) con el
+    precio unitario bajando apenas (100->90). Con el denominador correcto
+    (suma de valores absolutos) esto se ve como "mayormente CANTIDAD", que
+    es la lectura correcta -- con la variación neta como denominador, se
+    clasificaba como "compensado" (sin veredicto) por el solo hecho de que
+    efecto_cruzado tiene signo opuesto a los otros dos."""
+    d = descomponer_variacion("x", cantidad_0=10, precio_0=100, cantidad_1=20, precio_1=90)
+    tipo, proporcion = efecto_dominante([d], umbral=0.60)
+    assert tipo == "cantidad"
+    assert proporcion == pytest.approx(1000.0 / 1200.0)
 
 
 def test_efecto_dominante_suma_varios_conceptos():
