@@ -85,6 +85,13 @@ una sola pantalla larga.
 - Hallazgos diferidos hasta tener facturas reales: A-26 (`_parsear_monto` con separadores
   de miles mezclados) y A-27 (alerta de período faltante asume periodicidad mensual, un
   servicio bimestral como el gas dispara falso positivo siempre).
+- **Auditoría del rediseño (A-29 a A-48)**: ver
+  `docs/auditoria-2026-09-rediseno.md`. Encontró que el propio arreglo de A-28 quedó
+  incompleto -- `quitar_periodo` no reconoce los meses abreviados `may` ni `sept`, así que
+  el bug se reproduce entero para esos casos (A-29) -- y que la frase de veredicto nueva
+  puede mostrar un porcentaje sin sentido cuando los efectos de cantidad y precio tienen
+  signos opuestos (A-30). Los dos, más A-31/A-33/A-40, conviene resolverlos antes de cargar
+  la primera factura real.
 - **Persistencia en la nube**: el disco de Streamlit Community Cloud gratuito no es
   durable entre reinicios (ver ADR-002). No es grave para probar, sí para depender de
   esto en el día a día — a resolver cuando se decida usarlo en producción.
