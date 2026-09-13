@@ -14,8 +14,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pdfplumber>=0.11",
     "google-genai>=0.3",
-    "psycopg[binary]>=3.2",
-    "boto3>=1.35",
+    "psycopg[binary]>=3.2",  # Postgres gratis (Neon/Supabase), ver ADR-003
 ]
 
 [project.optional-dependencies]
@@ -23,6 +22,12 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "reportlab>=4.0",
+]
+# Solo si se despliega con S3/R2 real para el PDF original -- el default del
+# piloto guarda el PDF en una carpeta local (EVIDENCIA_DIR), ver
+# core/evidencia.py y ADR-003. `pip install -e ".[s3]"` para sumarlo.
+s3 = [
+    "boto3>=1.35",
 ]
 
 [tool.pytest.ini_options]

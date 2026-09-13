@@ -14,7 +14,7 @@ import streamlit as st
 
 from apps.segurplus.secretos import leer_secret
 from core.almacenamiento import conectar
-from core.evidencia import persistencia_durable_configurada
+from core.evidencia import evidencia_durable_configurada, persistencia_durable_configurada
 from core.pipeline import ResultadoPipeline, procesar_pdf
 
 st.title("📥 Cargar facturas")
@@ -25,8 +25,16 @@ st.caption(
 )
 if not persistencia_durable_configurada():
     st.info(
-        "Modo local de desarrollo: configurá DATABASE_URL y S3_BUCKET antes de usar facturas "
-        "reales de forma cotidiana. El disco de Streamlit no es una fuente durable."
+        "Modo local de desarrollo: configurá DATABASE_URL (Postgres, ver ADR-003) antes de "
+        "usar facturas reales de forma cotidiana. El disco de Streamlit no es una fuente "
+        "durable, así que un reinicio del servidor puede perder lo cargado."
+    )
+elif not evidencia_durable_configurada():
+    st.caption(
+        "El PDF original se guarda en el disco del servidor (no en un bucket S3): puede "
+        "perderse en un reinicio de Streamlit Community Cloud, aunque los datos extraídos "
+        "ya están seguros en Postgres. Es idempotente por hash -- volver a subir el mismo "
+        "PDF no duplica nada."
     )
 
 api_key = leer_secret("GEMINI_API_KEY")

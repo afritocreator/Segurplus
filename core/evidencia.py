@@ -1,7 +1,10 @@
 """Almacenamiento privado de PDF original, separado de la base transaccional.
 
-Producción usa un bucket S3 compatible configurado por secrets. El fallback
-local existe solo para desarrollo y no se anuncia como persistencia durable.
+El default del piloto guarda el PDF en una carpeta local (`EVIDENCIA_DIR`) --
+suficiente mientras la app corre en un único proceso, pero NO durable si el
+servidor de Streamlit Community Cloud se reinicia (ver ADR-003). Un bucket S3
+compatible (`S3_BUCKET`, extra opcional `s3` de pyproject.toml) es la opción
+para cuando eso deje de ser aceptable.
 """
 
 from __future__ import annotations
@@ -11,8 +14,21 @@ from pathlib import Path
 
 
 def persistencia_durable_configurada() -> bool:
-    """True únicamente si base PostgreSQL y bucket privado están configurados."""
-    return bool(os.environ.get("DATABASE_URL") and os.environ.get("S3_BUCKET"))
+    """True si la base transaccional (facturas, decisiones, casos) está en
+    PostgreSQL en vez de en el DuckDB local -- lo único de lo que depende que
+    un reinicio del servidor no pierda datos operativos. NO depende de
+    `S3_BUCKET`: la evidencia del PDF es una preocupación aparte (ver
+    `evidencia_durable_configurada`), no una condición para que la base de
+    datos sea durable -- antes esta función exigía los dos, así que un
+    `DATABASE_URL` bien configurado sin S3 seguía mostrando "modo local"."""
+    return bool(os.environ.get("DATABASE_URL"))
+
+
+def evidencia_durable_configurada() -> bool:
+    """True si el PDF original se guarda en un bucket S3 compatible en vez de
+    en una carpeta local del servidor (que se pierde en un reinicio de
+    Streamlit Community Cloud)."""
+    return bool(os.environ.get("S3_BUCKET"))
 
 
 def guardar_pdf(hash_pdf: str, contenido: bytes) -> str | None:

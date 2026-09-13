@@ -167,6 +167,12 @@ class ConexionPostgres:
         self._con = psycopg.connect(url, autocommit=True)
 
     def execute(self, sql: str, params: list[Any] | None = None) -> Any:
+        """Reemplazo textual `?`->`%s`, sin parsear el SQL -- RESTRICCIÓN:
+        ningún SQL de este módulo puede tener un `?` que no sea un
+        placeholder de parámetro (ej. dentro de un literal de texto), ni un
+        `%` suelto (ej. un `LIKE 'x%'`, que psycopg interpretaría como el
+        inicio de otro placeholder). Vigilado por
+        `tests/test_conexion_postgres.py`."""
         return self._con.execute(sql.replace("?", "%s"), params)
 
     def close(self) -> None:

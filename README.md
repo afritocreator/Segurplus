@@ -85,7 +85,6 @@ lo que sí resuelve Streamlit Community Cloud, gratis, mismo patrón que ya usa 
    ```toml
    GEMINI_API_KEY = "la-api-key-real"
    DATABASE_URL = "postgresql://..."
-   S3_BUCKET = "segurplus-evidencia-privada"
    ```
    (ver `.streamlit/secrets.toml.example` para el formato — ese archivo real nunca se
    commitea, solo se carga acá). Para producción configurá además OIDC y los roles por
@@ -98,10 +97,32 @@ de Streamlit y asigna roles de cargador, revisor, responsable o administrador. S
 mantiene la contraseña compartida únicamente para el piloto y se la identifica como acceso
 transitorio, sin atribución individual.
 
-**Importante sobre los datos**: el disco de Streamlit no es persistente. La operación usa
-PostgreSQL administrado como fuente de verdad y un bucket privado S3 compatible para los
-PDF originales; el tablero avisa cuando esos dos secrets no están configurados. Ver
-[`ADR-003`](docs/decisiones/ADR-003-persistencia-durable.md).
+**Importante sobre los datos**: el disco de Streamlit no es persistente — un reinicio por
+inactividad puede perder lo que esté solo en DuckDB local. Por eso `DATABASE_URL` apunta a
+un PostgreSQL gratuito (Neon o Supabase, no un plan pago — ver
+[`ADR-003`](docs/decisiones/ADR-003-persistencia-durable.md) para el porqué), y sin ese
+secret configurado el tablero avisa que está en modo local.
+
+### Crear la base Postgres gratis (Neon o Supabase)
+
+Cualquiera de los dos sirve; los pasos son casi idénticos. Con Neon:
+
+1. Entrá a [neon.tech](https://neon.tech) y creá un proyecto nuevo (plan gratuito).
+2. Copiá la **connection string** que te da el dashboard (empieza con `postgresql://`,
+   incluye usuario, contraseña, host y el nombre de la base).
+3. Pegala como `DATABASE_URL` en Secrets de Streamlit Community Cloud (paso 3 de arriba).
+4. Al primer `conectar()`, la app corre las migraciones (`_DDL`) sola — no hace falta
+   crear tablas a mano.
+
+Con Supabase: `Project Settings → Database → Connection string` (elegí el modo
+"Session" o "Transaction pooling", ambos funcionan con `psycopg`), y el mismo paso 3.
+
+El PDF original, mientras tanto, se guarda en el disco del servidor (no es durable
+entre reinicios) — aceptable mientras se prueba, porque la carga es idempotente por
+hash: si el servidor reinicia, se puede volver a subir el mismo lote de PDFs sin que se
+dupliquen. El día que haga falta que también sea durable, un bucket S3 compatible
+(`pip install -e ".[s3]"`, `S3_BUCKET` en Secrets) lo resuelve sin tocar código — ver
+`core/evidencia.py` y el ADR-003.
 
 ## Estructura
 

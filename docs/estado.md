@@ -75,9 +75,17 @@ una sola pantalla larga.
 - La carga validada pasa a **requiere revisión**: no impacta Evolución, alertas ni Excel
   hasta que un revisor la aprueba con motivo. Rechazos y correcciones de cabecera quedan
   registrados con actor, momento, valor anterior y evidencia.
-- La fuente de verdad productiva se configura por `DATABASE_URL` (PostgreSQL administrado)
-  y `S3_BUCKET` (PDF original privado); DuckDB es solamente el modo local de desarrollo.
-  La decisión operativa está en `docs/decisiones/ADR-003-persistencia-durable.md`.
+- La fuente de verdad productiva se configura por `DATABASE_URL` (PostgreSQL **gratis**,
+  Neon o Supabase -- no un plan administrado pago, ver el addendum de
+  `docs/decisiones/ADR-003-persistencia-durable.md`); DuckDB es solamente el modo local
+  de desarrollo. El PDF original va a una carpeta local por defecto (no durable entre
+  reinicios, pero la carga es idempotente por hash); `S3_BUCKET` es un extra opcional
+  (`pip install -e ".[s3]"`) para cuando eso deje de ser aceptable, no un requisito.
+- La revisión humana de facturas cargadas es **opcional y configurable**
+  (`data/operacion.yaml::revision_humana_obligatoria`, default `false`): con una o dos
+  personas cargando su propia factura, exigir aprobación de a una antes de ver el
+  análisis era pura fricción. En `true`, el circuito de aprobación (de a una o en lote,
+  con motivo y actor registrados) sigue funcionando igual.
 - Se persisten impuestos, recargos y créditos por separado. Evolución agrega una pestaña
   de composición del total pagable, además de la descomposición de consumos comparables.
 - Las alertas de facturas aprobadas y de comparaciones generan casos deduplicados,
@@ -110,15 +118,20 @@ una sola pantalla larga.
   puede mostrar un porcentaje sin sentido cuando los efectos de cantidad y precio tienen
   signos opuestos (A-30). Los dos, más A-31/A-33/A-40, conviene resolverlos antes de cargar
   la primera factura real.
-- **Correcciones A-29 a A-48**: el período abreviado reconoce también `may`
-  y `sept`; el veredicto no calcula porcentajes cuando los efectos se
-  compensan; la re-homologación exige previsualización y confirmación, usa
-  transacción y bloquea diccionarios inseguros; los scores no medidos se
-  distinguen en la pantalla de calibración. A-26 y A-27 siguen diferidos
-  hasta contar con facturas reales.
-- **Persistencia en la nube**: el disco de Streamlit Community Cloud gratuito no es
-  durable entre reinicios (ver ADR-002). No es grave para probar, sí para depender de
-  esto en el día a día — a resolver cuando se decida usarlo en producción.
+- **Correcciones A-29 a A-48**: el período abreviado reconoce también `may` y `sept`; la
+  re-homologación exige previsualización y confirmación, usa transacción y bloquea
+  diccionarios inseguros; los scores no medidos se distinguen en la pantalla de
+  calibración. El veredicto (`efecto_dominante`) pasó por una segunda vuelta: la
+  corrección inicial de A-30 evitaba el "1000%" pero se pasó de frenada, dejando el
+  tablero sin veredicto cada vez que cantidad y precio se movían en direcciones
+  opuestas (la mitad de los casos reales) -- ahora divide por la suma de valores
+  absolutos de los efectos en vez de por la variación neta, así que siempre da una
+  respuesta acotada a [-1, 1]. A-26 y A-27 siguen diferidos hasta contar con facturas
+  reales.
+- **Persistencia en la nube**: resuelta con un Postgres gratis (ver arriba). Sigue
+  pendiente la evidencia del PDF (carpeta local, no durable entre reinicios) y la
+  verificación de backups del proveedor gratuito elegido -- ver las limitaciones
+  conocidas del addendum de ADR-003.
 - **Migración a Vercel evaluada y descartada**: el plan gratuito de Vercel prohíbe uso
   comercial, lo que hubiera roto el "costo cero" ya prometido. Se decidió quedarse en
   Streamlit y mejorar la estética ahí (ver más arriba). Si alguna vez se reconsidera, la
