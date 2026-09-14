@@ -22,3 +22,9 @@ revision_humana_obligatoria: false
 # sobra para un equipo chico -- este número es un freno propio contra un
 # loop o un mal uso del tablero, no el límite real de la API.
 max_llamadas_gemini_por_hora: 30
+
+# Zona horaria del equipo que usa el tablero (docs/auditoria-2026-09-
+# facturas-reales.md, hallazgo C-8) -- Streamlit Community Cloud corre en
+# UTC; sin esto, "probá de nuevo después de las HH:MM" mostraba la hora del
+# SERVIDOR, adelantada 3 horas respecto del reloj real de Tandil.
+zona_horaria: America/Argentina/Buenos_Aires

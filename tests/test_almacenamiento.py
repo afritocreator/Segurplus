@@ -229,14 +229,59 @@ def test_llamadas_ultima_hora_cuenta_intentos_reales_no_facturas_guardadas(tmp_p
 
 
 def test_proxima_ventana_libre_es_la_llamada_mas_vieja_mas_una_hora(tmp_path):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-8: devuelve un
+    timedelta (cuánto falta), no un datetime del servidor -- así el
+    llamador lo suma a la hora ACTUAL en SU zona horaria, en vez de mostrar
+    la hora tal cual la guardó la base (potencialmente en otro huso)."""
     con = conectar(tmp_path / "test.duckdb")
-    assert proxima_ventana_libre(con) is None  # sin llamadas, no hay ventana que esperar
+    assert proxima_ventana_libre(con, tope=1) is None  # sin llamadas, nada que esperar
 
     registrar_intento_gemini(con, hash_pdf="a1", ruta_pdf="a1.pdf", exito=True)
-    fila = con.execute("SELECT creado_en FROM intentos_gemini WHERE hash_pdf = 'a1'").fetchone()
-    from datetime import timedelta
+    # Mismo cálculo que hace proxima_ventana_libre, todo en SQL -- ahorra
+    # mezclar el datetime naive de creado_en con el now() tz-aware de
+    # DuckDB en Python, que directamente no se puede restar.
+    esperado = con.execute(
+        """SELECT (creado_en + INTERVAL '1 hour') - now()
+           FROM intentos_gemini WHERE hash_pdf = 'a1'"""
+    ).fetchone()[0]
 
-    assert proxima_ventana_libre(con) == fila[0] + timedelta(hours=1)
+    destrabe = proxima_ventana_libre(con, tope=1)
+    # Comparación con tolerancia: hay microsegundos entre el `now()` de la
+    # query de arriba y el de `proxima_ventana_libre` -- no exactamente el
+    # mismo instante.
+    assert abs((destrabe - esperado).total_seconds()) < 1
+    con.close()
+
+
+def test_proxima_ventana_libre_con_conteo_por_encima_del_tope(tmp_path):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-11: si hay MÁS
+    llamadas que el tope (ej. porque se bajó el tope después de haberlas
+    hecho), sacar solo la llamada MÁS VIEJA no alcanza -- siguen quedando
+    `tope` o más dentro de la ventana. Con 4 llamadas y tope 2, hacen falta
+    DOS salidas para volver a tener margen: la ventana libre depende de la
+    llamada en la posición `cantidad - tope` (índice 2, la TERCERA más
+    vieja de 4), no de la primera."""
+    con = conectar(tmp_path / "test.duckdb")
+    for i in range(4):
+        registrar_intento_gemini(con, hash_pdf=f"a{i}", ruta_pdf=f"a{i}.pdf", exito=True)
+
+    # offset = cantidad(4) - tope(2) = 2 -> la TERCERA más vieja (índice 2).
+    esperado = con.execute(
+        """SELECT (creado_en + INTERVAL '1 hour') - now() FROM (
+               SELECT creado_en FROM intentos_gemini ORDER BY creado_en LIMIT 1 OFFSET 2
+           ) t"""
+    ).fetchone()[0]
+    # Si el bug de C-11 siguiera ahí (mirar siempre la más vieja), el
+    # resultado sería DISTINTO y menor -- una hora que sigue bloqueada.
+    esperado_bug_viejo = con.execute(
+        """SELECT (creado_en + INTERVAL '1 hour') - now() FROM (
+               SELECT creado_en FROM intentos_gemini ORDER BY creado_en LIMIT 1
+           ) t"""
+    ).fetchone()[0]
+    assert esperado != esperado_bug_viejo
+
+    destrabe = proxima_ventana_libre(con, tope=2)
+    assert abs((destrabe - esperado).total_seconds()) < 1
     con.close()
 
 

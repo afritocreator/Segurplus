@@ -29,8 +29,8 @@ def revision_humana_obligatoria() -> bool:
 
 
 def max_llamadas_gemini_por_hora() -> int:
-    """Tope de llamadas a Gemini por hora (docs/auditoria-2026-09-piloto.md,
-    hallazgo B-4) -- antes vivía hardcodeado como
+    """Tope de llamadas a Gemini por hora (docs/auditoria-2026-09-facturas-
+    reales.md, hallazgo B-4) -- antes vivía hardcodeado como
     `core.extraccion.gemini.MAX_LLAMADAS_POR_HORA`, un parámetro operativo
     que CLAUDE.md pide que nunca esté en el código. Se hace cumplir con
     `core.almacenamiento.llamadas_ultima_hora`, que cuenta llamadas reales
@@ -39,3 +39,16 @@ def max_llamadas_gemini_por_hora() -> int:
     if not isinstance(datos, dict) or "max_llamadas_gemini_por_hora" not in datos:
         raise ValueError(f"{RUTA_OPERACION} no tiene 'max_llamadas_gemini_por_hora'")
     return int(datos["max_llamadas_gemini_por_hora"])
+
+
+def zona_horaria() -> str:
+    """Nombre de zona horaria IANA del equipo que usa el tablero (docs/
+    auditoria-2026-09-facturas-reales.md, hallazgo C-8) -- para mostrar "a
+    qué hora reintentar" (`core.pipeline.procesar_pdf`) en la hora de pared
+    del usuario, no en la del servidor. Streamlit Community Cloud corre en
+    UTC; el equipo está en Tandil, Buenos Aires (UTC-3) -- sin esto, el
+    mensaje decía una hora 3 horas adelantada respecto del reloj real."""
+    datos = yaml.safe_load(RUTA_OPERACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "zona_horaria" not in datos:
+        raise ValueError(f"{RUTA_OPERACION} no tiene 'zona_horaria'")
+    return str(datos["zona_horaria"])

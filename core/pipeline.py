@@ -12,7 +12,9 @@ No hace nada nuevo: compone funciones ya escritas y probadas en
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import duckdb
 
@@ -33,7 +35,7 @@ from core.evidencia import guardar_pdf
 from core.extraccion.gemini import ExtraccionError, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
 from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto, total_impreso
-from core.operacion import max_llamadas_gemini_por_hora, revision_humana_obligatoria
+from core.operacion import max_llamadas_gemini_por_hora, revision_humana_obligatoria, zona_horaria
 
 
 @dataclass
@@ -89,18 +91,24 @@ def procesar_pdf(
 
     tope = max_llamadas_gemini_por_hora()
     if llamadas_ultima_hora(con) >= tope:
-        # docs/auditoria-2026-09.md, hallazgo A-7 -- y docs/auditoria-2026-09-
-        # piloto.md, B-4: el tope ahora se hace cumplir contra llamadas
-        # REALES (tabla intentos_gemini), no contra un proxy que subestimaba
-        # el uso real cuando la extracción fallaba. El mensaje dice A QUÉ
-        # HORA reintentar, no solo que se alcanzó el tope.
-        destrabe = proxima_ventana_libre(con)
+        # docs/auditoria-2026-09.md, hallazgo A-7 -- y docs/auditoria-2026-
+        # 09-facturas-reales.md, B-4: el tope ahora se hace cumplir contra
+        # llamadas REALES (tabla intentos_gemini), no contra un proxy que
+        # subestimaba el uso real cuando la extracción fallaba. El mensaje
+        # dice A QUÉ HORA reintentar, no solo que se alcanzó el tope.
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-8:
+        # proxima_ventana_libre devuelve un timedelta (cuánto falta), no un
+        # datetime del servidor -- se suma acá a la hora ACTUAL en la zona
+        # horaria del usuario (core.operacion.zona_horaria), no en la del
+        # servidor (UTC en Streamlit Cloud, 3 horas adelantada respecto de
+        # Tandil).
+        destrabe = proxima_ventana_libre(con, tope=tope)
         detalle = f"Se alcanzó el tope de {tope} llamadas a Gemini por hora"
-        detalle += (
-            f" -- probá de nuevo después de las {destrabe.strftime('%H:%M')}."
-            if destrabe is not None
-            else " -- probá de nuevo más tarde."
-        )
+        if destrabe is not None:
+            hora_local = datetime.now(ZoneInfo(zona_horaria())) + destrabe
+            detalle += f" -- probá de nuevo después de las {hora_local.strftime('%H:%M')}."
+        else:
+            detalle += " -- probá de nuevo más tarde."
         return ResultadoPipeline(
             ruta, documento.hash_sha256, estado="error_extraccion", detalle=detalle
         )

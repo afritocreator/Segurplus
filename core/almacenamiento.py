@@ -336,19 +336,49 @@ def llamadas_ultima_hora(con: duckdb.DuckDBPyConnection) -> int:
     return fila[0]
 
 
-def proxima_ventana_libre(con: duckdb.DuckDBPyConnection) -> datetime | None:
-    """Cuándo la llamada más vieja de la última hora sale de la ventana y el
-    tope vuelve a tener margen -- para poder decirle al usuario A QUÉ HORA
-    reintentar, no solo que "se alcanzó el tope" (docs/auditoria-2026-09-
-    piloto.md, hallazgo B-4). `None` si no hay ninguna llamada en la última
-    hora (no debería pasar si el tope ya se alcanzó, pero es un valor
-    seguro para ese caso)."""
+def proxima_ventana_libre(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, *, tope: int
+) -> timedelta | None:
+    """Cuánto falta para que el tope vuelva a tener margen -- para poder
+    decirle al usuario A QUÉ HORA reintentar, no solo que "se alcanzó el
+    tope" (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-4). `None`
+    si no hay ninguna llamada en la última hora (no debería pasar si el
+    tope ya se alcanzó, pero es un valor seguro para ese caso).
+
+    Devuelve un `timedelta`, NO un `datetime` (hallazgo C-8): antes
+    devolvía el `creado_en` de la base tal cual -- un datetime NAIVE con la
+    hora del SERVIDOR (UTC en Streamlit Community Cloud), que
+    `core.pipeline` mostraba sin convertir -- 3 horas adelantado respecto
+    del reloj real del equipo, en Tandil. Devolver un `timedelta` (cuánto
+    falta, no una hora absoluta) evita tener que saber en qué zona corre el
+    reloj de la base: el llamador solo tiene que sumarlo a
+    `datetime.now()` en SU PROPIA zona horaria
+    (`core.operacion.zona_horaria`).
+
+    `tope`: recibe el tope vigente para mirar la llamada correcta dentro de
+    la ventana (hallazgo C-11). Antes siempre miraba la llamada MÁS VIEJA,
+    asumiendo que con que ESA saliera de la ventana ya alcanzaba -- pero si
+    hay MÁS llamadas que el tope (el tope se bajó, o la carrera entre dos
+    sesiones que ya menciona este docstring), sacar solo la más vieja no
+    destraba nada: sigue habiendo `tope` o más llamadas dentro de la
+    ventana. Hay que esperar a que salga la llamada número
+    `(cantidad - tope + 1)`, no la primera."""
+    cantidad = llamadas_ultima_hora(con)
+    if cantidad == 0:
+        return None
+    offset = max(cantidad - tope, 0)
     fila = con.execute(
-        "SELECT min(creado_en) FROM intentos_gemini WHERE creado_en > now() - INTERVAL '1 hour'"
+        """SELECT (creado_en + INTERVAL '1 hour') - now() FROM (
+               SELECT creado_en FROM intentos_gemini
+               WHERE creado_en > now() - INTERVAL '1 hour'
+               ORDER BY creado_en
+               LIMIT 1 OFFSET ?
+           ) t""",
+        [offset],
     ).fetchone()
     if fila is None or fila[0] is None:
         return None
-    return fila[0] + timedelta(hours=1)
+    return fila[0]
 
 
 def intentos_gemini_fallidos_recientes(
