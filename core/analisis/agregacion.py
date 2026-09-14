@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.analisis.homologacion import quitar_periodo
+from core.analisis.homologacion import quitar_detalle_numerico, quitar_periodo
 
 PREFIJO_SIN_HOMOLOGAR = "(sin_homologar) "
 
@@ -49,19 +49,26 @@ def _clave(
     no significan nada -- el equivalente de sumar litros con kilos.
 
     Cuando no hubo homologación (`concepto_normalizado is None`), el
-    fallback usa `quitar_periodo(descripcion)` -- NUNCA la descripción
-    cruda. Esta clave es también, vía `_etiqueta`, lo que el usuario ve en
-    pantalla y en el Excel, y es lo que `descomponer_conceptos` usa para
-    decidir si un concepto del período 0 "es el mismo" que uno del período
-    1. Si la clave dependiera de la descripción cruda, un proveedor que
-    factura "Servicio de telefonía Agosto 2026" y al mes siguiente
-    "...Septiembre 2026" generaría DOS claves para el mismo concepto -- la
-    causa raíz del bug donde un aumento de PRECIO se reportaba como que un
+    fallback usa `quitar_periodo(quitar_detalle_numerico(descripcion))` --
+    NUNCA la descripción cruda. Esta clave es también, vía `_etiqueta`, lo
+    que el usuario ve en pantalla y en el Excel, y es lo que
+    `descomponer_conceptos` usa para decidir si un concepto del período 0
+    "es el mismo" que uno del período 1. Si la clave dependiera de la
+    descripción cruda, un proveedor que factura "Servicio de telefonía
+    Agosto 2026" y al mes siguiente "...Septiembre 2026" (o, caso real,
+    "Cargo Fijo (414,4500 / 30.5 x 8)" y al mes siguiente
+    "Cargo Fijo (455,8900 / 30.5 x 21)", docs/auditoria-2026-09-piloto.md
+    hallazgo B-2) generaría DOS claves para el mismo concepto -- la causa
+    raíz del bug donde un aumento de PRECIO se reportaba como que un
     concepto "desapareció" y otro "apareció", con efecto_precio en 0 (ver
-    docs/auditoria-2026-09.md). `quitar_periodo` hace que la clave sea
-    estable entre períodos para CUALQUIER proveedor, incluso sin ningún
-    alias en el diccionario todavía."""
-    concepto = concepto_normalizado or PREFIJO_SIN_HOMOLOGAR + quitar_periodo(descripcion)
+    docs/auditoria-2026-09.md, A-28). `quitar_detalle_numerico` corre
+    PRIMERO (necesita texto crudo, con los paréntesis todavía intactos) y
+    `quitar_periodo` DESPUÉS (ya normaliza) -- juntas hacen que la clave
+    sea estable entre períodos para CUALQUIER proveedor, incluso sin
+    ningún alias en el diccionario todavía."""
+    concepto = concepto_normalizado or PREFIJO_SIN_HOMOLOGAR + quitar_periodo(
+        quitar_detalle_numerico(descripcion)
+    )
     return concepto, _unidad_normalizada(unidad)
 
 

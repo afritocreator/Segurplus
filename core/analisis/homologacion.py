@@ -121,6 +121,53 @@ def quitar_periodo(texto: str) -> str:
     return sin_periodo or limpio
 
 
+# Paréntesis cuyo CONTENIDO es pura aritmética -- dígitos, separadores
+# decimales/de miles, operadores (/ x × * + -) y porcentaje. Deliberadamente
+# no incluye letras: un paréntesis con una palabra ("Línea 2", "Medidor 3")
+# no matchea y queda intacto -- ver el docstring de `quitar_detalle_numerico`.
+_PATRON_DETALLE_NUMERICO = re.compile(r"\([\s\d.,/x×*+%-]*\)", re.IGNORECASE)
+
+
+def quitar_detalle_numerico(texto: str) -> str:
+    """Saca de `texto` (CRUDO, sin pasar por `normalizar` todavía -- a
+    diferencia de `quitar_periodo`, que sí puede recibir texto ya
+    normalizado) los paréntesis cuyo contenido es solo aritmética, y nada
+    más.
+
+    Por qué existe (docs/auditoria-2026-09-piloto.md, hallazgo B-2): caso
+    real, dos facturas de luz de la Usina Popular de Tandil (Tandil,
+    Buenos Aires) facturan "Cargo Fijo" con el detalle del cálculo pegado
+    a la descripción -- "Cargo Fijo (414,4500 / 30.5 x 8)" en julio,
+    "Cargo Fijo (455,8900 / 30.5 x 21)" en agosto. Ese detalle CAMBIA todos
+    los meses, aunque "cargo fijo" sea un alias EXACTO de
+    `data/conceptos/comunes.yaml`. Sin sacarlo, el score contra el
+    diccionario cae de 1,0 a ~0,545 -- por debajo del umbral -- y, peor:
+    es la misma enfermedad que A-28. Sin homologar, `agregacion.py::_clave`
+    usa la descripción como clave de agrupamiento -- distinta cada mes --
+    así que la descomposición ve "un concepto que desaparece" + "uno que
+    aparece" con `efecto_precio == 0`, cuando la causa real puede ser un
+    aumento de PRECIO real.
+
+    Deliberadamente CONSERVADORA, igual que `quitar_periodo`: solo saca un
+    paréntesis si TODO su contenido es aritmética -- ningún paréntesis con
+    una palabra con significado se toca, para no fusionar dos conceptos
+    distintos (ej. "Consumo (Línea 2)" sigue distinto de "Consumo (Línea 3)").
+
+    Tiene que llamarse ANTES de `normalizar`/`quitar_periodo`, que ya
+    convierten los paréntesis en espacios sueltos y pierden la distinción
+    entre "paréntesis con números" y "paréntesis con palabras" -- por eso
+    esta función, a diferencia de esas dos, espera texto crudo. El
+    resultado sigue siendo texto crudo (sin normalizar): pasa a
+    `quitar_periodo`/`normalizar` después, en `homologar_concepto` y en
+    `core/analisis/agregacion.py::_clave`.
+
+    Guarda igual que `quitar_periodo`: si sacar los paréntesis deja el
+    string vacío, se devuelve el texto original sin tocar."""
+    sin_detalle = _PATRON_DETALLE_NUMERICO.sub(" ", texto)
+    sin_detalle = re.sub(r"\s+", " ", sin_detalle).strip()
+    return sin_detalle or texto
+
+
 def _bigramas(texto: str) -> set[str]:
     limpio = normalizar(texto)
     return {limpio[i : i + 2] for i in range(len(limpio) - 1)}
@@ -151,17 +198,24 @@ def homologar_concepto(
     convierte en la alerta "concepto nuevo sin clasificar", que suele ser
     justo el cargo que se coló.
 
-    La comparación corre sobre `quitar_periodo(descripcion)` contra
-    `quitar_periodo(candidato)` de cada lado -- ver esa función para el
-    porqué (un mes/año pegado a la descripción no debe impedir el match).
+    La comparación corre sobre `quitar_periodo(quitar_detalle_numerico(descripcion))`
+    contra lo mismo aplicado a cada candidato -- ver esas dos funciones
+    para el porqué (un mes/año o un detalle de cálculo pegado a la
+    descripción no debe impedir el match; `quitar_detalle_numerico` va
+    PRIMERO porque necesita el texto crudo, antes de que `quitar_periodo`
+    lo normalice y pierda la distinción entre paréntesis numéricos y
+    paréntesis con palabras).
     """
     umbral = umbral if umbral is not None else umbral_coincidencia()
-    descripcion_sin_periodo = quitar_periodo(descripcion)
+    descripcion_sin_periodo = quitar_periodo(quitar_detalle_numerico(descripcion))
     mejor_score = 0.0
     mejores: list[str] = []
     for concepto, alias in diccionario.items():
         candidatos = [concepto, *alias]
-        score = max(similitud(descripcion_sin_periodo, quitar_periodo(c)) for c in candidatos)
+        score = max(
+            similitud(descripcion_sin_periodo, quitar_periodo(quitar_detalle_numerico(c)))
+            for c in candidatos
+        )
         if score > mejor_score:
             mejor_score = score
             mejores = [concepto]

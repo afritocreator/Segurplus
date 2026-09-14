@@ -63,6 +63,25 @@ def test_conceptos_sin_homologar_estables_entre_periodos_con_periodo_en_la_descr
     assert clave_agosto == clave_septiembre == "(sin_homologar) servicio de telefonia"
 
 
+def test_conceptos_sin_homologar_estables_entre_periodos_con_detalle_numerico():
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-2, caso real (Usina
+    Popular y Municipal de Tandil): el mismo concepto sin homologar, con
+    el detalle de cálculo pegado a la descripción y DISTINTO cada mes --
+    tiene que dar la MISMA clave en los dos, igual que el caso del período
+    (arriba). Antes de `quitar_detalle_numerico`, cada mes generaba una
+    clave distinta y la descomposición precio/cantidad veía "un concepto
+    que desaparece" + "uno que aparece" en vez de una sola serie."""
+    filas_julio = [
+        FilaConcepto(None, "Cargo Fijo (414,4500 / 30.5 x 8)", cantidad=1, importe=108.71)
+    ]
+    filas_agosto = [
+        FilaConcepto(None, "Cargo Fijo (455,8900 / 30.5 x 21)", cantidad=1, importe=313.89)
+    ]
+    clave_julio = next(iter(agregar_conceptos(filas_julio)))
+    clave_agosto = next(iter(agregar_conceptos(filas_agosto)))
+    assert clave_julio == clave_agosto == "(sin_homologar) cargo fijo"
+
+
 def test_cantidad_y_importe_cero_da_cero():
     filas = [FilaConcepto("cargo_fijo", "Cargo fijo", cantidad=0, importe=0.0)]
     resultado = agregar_conceptos(filas)

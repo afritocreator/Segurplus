@@ -1,7 +1,17 @@
 # Diccionario de homologación específico de energía eléctrica. Se combina
 # con comunes.yaml -- ver core/analisis/diccionario.py::cargar_diccionario.
+# Cómo agregar un alias nuevo: ver el comentario largo en telefonia.yaml
+# (mismo procedimiento acá).
 
 consumo_energia:
   - consumo de energia
   - consumo electrico
   - energia electrica
+  # Caso real (Usina Popular y Municipal de Tandil), docs/auditoria-2026-09-
+  # piloto.md hallazgo B-2: la factura dice solo "Energía" (el detalle de
+  # cálculo que trae pegado, "(7,5151 x 56)", ya lo saca
+  # `quitar_detalle_numerico` antes de comparar). Sin este alias, "energia"
+  # sola homologaba justo EN EL BORDE del umbral (0,600, ver
+  # data/homologacion.yaml) contra "energia electrica" -- funcionaba, pero
+  # sin margen ante cualquier variación mínima del texto.
+  - energia

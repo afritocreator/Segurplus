@@ -3,7 +3,14 @@ Dice, más los casos de uso reales de homologación de conceptos."""
 
 import pytest
 
-from core.analisis.homologacion import homologar_concepto, normalizar, quitar_periodo, similitud
+from core.analisis.homologacion import (
+    homologar_concepto,
+    normalizar,
+    quitar_detalle_numerico,
+    quitar_periodo,
+    similitud,
+    umbral_coincidencia,
+)
 
 
 def test_similitud_identica_da_uno():
@@ -178,3 +185,75 @@ def test_homologar_concepto_ignora_el_periodo_de_la_descripcion():
     c1, score_1 = homologar_concepto("Servicio de telefonía Septiembre 2026", diccionario_real)
     assert c0 == c1 == "servicio_telefonia"
     assert score_0 == pytest.approx(score_1) == pytest.approx(1.0)
+
+
+# --- quitar_detalle_numerico: el detalle de cálculo pegado a la descripción
+# (caso real Usina Popular de Tandil), docs/auditoria-2026-09-piloto.md, B-2 ---
+
+
+def test_quitar_detalle_numerico_saca_parentesis_con_division_y_multiplicacion():
+    assert quitar_detalle_numerico("Cargo Fijo (414,4500 / 30.5 x 8)") == "Cargo Fijo"
+    assert quitar_detalle_numerico("Cargo Fijo (455,8900 / 30.5 x 21)") == "Cargo Fijo"
+
+
+def test_quitar_detalle_numerico_saca_porcentaje():
+    assert quitar_detalle_numerico("I.V.A. (27,000%)") == "I.V.A."
+
+
+def test_quitar_detalle_numerico_no_toca_parentesis_con_palabras():
+    # Guarda deliberada (igual que quitar_periodo): un paréntesis con
+    # significado (no aritmética pura) no se toca, para no fusionar
+    # conceptos distintos.
+    assert quitar_detalle_numerico("Consumo (Línea 2)") == "Consumo (Línea 2)"
+    assert quitar_detalle_numerico("Consumo (Línea 2)") != quitar_detalle_numerico(
+        "Consumo (Línea 3)"
+    )
+
+
+def test_quitar_detalle_numerico_sin_parentesis_no_cambia_nada():
+    assert quitar_detalle_numerico("Consumo de Gas") == "Consumo de Gas"
+
+
+def test_quitar_detalle_numerico_descripcion_solo_parentesis_no_rompe():
+    assert quitar_detalle_numerico("(414,4500 / 30.5 x 8)") == "(414,4500 / 30.5 x 8)"
+
+
+def test_par_real_cargo_fijo_da_similitud_uno_pese_al_detalle_distinto():
+    a = quitar_periodo(quitar_detalle_numerico("Cargo Fijo (414,4500 / 30.5 x 8)"))
+    b = quitar_periodo(quitar_detalle_numerico("Cargo Fijo (455,8900 / 30.5 x 21)"))
+    assert similitud(a, b) == pytest.approx(1.0)
+
+
+def test_homologar_concepto_ignora_el_detalle_numerico_de_la_descripcion():
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-2, reproducido con
+    facturas reales de luz: "cargo fijo" es un alias EXACTO de
+    data/conceptos/comunes.yaml, pero con el detalle de cálculo pegado el
+    score caía a 0,545 -- bajo el umbral (0,60) -- y encima cambiaba todos
+    los meses, así que ni siquiera quedaba una clave de agrupamiento
+    estable sin homologar."""
+    from core.analisis.diccionario import cargar_diccionario
+
+    diccionario_real = cargar_diccionario("energia")
+    c0, score_0 = homologar_concepto("Cargo Fijo (414,4500 / 30.5 x 8)", diccionario_real)
+    c1, score_1 = homologar_concepto("Cargo Fijo (455,8900 / 30.5 x 21)", diccionario_real)
+    assert c0 == c1 == "cargo_fijo"
+    assert score_0 == pytest.approx(score_1) == pytest.approx(1.0)
+
+
+def test_impuesto_ingresos_brutos_homologa_falsamente_a_cargo_fijo():
+    """Caso conocido, NO corregido acá a propósito (docs/auditoria-2026-09-
+    piloto.md, B-2): "IIBB Cargo Fijo" -- Ingresos Brutos, un IMPUESTO, no
+    un cargo fijo -- homologa a `cargo_fijo` con score alto. Mientras el
+    modelo clasifique esta línea como impuesto (`Impuesto`, no `Concepto`)
+    nunca pasa por acá -- homologar_concepto solo se llama sobre
+    `factura.conceptos` (ver core/pipeline.py). El riesgo real es que el
+    modelo la devuelva como concepto por error: ahí se colaría un impuesto
+    disfrazado de cargo fijo, sin alertar. Corregirlo es trabajo del
+    prompt de extracción (B-3), no de homologación -- este test deja
+    registrado el comportamiento actual para que no sorprenda si aparece."""
+    from core.analisis.diccionario import cargar_diccionario
+
+    diccionario_real = cargar_diccionario("gas")
+    concepto, score = homologar_concepto("IIBB Cargo Fijo", diccionario_real)
+    assert concepto == "cargo_fijo"
+    assert score > umbral_coincidencia()
