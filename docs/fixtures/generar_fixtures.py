@@ -17,6 +17,15 @@ Además genera UNA factura rota a propósito (el importe de una línea no
 coincide con cantidad × precio) para probar que el pipeline la manda a
 cuarentena en vez de aceptarla.
 
+Y una de GAS (docs/auditoria-2026-09-piloto.md, hallazgos B-1/B-2/B-6,
+encontrados con facturas reales -- no commiteadas, ver CLAUDE.md -- de la
+Usina Popular de Tandil y Camuzzi): período impreso solo como "MM/AAAA"
+(sin día, la forma real que rompía `_normalizar_fecha`), bimestral (para
+`alertas_por_periodo_faltante`), y una descripción de concepto con el
+detalle de cálculo pegado entre paréntesis (la forma real que rompía la
+homologación) -- reproduce el layout que efectivamente rompió, sin
+reproducir ningún dato real de un proveedor o cliente.
+
 Requiere: pip install reportlab
 Uso: python docs/fixtures/generar_fixtures.py
 """
@@ -167,6 +176,21 @@ def generar_todas() -> None:
         items=[
             ("Cargo fijo", 1, "mes", 3200.0, 3200.0),
             ("Consumo de energía", 470, "kWh", 52.0, 24440.0),
+        ],
+    )
+
+    # --- Gas: bimestral, período solo "MM/AAAA" (sin día) y detalle de
+    # --- cálculo pegado a la descripción -- ver docstring del módulo ---
+    generar_factura_pdf(
+        SALIDA / "gas_2026-07.pdf",
+        emisor="Gas del Centro S.A.",
+        cuit_emisor="30-65786428-1",
+        numero="70016-50954598/7",
+        fecha_emision="01/09/2026",
+        periodo="07/2026",  # MM/AAAA, sin día -- la forma real que rompía B-1
+        items=[
+            ("Cargo Fijo (100,00 / 30 x 60)", 1, "", 200.0, 200.0),
+            ("Consumo de Gas", 805, "m3", 6.4, 5152.0),
         ],
     )
 

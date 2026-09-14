@@ -33,7 +33,8 @@ y qué falta, para no tener que releer el plan entero cada vez.
 - `core/pipeline.py` une todo lo anterior en una sola función por PDF
   (`procesar_pdf`), que es lo único que llama la app.
 
-251 tests pasan (1 skipped, requiere `GEMINI_API_KEY` real), `ruff check` limpio.
+339 tests pasan (3 skipped, requieren `GEMINI_API_KEY` o `TEST_DATABASE_URL` reales),
+`ruff check` limpio.
 
 ## Persistencia y trazabilidad
 
@@ -105,6 +106,53 @@ plata, más **métricas de calidad de lectura por proveedor** (tasa de cuarenten
 de conceptos sin homologar) para saber en qué proveedor puntual ajustar el prompt o el
 diccionario, en vez de mirar el agregado de todos mezclados.
 
+## Primera carga con facturas reales (B-1 a B-6)
+
+El usuario probó cargar facturas reales de dos proveedores nuevos (luz -- Usina Popular
+y Municipal de Tandil -- y gas -- Camuzzi) y las tres cosas fallaban a la vez: algunas
+daban error, otras iban a cuarentena, y una se guardaba en verde pero después no
+aparecía en ningún lado. Seis hallazgos nuevos, cinco ya resueltos:
+
+- **B-1 (crítico, resuelto)** — las facturas de luz imprimen el período como "07/2022"
+  (mes/año, sin día). `_normalizar_fecha` solo aceptaba `YYYY-MM-DD` y `DD/MM/YYYY`, así
+  que `periodo_desde` quedaba en `None` -- la factura VALIDABA BIEN, se guardaba, y la
+  UI decía en verde "guardada y validada", pero todo el análisis filtra
+  `periodo_desde IS NOT NULL`: quedaba invisible, sin ningún aviso. Ahora
+  `_normalizar_fecha` acepta `MM/YYYY`, `YYYY-MM` y `DD-MM-YYYY`, y el pipeline nunca deja
+  una factura "aprobada" sin `periodo_desde` o `servicio` -- queda `requiere_revision`
+  con el estado nuevo `necesita_datos`, visible en "Cargar facturas".
+- **B-2 (alto, resuelto)** — "Cargo Fijo (414,4500 / 30.5 x 8)": el detalle de cálculo
+  pegado a la descripción (distinto cada mes) hundía el score de homologación de
+  "cargo fijo" -- un alias EXACTO -- por debajo del umbral, y además rompía la clave de
+  agrupamiento entre meses (la misma enfermedad de A-28, otro patrón). Nueva
+  `quitar_detalle_numerico()` en `core/analisis/homologacion.py`.
+- **B-3 (alto, pendiente de confirmar con `GEMINI_API_KEY` real)** — las líneas de
+  impuesto imprimen base imponible E importe en la misma línea; el prompt no decía cuál
+  de los dos números es "importe". `PROMPT_EXTRACCION` se reforzó con esa regla (con un
+  ejemplo numérico) y con un aviso sobre layouts a dos columnas (las facturas de gas);
+  `extraer_con_gemini` ahora también recibe el texto plano ya extraído del PDF como
+  apoyo. No se pudo verificar contra la API real en este entorno -- correr
+  `scripts/probar_extraccion.py` sobre facturas reales es el paso que falta.
+- **B-4 (medio, resuelto)** — el tope de llamadas por hora contaba filas de `facturas` +
+  `cuarentena`, un proxy: una extracción que fallaba no dejaba fila en ninguna de las
+  dos, así que no contaba, aunque sí gastó cuota real de la API. Nueva tabla
+  `intentos_gemini` (un registro por cada llamada real), tope movido a
+  `data/operacion.yaml::max_llamadas_gemini_por_hora`.
+- **B-5 (medio, resuelto)** — un fallo de extracción no dejaba ningún rastro, se perdía
+  al recargar la página. Ahora cada intento (éxito o fracaso) queda persistido, con un
+  expander en "Cargar facturas" que muestra los últimos fallos.
+- **B-6 (bajo, resuelto)** — A-27 (diferido desde la primera auditoría) se volvió real:
+  las facturas de gas son bimestrales, y `alertas_por_periodo_faltante` asumía
+  periodicidad mensual siempre. Ahora usa el `periodo_hasta` que la propia factura
+  declara para calcular el próximo período esperado -- funciona para cualquier
+  cadencia, sin inferir un patrón.
+
+Las cuatro facturas reales que sirvieron para encontrar esto NO se commitearon
+(CLAUDE.md), pero se agregó `docs/fixtures/sintetico/gas_2026-07.pdf` (generada con
+`docs/fixtures/generar_fixtures.py`) que reproduce la forma que rompía -- período
+"MM/AAAA" sin día, bimestral, detalle numérico pegado a la descripción -- para dejar
+cobertura de regresión real sin depender de ningún dato de un proveedor o cliente.
+
 ## Tablero rediseñado
 
 Tema institucional (`.streamlit/config.toml`, paleta navy/dorado de la consultora),
@@ -124,19 +172,25 @@ selectores en el sidebar, métricas + la frase de veredicto, y pestañas (Descom
   auditoría pendiente antes de cargar facturas reales.
 - **Fase 6** — motor por reglas 100% local, solo si hace falta (ver punto de decisión
   pendiente en `docs/PLAN.md`).
-- **Todavía no se cargó ninguna factura real**: el pipeline corre de punta a punta
-  contra las fixtures sintéticas y el tablero levanta sin errores, pero falta la
-  prueba real con `GEMINI_API_KEY` y cargar las facturas de los distintos proveedores.
+- **Primera carga con facturas reales -- probada, cinco de seis hallazgos resueltos**:
+  ver "Primera carga con facturas reales (B-1 a B-6)" arriba. Falta **B-3** (el prompt
+  reforzado para líneas de impuesto con dos montos): no se pudo verificar contra la API
+  real en este entorno -- correr `scripts/probar_extraccion.py` sobre las facturas
+  reales de luz y gas es el paso que falta antes de confiar en que quedó resuelto de
+  verdad. Con Movistar/Metrotel ("no identifica nada" en la primera prueba) probablemente
+  se solapa con B-3 o con un formato de factura todavía no visto -- conviene reintentar
+  después de confirmar B-3, y si sigue fallando, correr `probar_extraccion.py` sobre esas
+  también.
 - `data/conceptos/*.yaml` tiene los alias obvios para arrancar (Movistar,
-  `servicio_telefonia`) -- se completa con la pantalla "Sin clasificar" a medida que se
-  carguen facturas de cada proveedor. El umbral de homologación
+  `servicio_telefonia`; luz, `energia`) -- se completa con la pantalla "Sin clasificar" a
+  medida que se carguen facturas de cada proveedor. El umbral de homologación
   (`data/homologacion.yaml`) sigue siendo un valor conservador (0,60) elegido sin
   datos -- con el score persistido, se puede calibrar con evidencia (histograma en
   "Sin clasificar") en cuanto haya volumen real.
-- Hallazgos diferidos hasta tener facturas reales: A-26 (`_parsear_monto` con
-  separadores de miles mezclados) y A-27 (alerta de período faltante asume
-  periodicidad mensual, un servicio bimestral como el gas dispara falso positivo
-  siempre).
+- Hallazgo diferido, todavía sin facturas reales que lo ejerciten: A-26 (`_parsear_monto`
+  con separadores de miles mezclados). A-27 (alerta de período faltante asumía
+  periodicidad mensual) se volvió real con las facturas de gas y quedó **resuelto** como
+  B-6, arriba.
 - **Postgres real en producción — resuelto**: la app está conectada a un proyecto
   Supabase gratuito ya existente, en su propio schema (`segurplus`) con un rol de base
   dedicado (`segurplus_app`, permisos acotados a ese schema, `search_path` propio) para

@@ -127,6 +127,62 @@ def test_factura_sin_periodo_no_queda_aprobada_ni_dice_guardada(tmp_path, monkey
     con.close()
 
 
+def test_pipeline_de_punta_a_punta_con_fixture_de_gas_periodo_mes_anio(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, hallazgos B-1 y B-6, de punta a
+    punta contra `docs/fixtures/sintetico/gas_2026-07.pdf` -- reproduce la
+    FORMA real que rompía (período impreso solo "MM/AAAA", bimestral,
+    detalle de cálculo pegado a la descripción), sin ser ninguna factura
+    real (CLAUDE.md: nunca facturas reales en tests). `factura_desde_json`
+    recibe el dict tal como lo devolvería el modelo -- con "periodo_desde":
+    "07/2026" SIN convertir -- para ejercitar la normalización real de
+    `_normalizar_fecha`, no un valor ya normalizado a mano."""
+    from core.extraccion.esquema import factura_desde_json
+
+    datos_como_los_devolveria_gemini = {
+        "emisor": "Gas del Centro S.A.",
+        "cuit": "30-65786428-1",
+        "servicio": "gas",
+        "periodo_desde": "07/2026",  # tal cual lo imprime la factura, sin día
+        "periodo_hasta": "08/2026",  # bimestral
+        "fecha_emision": "01/09/2026",
+        "moneda": "ARS",
+        "conceptos": [
+            {
+                "descripcion": "Cargo Fijo (100,00 / 30 x 60)",
+                "cantidad": 1,
+                "precio_unitario": 200.0,
+                "importe": 200.0,
+            },
+            {
+                "descripcion": "Consumo de Gas",
+                "cantidad": 805,
+                "unidad": "m3",
+                "precio_unitario": 6.4,
+                "importe": 5152.0,
+            },
+        ],
+        "impuestos": [{"nombre": "IVA 21%", "importe": 1123.92}],
+        "subtotal": 5352.0,
+        "total": 6475.92,
+    }
+    factura = factura_desde_json(datos_como_los_devolveria_gemini)
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "gas_2026-07.pdf", con, api_key="fake")
+
+    # Antes de B-1, "07/2026" quedaba sin interpretar (periodo_desde=None):
+    # la factura validaba bien y quedaba "aprobada" e invisible. Ahora se
+    # normaliza al primer día del mes y queda realmente disponible.
+    assert resultado.estado == "guardada"
+    fila = con.execute(
+        "SELECT periodo_desde, periodo_hasta, estado FROM facturas WHERE hash_pdf = ?",
+        [resultado.hash_pdf],
+    ).fetchone()
+    assert fila == ("2026-07-01", "2026-08-01", "aprobada")
+    con.close()
+
+
 def test_factura_sin_servicio_no_queda_aprobada(tmp_path, monkeypatch):
     factura_sin_servicio = replace(_factura_telefonia_julio(), servicio=None)
     monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_sin_servicio)
