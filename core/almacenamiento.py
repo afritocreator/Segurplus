@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -188,7 +189,36 @@ def _ejecutar_ddl(con: duckdb.DuckDBPyConnection | ConexionPostgres) -> None:
             con.execute(sentencia)
 
 
-def conectar(ruta: Path | None = None) -> duckdb.DuckDBPyConnection | ConexionPostgres:
+# docs/auditoria-2026-09-piloto.md, A-52: correr las 27 sentencias del DDL en
+# CADA conectar() era gratis contra un DuckDB local (llamadas en proceso),
+# pero cada página del tablero llama conectar() una vez por render -- y
+# Streamlit re-ejecuta la página entera ante cualquier interacción -- así que
+# contra un Postgres remoto eso son 27 round-trips de red por click. Se
+# memoiza por destino (la URL, o la ruta absoluta del archivo DuckDB): el
+# DDL es puramente aditivo (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT
+# EXISTS), así que correrlo una sola vez por proceso alcanza -- una edición
+# de `_DDL` en desarrollo sí exige reiniciar el proceso para que se note
+# (o pasar `forzar_ddl=True`). `threading.Lock` porque Streamlit corre los
+# scripts de cada sesión en su propio hilo dentro del mismo proceso.
+_ddl_aplicado_a: set[str] = set()
+_ddl_lock = threading.Lock()
+
+
+def _asegurar_ddl(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, destino: str, *, forzar_ddl: bool
+) -> None:
+    with _ddl_lock:
+        ya_aplicado = destino in _ddl_aplicado_a
+    if ya_aplicado and not forzar_ddl:
+        return
+    _ejecutar_ddl(con)
+    with _ddl_lock:
+        _ddl_aplicado_a.add(destino)
+
+
+def conectar(
+    ruta: Path | None = None, *, forzar_ddl: bool = False
+) -> duckdb.DuckDBPyConnection | ConexionPostgres:
     """Abre la fuente de verdad configurada y asegura migraciones aditivas.
 
     ``DATABASE_URL`` apunta a PostgreSQL administrado. DuckDB queda como modo
@@ -205,20 +235,25 @@ def conectar(ruta: Path | None = None) -> duckdb.DuckDBPyConnection | ConexionPo
     A-49). `tests/conftest.py` además saca `DATABASE_URL` del entorno para
     toda la corrida de tests, porque varios tests (los de páginas con
     AppTest) llaman `conectar()` SIN pasar `ruta` -- ese caso solo lo cubre
-    la variable de entorno, no este chequeo."""
+    la variable de entorno, no este chequeo.
+
+    `forzar_ddl`: corre el DDL aunque ya se haya aplicado a este destino en
+    este proceso -- ver A-52. Útil en un test que quiere ejercitar el DDL en
+    sí (ej. que un `ALTER TABLE ADD COLUMN IF NOT EXISTS` sea idempotente de
+    verdad, no solo "no se volvió a correr")."""
     if ruta is not None:
         ruta.parent.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect(str(ruta))
-        _ejecutar_ddl(con)
+        _asegurar_ddl(con, str(ruta.resolve()), forzar_ddl=forzar_ddl)
         return con
     url = os.environ.get("DATABASE_URL")
     if url:
         con = ConexionPostgres(url)
-        _ejecutar_ddl(con)
+        _asegurar_ddl(con, url, forzar_ddl=forzar_ddl)
         return con
     RUTA_BASE.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(RUTA_BASE))
-    _ejecutar_ddl(con)
+    _asegurar_ddl(con, str(RUTA_BASE.resolve()), forzar_ddl=forzar_ddl)
     return con
 
 
@@ -834,9 +869,30 @@ def sincronizar_casos_alertas(
     referencia: str,
     alertas: list[Alerta],
 ) -> None:
-    """Materializa alertas aprobadas en casos, sin duplicar una comparación."""
-    for alerta in alertas:
-        clave = _clave_caso(referencia, alerta)
+    """Materializa alertas aprobadas en casos, sin duplicar una comparación.
+
+    Solo ESCRIBE los casos que faltan o cuya severidad/mensaje cambió
+    (docs/auditoria-2026-09-piloto.md, A-53): `apps/segurplus/paginas/
+    evolucion.py` llama a esto en cada render de la página, sin ningún
+    botón de por medio -- antes de esta corrección, simplemente navegar (y
+    volver a ver la misma comparación) hacía un INSERT/UPDATE por alerta en
+    cada render, y `actualizado_en` pasaba a significar "cuándo se miró la
+    página" en vez de "cuándo cambió el caso". Un solo SELECT primero (no
+    uno por alerta) para saber qué ya está igual."""
+    if not alertas:
+        return
+    claves = [_clave_caso(referencia, alerta) for alerta in alertas]
+    marcadores = ", ".join(["?"] * len(claves))
+    existentes = {
+        clave: (severidad, mensaje)
+        for clave, severidad, mensaje in con.execute(
+            f"SELECT clave, severidad, mensaje FROM casos_alerta WHERE clave IN ({marcadores})",
+            claves,
+        ).fetchall()
+    }
+    for alerta, clave in zip(alertas, claves, strict=True):
+        if existentes.get(clave) == (alerta.severidad, alerta.mensaje):
+            continue  # sin cambios -- no reescribir actualizado_en en vano
         con.execute(
             """INSERT INTO casos_alerta
                (clave, hash_pdf, tipo, severidad, mensaje, concepto, actualizado_en)

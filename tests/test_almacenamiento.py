@@ -114,7 +114,10 @@ def test_score_homologacion_por_defecto_es_null(tmp_path):
 def test_alter_table_score_homologacion_es_idempotente(tmp_path):
     ruta = tmp_path / "test.duckdb"
     conectar(ruta).close()
-    conectar(ruta).close()  # conectar de nuevo no debe romper por la columna ya existente
+    # forzar_ddl=True: sin esto, el DDL se memoiza por destino (A-52) y la
+    # segunda llamada no lo correría -- acá se quiere ejercitar de verdad
+    # que ALTER TABLE ... ADD COLUMN IF NOT EXISTS no rompe al repetirse.
+    conectar(ruta, forzar_ddl=True).close()
 
 
 def test_reprocesar_no_duplica_conceptos(tmp_path):
@@ -811,4 +814,117 @@ def test_reguardar_una_factura_rechazada_la_reprocesa_de_cero(tmp_path):
         ).fetchall()
     ]
     assert "rechazada" in decisiones
+    con.close()
+
+
+# --- A-52: el DDL se corre una sola vez por destino, no por conexión ------
+
+
+def test_ddl_se_ejecuta_una_sola_vez_por_destino(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, A-52: antes de esta corrección,
+    conectar() corría las 27 sentencias del DDL en CADA llamada -- contra
+    un Postgres remoto, eso son 27 round-trips de red por cada render de
+    página de Streamlit."""
+    import core.almacenamiento as almacenamiento_mod
+
+    llamadas = []
+    original = almacenamiento_mod._ejecutar_ddl
+
+    def _espia(con):
+        llamadas.append(1)
+        return original(con)
+
+    monkeypatch.setattr(almacenamiento_mod, "_ejecutar_ddl", _espia)
+
+    ruta = tmp_path / "test.duckdb"
+    conectar(ruta).close()
+    conectar(ruta).close()
+    conectar(ruta).close()
+    assert len(llamadas) == 1
+
+
+def test_ddl_se_ejecuta_por_cada_destino_distinto(tmp_path, monkeypatch):
+    import core.almacenamiento as almacenamiento_mod
+
+    llamadas = []
+    original = almacenamiento_mod._ejecutar_ddl
+
+    def _espia(con):
+        llamadas.append(1)
+        return original(con)
+
+    monkeypatch.setattr(almacenamiento_mod, "_ejecutar_ddl", _espia)
+
+    conectar(tmp_path / "a.duckdb").close()
+    conectar(tmp_path / "b.duckdb").close()
+    assert len(llamadas) == 2
+
+
+def test_forzar_ddl_ignora_la_memoizacion(tmp_path, monkeypatch):
+    import core.almacenamiento as almacenamiento_mod
+
+    llamadas = []
+    original = almacenamiento_mod._ejecutar_ddl
+
+    def _espia(con):
+        llamadas.append(1)
+        return original(con)
+
+    monkeypatch.setattr(almacenamiento_mod, "_ejecutar_ddl", _espia)
+
+    ruta = tmp_path / "test.duckdb"
+    conectar(ruta).close()
+    conectar(ruta, forzar_ddl=True).close()
+    assert len(llamadas) == 2
+
+
+# --- A-53: sincronizar_casos_alertas no reescribe si nada cambió ----------
+
+
+def test_sincronizar_casos_alertas_no_reescribe_lo_que_no_cambio(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    alerta = Alerta(
+        tipo="item_duplicado", severidad="media", mensaje="Abono repetido", concepto="Abono"
+    )
+
+    sincronizar_casos_alertas(con, referencia="comparacion:x", alertas=[alerta])
+    actualizado_1 = con.execute("SELECT actualizado_en FROM casos_alerta").fetchone()[0]
+
+    # Llamar de nuevo con la MISMA alerta (simula navegar la misma página
+    # de Evolución otra vez, sin que nada haya cambiado).
+    sincronizar_casos_alertas(con, referencia="comparacion:x", alertas=[alerta])
+    actualizado_2 = con.execute("SELECT actualizado_en FROM casos_alerta").fetchone()[0]
+
+    assert actualizado_1 == actualizado_2  # no se reescribió
+    assert con.execute("SELECT COUNT(*) FROM casos_alerta").fetchone()[0] == 1
+    con.close()
+
+
+def test_sincronizar_casos_alertas_si_reescribe_cuando_cambia_la_severidad(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    leve = Alerta(
+        tipo="item_duplicado", severidad="baja", mensaje="Abono repetido", concepto="Abono"
+    )
+    sincronizar_casos_alertas(con, referencia="comparacion:x", alertas=[leve])
+
+    # Misma clave (mismo tipo/concepto/mensaje/referencia), pero severidad
+    # distinta -- SÍ tiene que reescribir.
+    grave = Alerta(
+        tipo="item_duplicado", severidad="alta", mensaje="Abono repetido", concepto="Abono"
+    )
+    sincronizar_casos_alertas(con, referencia="comparacion:x", alertas=[grave])
+
+    severidad = con.execute("SELECT severidad FROM casos_alerta").fetchone()[0]
+    assert severidad == "alta"
+    con.close()
+
+
+def test_sincronizar_casos_alertas_con_lista_vacia_no_hace_nada(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    sincronizar_casos_alertas(con, referencia="comparacion:x", alertas=[])  # no debe explotar
+    assert listar_casos_alerta(con) == []
     con.close()
