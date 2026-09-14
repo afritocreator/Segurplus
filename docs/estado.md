@@ -115,6 +115,14 @@ selectores en el sidebar, métricas + la frase de veredicto, y pestañas (Descom
 
 ## Falta (siguiente trabajo)
 
+- **Auditoría del piloto operativo (A-49 a A-59)**: ver
+  `docs/auditoria-2026-09-piloto.md`. **Tres hallazgos conviene resolverlos ANTES de
+  cargar la primera factura real**: `conectar()` ignora la ruta que recibe si
+  `DATABASE_URL` está en el entorno, así que un `pytest` de rutina puede escribir en la
+  base de producción (A-49, crítico); y con `revision_humana_obligatoria` en `false` (el
+  default) ninguna factura llega a `requiere_revision`, lo que deja sin salida tanto el
+  rechazo y la corrección de cabeceras (A-50) como la re-homologación cuando una factura
+  quedó sin servicio detectado (A-51).
 - **Fase 6** — motor por reglas 100% local, solo si hace falta (ver punto de decisión
   pendiente en `docs/PLAN.md`).
 - **Todavía no se cargó ninguna factura real**: el pipeline corre de punta a punta
