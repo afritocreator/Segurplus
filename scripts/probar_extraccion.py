@@ -8,17 +8,26 @@ Uso:
     python scripts/probar_extraccion.py ruta/a/factura.pdf
 
 Qué hace, en orden, mostrando cada paso:
-1. Llama a Gemini y muestra el JSON CRUDO que devolvió (antes de convertirlo a
-   FacturaExtraida) -- así se ve exactamente qué manda el modelo, incluso si
-   `factura_desde_json` fallara al interpretarlo.
-2. Convierte ese JSON al esquema canónico.
+1. Llama a Gemini (vía `core.extraccion.gemini.extraer_con_gemini`, la MISMA
+   función que usa `core/pipeline.py` -- ver el porqué más abajo) y muestra
+   el JSON CRUDO que devolvió, antes de convertirlo a `FacturaExtraida`.
+2. Campos clave para revisar a mano.
 3. Lee el total impreso en el PDF con la regex de `core/ingesta/pdf_texto.py`
    (la doble lectura).
 4. Corre la validación aritmética y muestra el resultado de cada control.
 
+Llama a `extraer_con_gemini` en vez de reimplementar la llamada a la API acá
+a propósito (docs/auditoria-2026-09-piloto.md, hallazgo B-3): antes este
+script armaba su propio `cliente.models.generate_content(...)`, duplicando
+la lógica de `core/extraccion/gemini.py` -- cuando esa función empezó a
+mandarle también el texto extraído del PDF, este script se quedó atrás,
+mostrando un resultado que ya no coincidía con el que da la app real.
+Llamando a la función real, este script SIEMPRE prueba exactamente lo mismo
+que carga.py -- no puede volver a desalinearse.
+
 Este script NUNCA escribe en `data/reales/facturas.duckdb` ni en ningún otro
 lado -- es de solo lectura/diagnóstico, para no mezclar una prueba con datos
-reales de verdad (ver Bloque 9 del plan de correcciones, que sí carga).
+reales de verdad.
 """
 
 from __future__ import annotations
@@ -31,8 +40,7 @@ from pathlib import Path
 # Permite correr el script sin `pip install -e .` (mismo patrón que streamlit_app.py).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.extraccion.esquema import esquema_json_para_modelo  # noqa: E402
-from core.extraccion.gemini import MODELO, PROMPT_EXTRACCION, factura_desde_json  # noqa: E402
+from core.extraccion.gemini import MODELO, ExtraccionError, extraer_con_gemini  # noqa: E402
 from core.extraccion.validacion import validar_factura  # noqa: E402
 from core.ingesta.pdf_texto import extraer_texto, total_impreso  # noqa: E402
 
@@ -52,26 +60,15 @@ def main() -> int:
         print("Falta GEMINI_API_KEY en el entorno (export GEMINI_API_KEY=...).", file=sys.stderr)
         return 1
 
+    documento = extraer_texto(ruta)
+
     print(f"=== 1. Llamando a Gemini ({MODELO}) con {ruta.name} ===\n")
-
-    from google import genai  # import diferido, igual que en core/extraccion/gemini.py
-
-    cliente = genai.Client(api_key=api_key)
-    pdf_bytes = ruta.read_bytes()
     try:
-        respuesta = cliente.models.generate_content(
-            model=MODELO,
-            contents=[
-                PROMPT_EXTRACCION,
-                {"inline_data": {"data": pdf_bytes, "mime_type": "application/pdf"}},
-            ],
-            config={
-                "response_mime_type": "application/json",
-                "response_json_schema": esquema_json_para_modelo(),
-            },
+        factura = extraer_con_gemini(
+            ruta.read_bytes(), api_key=api_key, texto_extraido=documento.texto
         )
-    except Exception as exc:  # noqa: BLE001 -- se quiere ver el error tal cual, no envuelto
-        print(f"ERROR llamando a Gemini: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except ExtraccionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         print(
             "\nSi el error menciona un parámetro desconocido o un formato inesperado, "
             "la forma de la API de google-genai cambió -- revisar la documentación "
@@ -80,20 +77,11 @@ def main() -> int:
         )
         return 1
 
-    texto = respuesta.text
     print("--- JSON crudo devuelto por el modelo ---")
-    print(texto)
+    print(factura.respuesta_extraida)
     print()
 
-    if not texto:
-        print("ERROR: Gemini no devolvió texto en la respuesta.", file=sys.stderr)
-        return 1
-
-    try:
-        datos = json.loads(texto)
-    except json.JSONDecodeError as exc:
-        print(f"ERROR: la respuesta no es JSON válido: {exc}", file=sys.stderr)
-        return 1
+    datos = json.loads(factura.respuesta_extraida)  # ya se sabe que es JSON válido, si llegó acá
 
     print("=== 2. Campos clave para revisar a mano ===\n")
     for campo in (
@@ -114,16 +102,7 @@ def main() -> int:
     print(f"  recargos:  {len(datos.get('recargos', []))} línea(s)")
     print()
 
-    print("=== 3. Convirtiendo al esquema canónico (factura_desde_json) ===\n")
-    try:
-        factura = factura_desde_json(datos)
-    except Exception as exc:  # noqa: BLE001 -- se quiere ver el error tal cual
-        print(f"ERROR convirtiendo el JSON: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
-    print("  OK\n")
-
-    print("=== 4. Doble lectura del total (regex sobre el texto del PDF) ===\n")
-    documento = extraer_texto(ruta)
+    print("=== 3. Doble lectura del total (regex sobre el texto del PDF) ===\n")
     total_leido = total_impreso(documento.texto)
     print(f"  Total según el modelo:      {factura.total!r}")
     print(f"  Total leído con la regex:   {total_leido!r}")
@@ -132,7 +111,7 @@ def main() -> int:
         print(f"  Diferencia:                 {diferencia:.2f}")
     print()
 
-    print("=== 5. Validación aritmética ===\n")
+    print("=== 4. Validación aritmética ===\n")
     resultado = validar_factura(factura, total_impreso=total_leido)
     print(f"  suma_conceptos:    {resultado.suma_conceptos:.2f}")
     print(f"  suma_impuestos:    {resultado.suma_impuestos:.2f}")

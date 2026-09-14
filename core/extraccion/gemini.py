@@ -34,7 +34,11 @@ import os
 from core.extraccion.esquema import FacturaExtraida, esquema_json_para_modelo, factura_desde_json
 
 MODELO = "gemini-3.6-flash"  # fijo, no "latest" -- ver docstring del módulo
-VERSION_PROMPT = "2026-09-operacion-1"
+# docs/auditoria-2026-09-piloto.md, hallazgo B-3: el prompt sumó dos reglas
+# (base imponible vs. importe en una línea de impuesto, y no mezclar
+# columnas) y ahora también recibe el texto plano del PDF -- subir la
+# versión documenta que una extracción vieja se hizo con reglas distintas.
+VERSION_PROMPT = "2026-09-piloto-2"
 VERSION_ESQUEMA = "2026-09-operacion-1"
 
 PROMPT_EXTRACCION = """\
@@ -50,10 +54,22 @@ formato pedido. Reglas importantes:
   figura o se puede calcular.
 - Los impuestos (IVA, Ingresos Brutos, tasas municipales) van en "impuestos", NO como \
   conceptos.
+- Una línea de impuesto suele traer DOS montos: primero la BASE IMPONIBLE (el importe \
+  sobre el que se calcula el impuesto, típicamente el subtotal o una parte de él) y \
+  DESPUÉS el importe del impuesto en sí, que suele ser un número más chico (resultado \
+  de aplicarle el porcentaje del impuesto a la base). El campo "importe" de cada \
+  impuesto es SIEMPRE el segundo monto, el que va MÁS A LA DERECHA en la línea -- \
+  nunca la base imponible. Ejemplo: la línea "I.V.A. (27,000%)  2.301,90  621,51" \
+  tiene base imponible 2.301,90 e importe de IVA 621,51 (621,51 / 2.301,90 = 0,27, \
+  el 27% que dice el nombre) -- "importe" es 621,51, no 2.301,90.
 - Los cargos por mora, intereses o refacturación van en "recargos", NO como conceptos \
   normales -- son distintos de un consumo regular.
 - Las bonificaciones, descuentos y notas de crédito van en "creditos", con importe positivo; \
   reducen el total y nunca se mezclan con consumo normal.
+- Si la factura tiene el diseño en DOS COLUMNAS (dos bloques de datos uno al lado del \
+  otro, en vez de una sola lista de arriba a abajo), prestá atención a no mezclar un \
+  concepto de una columna con el monto de la otra -- guiate por la posición visual del \
+  PDF, no por el orden en que puede aparecer el texto plano si se adjunta.
 - Si un dato no está en la factura, usá null en vez de inventarlo.
 - Los montos van en pesos argentinos, sin separador de miles, con punto decimal \
   (ej: 1234.50).
@@ -65,11 +81,25 @@ class ExtraccionError(Exception):
     esquema esperado. La factura debe ir a cuarentena, nunca al análisis."""
 
 
-def extraer_con_gemini(pdf_bytes: bytes, *, api_key: str | None = None) -> FacturaExtraida:
+def extraer_con_gemini(
+    pdf_bytes: bytes, *, api_key: str | None = None, texto_extraido: str | None = None
+) -> FacturaExtraida:
     """Manda el PDF (binario, nativo -- preserva el layout de las tablas)
     a Gemini y devuelve la factura en el esquema canónico, SIN validar
     aritméticamente (eso es `core/extraccion/validacion.py`, a propósito
     separado).
+
+    `texto_extraido`: el texto plano que `core/ingesta/pdf_texto.py::extraer_texto`
+    ya sacó del mismo PDF con `pdfplumber`, si se tiene a mano -- se lo pasa
+    al modelo como contenido ADICIONAL, no en reemplazo del PDF nativo
+    (docs/auditoria-2026-09-piloto.md, hallazgo B-3): en una factura de
+    diseño a dos columnas, `pdfplumber` puede entregar el texto entrelazado
+    de un modo distinto a como el modelo lee el layout visual del PDF, así
+    que darle las dos vistas le da más para contrastar. `core/pipeline.py`
+    ya extrajo ese texto antes de llegar acá (para la doble lectura del
+    total), así que pasarlo no cuesta una llamada extra. Opcional a
+    propósito: sigue funcionando sin él (ej. `scripts/probar_extraccion.py`
+    antes de tener el texto, o un test que no lo necesita).
 
     Import de `google.genai` diferido adentro de la función: así el resto
     del pipeline (validación, análisis, alertas) no depende de tener la
@@ -84,14 +114,21 @@ def extraer_con_gemini(pdf_bytes: bytes, *, api_key: str | None = None) -> Factu
 
     from google import genai  # noqa: PLC0415 (import diferido, ver docstring)
 
+    contenidos: list = [PROMPT_EXTRACCION]
+    if texto_extraido:
+        contenidos.append(
+            "Texto plano extraído del mismo PDF con una herramienta de lectura de "
+            "texto (puede tener el orden de columnas mezclado -- usalo como apoyo, "
+            "pero para la posición de cada dato guiate por el layout visual del PDF "
+            "adjunto, no por el orden de este texto):\n\n" + texto_extraido
+        )
+    contenidos.append({"inline_data": {"data": pdf_bytes, "mime_type": "application/pdf"}})
+
     cliente = genai.Client(api_key=api_key)
     try:
         respuesta = cliente.models.generate_content(
             model=MODELO,
-            contents=[
-                PROMPT_EXTRACCION,
-                {"inline_data": {"data": pdf_bytes, "mime_type": "application/pdf"}},
-            ],
+            contents=contenidos,
             config={
                 "response_mime_type": "application/json",
                 "response_json_schema": esquema_json_para_modelo(),

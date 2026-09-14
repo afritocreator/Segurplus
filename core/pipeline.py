@@ -107,7 +107,11 @@ def procesar_pdf(
 
     contenido_pdf = ruta.read_bytes()
     try:
-        factura = extraer_con_gemini(contenido_pdf, api_key=api_key)
+        # docs/auditoria-2026-09-piloto.md, hallazgo B-3: se le pasa también
+        # el texto que `extraer_texto` ya sacó del mismo PDF -- una segunda
+        # vista, además del PDF nativo, para las facturas con layout a dos
+        # columnas o líneas de impuesto con dos montos.
+        factura = extraer_con_gemini(contenido_pdf, api_key=api_key, texto_extraido=documento.texto)
     except ExtraccionError as exc:
         # docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes esto no
         # dejaba NINGÚN rastro en la base -- se perdía al recargar la
