@@ -6,11 +6,12 @@ GEMINI_API_KEY configurada (docs/auditoria-2026-09.md, hallazgo A-19). El
 resto del flujo (procesar_pdf, el try/except por archivo, el borrado del
 temporal) ya está cubierto por tests/test_pipeline.py.
 
-`RUTA_BASE` se parchea en TODOS los tests de este archivo, no solo en los
-que suben algo (docs/auditoria-2026-09-piloto.md, hallazgo B-5): el
-expander de "Últimos intentos fallidos" conecta a la base en CADA render de
-la página, incluso sin subir nada -- sin parchear, `at.run()` tocaría
-`data/reales/facturas.duckdb` real."""
+`RUTA_BASE` se parchea en TODOS los tests de este archivo por las dudas,
+aunque desde el hallazgo C-7 (docs/auditoria-2026-09-facturas-reales.md)
+"Últimos intentos de extracción fallidos" es un `st.checkbox` sin marcar
+por default -- ya NO conecta a la base en cada render, solo cuando se
+marca. Antes era un `st.expander` siempre presente, que sí conectaba en
+CADA render de la página aunque no se hubiera subido nada."""
 
 from pathlib import Path
 
@@ -43,18 +44,33 @@ def test_con_api_key_no_muestra_advertencia(tmp_path, monkeypatch):
     assert len(at.warning) == 0
 
 
-def test_expander_sin_intentos_fallidos_no_rompe(tmp_path, monkeypatch):
-    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
+def test_checkbox_de_diagnostico_no_conecta_a_la_base_sin_marcar(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-7: sin marcar
+    el checkbox (el estado por default), la página no tiene que tocar la
+    base en absoluto -- se verifica apuntando `RUTA_BASE` a un archivo que
+    NO existe: si el checkbox conectara igual, `conectar()` lo crearía."""
+    ruta_base = tmp_path / "no_deberia_crearse.duckdb"
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", ruta_base)
     monkeypatch.setattr("apps.segurplus.secretos.leer_secret", lambda clave: "fake-key")
     at = _app()
     at.run()
     assert not at.exception
+    assert not ruta_base.exists()
 
 
-def test_expander_muestra_intentos_fallidos_persistidos(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-5: un fallo de una
-    corrida anterior sigue visible después, sin depender de la sesión que
-    lo produjo."""
+def test_checkbox_de_diagnostico_sin_intentos_fallidos_no_rompe(tmp_path, monkeypatch):
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
+    monkeypatch.setattr("apps.segurplus.secretos.leer_secret", lambda clave: "fake-key")
+    at = _app()
+    at.run()
+    at.checkbox[0].check().run()
+    assert not at.exception
+
+
+def test_checkbox_de_diagnostico_muestra_intentos_fallidos_persistidos(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5: un fallo de
+    una corrida anterior sigue visible después, sin depender de la sesión
+    que lo produjo -- con el checkbox marcado (hallazgo C-7)."""
     from core.almacenamiento import conectar, registrar_intento_gemini
 
     ruta_base = tmp_path / "test.duckdb"
@@ -72,6 +88,7 @@ def test_expander_muestra_intentos_fallidos_persistidos(tmp_path, monkeypatch):
     monkeypatch.setattr("apps.segurplus.secretos.leer_secret", lambda clave: "fake-key")
     at = _app()
     at.run()
+    at.checkbox[0].check().run()
     assert not at.exception
     texto = " ".join(m.value for m in at.markdown)
     assert "factura_rota.pdf" in texto

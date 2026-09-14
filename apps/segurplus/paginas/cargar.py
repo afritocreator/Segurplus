@@ -119,13 +119,23 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
         for r in errores:
             st.write(f"- **{r.ruta.name}**: {r.detalle}")
 
-# docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes, el único rastro de
-# un fallo de extracción era el mensaje de la corrida actual -- se perdía
-# apenas se navegaba a otra pantalla o se recargaba. Este historial vive en
-# la base (tabla `intentos_gemini`, ver `core/pipeline.py`), así que sigue
-# disponible después. Fuera del `if archivos and st.button(...)` a
-# propósito: tiene que verse aunque no se haya subido nada en esta visita.
-with st.expander("Últimos intentos de extracción fallidos"):
+# docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5: antes, el único
+# rastro de un fallo de extracción era el mensaje de la corrida actual --
+# se perdía apenas se navegaba a otra pantalla o se recargaba. Este
+# historial vive en la base (tabla `intentos_gemini`, ver
+# `core/pipeline.py`), así que sigue disponible después. Fuera del
+# `if archivos and st.button(...)` a propósito: tiene que verse aunque no
+# se haya subido nada en esta visita.
+#
+# Detrás de un checkbox, NO de un expander siempre presente (hallazgo
+# C-7): un `st.expander` renderiza su contenido en CADA re-ejecución del
+# script (o sea, en cada interacción con CUALQUIER widget de la página),
+# así que esto conectaba a la base y consultaba en cada click, aunque no
+# se hubiera subido nada -- contra el criterio de A-52/A-53 (navegar no
+# debe costar round-trips contra un Postgres remoto), y acoplando esta
+# pantalla a que la base esté disponible incluso para solo mirarla. Con el
+# checkbox sin marcar (el estado por default), cero conexiones.
+if st.checkbox("Ver últimos intentos de extracción fallidos"):
     st.caption(
         "Si una factura no entra y no queda claro por qué, "
         "`scripts/probar_extraccion.py` corre la misma extracción mostrando "

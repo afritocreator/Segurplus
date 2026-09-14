@@ -210,6 +210,27 @@ def test_quitar_detalle_numerico_no_toca_parentesis_con_palabras():
     )
 
 
+# --- C-5: un paréntesis con un solo número SIN operador identifica algo
+# --- (medidor, cuota), no calcula -- no se toca (docs/auditoria-2026-09-
+# --- facturas-reales.md) --------------------------------------------------
+
+
+def test_quitar_detalle_numerico_no_toca_medidor_entre_parentesis():
+    assert quitar_detalle_numerico("Medidor (8399554)") == "Medidor (8399554)"
+    assert quitar_detalle_numerico("Medidor (8399554)") != quitar_detalle_numerico(
+        "Medidor (8399555)"
+    )
+
+
+def test_quitar_detalle_numerico_no_toca_numero_de_cuota_entre_parentesis():
+    assert quitar_detalle_numerico("Cargo (1)") == "Cargo (1)"
+    assert quitar_detalle_numerico("Cargo (1)") != quitar_detalle_numerico("Cargo (2)")
+
+
+def test_quitar_detalle_numerico_no_toca_cantidad_con_x_pegada():
+    assert quitar_detalle_numerico("Abono (x2)") == "Abono (x2)"
+
+
 def test_quitar_detalle_numerico_sin_parentesis_no_cambia_nada():
     assert quitar_detalle_numerico("Consumo de Gas") == "Consumo de Gas"
 

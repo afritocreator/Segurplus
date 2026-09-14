@@ -121,11 +121,20 @@ def quitar_periodo(texto: str) -> str:
     return sin_periodo or limpio
 
 
-# Paréntesis cuyo CONTENIDO es pura aritmética -- dígitos, separadores
-# decimales/de miles, operadores (/ x × * + -) y porcentaje. Deliberadamente
-# no incluye letras: un paréntesis con una palabra ("Línea 2", "Medidor 3")
-# no matchea y queda intacto -- ver el docstring de `quitar_detalle_numerico`.
-_PATRON_DETALLE_NUMERICO = re.compile(r"\([\s\d.,/x×*+%-]*\)", re.IGNORECASE)
+# Paréntesis cuyo CONTENIDO es, o bien una OPERACIÓN entre dos o más
+# números ("414,4500 / 30.5 x 8"), o bien un porcentaje suelto ("27,000%",
+# una alícuota -- no identifica una instancia particular de nada, a
+# diferencia de un número suelto). Deliberadamente no incluye letras: un
+# paréntesis con una palabra ("Línea 2", "Medidor 3") no matchea y queda
+# intacto -- ver el docstring de `quitar_detalle_numerico`. Y
+# deliberadamente exige un OPERADOR entre dos números (o el % final), no
+# cualquier paréntesis sin letras (docs/auditoria-2026-09-facturas-reales.md,
+# hallazgo C-5): un paréntesis con un solo número que IDENTIFICA algo, no
+# que calcula -- "Medidor (8399554)", "Cargo (1)" -- no tiene ningún
+# operador ni % adentro, así que con esta versión queda intacto.
+_PATRON_DETALLE_NUMERICO = re.compile(
+    r"\(\s*\d[\d.,]*\s*(?:%\s*|(?:[/x×*+%-]\s*\d[\d.,]*\s*)+)\)", re.IGNORECASE
+)
 
 
 def quitar_detalle_numerico(texto: str) -> str:
@@ -134,10 +143,10 @@ def quitar_detalle_numerico(texto: str) -> str:
     normalizado) los paréntesis cuyo contenido es solo aritmética, y nada
     más.
 
-    Por qué existe (docs/auditoria-2026-09-piloto.md, hallazgo B-2): caso
-    real, dos facturas de luz de la Usina Popular de Tandil (Tandil,
-    Buenos Aires) facturan "Cargo Fijo" con el detalle del cálculo pegado
-    a la descripción -- "Cargo Fijo (414,4500 / 30.5 x 8)" en julio,
+    Por qué existe (docs/auditoria-2026-09-facturas-reales.md, hallazgo
+    B-2): caso real, dos facturas de luz de la Usina Popular de Tandil
+    (Tandil, Buenos Aires) facturan "Cargo Fijo" con el detalle del cálculo
+    pegado a la descripción -- "Cargo Fijo (414,4500 / 30.5 x 8)" en julio,
     "Cargo Fijo (455,8900 / 30.5 x 21)" en agosto. Ese detalle CAMBIA todos
     los meses, aunque "cargo fijo" sea un alias EXACTO de
     `data/conceptos/comunes.yaml`. Sin sacarlo, el score contra el
@@ -149,9 +158,16 @@ def quitar_detalle_numerico(texto: str) -> str:
     aumento de PRECIO real.
 
     Deliberadamente CONSERVADORA, igual que `quitar_periodo`: solo saca un
-    paréntesis si TODO su contenido es aritmética -- ningún paréntesis con
-    una palabra con significado se toca, para no fusionar dos conceptos
-    distintos (ej. "Consumo (Línea 2)" sigue distinto de "Consumo (Línea 3)").
+    paréntesis si su contenido es una OPERACIÓN entre dos o más números --
+    ningún paréntesis con una palabra con significado se toca, para no
+    fusionar dos conceptos distintos (ej. "Consumo (Línea 2)" sigue
+    distinto de "Consumo (Línea 3)"). Y, desde el hallazgo C-5, tampoco se
+    toca un paréntesis con un solo número SIN operador -- "Medidor
+    (8399554)", "Cargo (1)" -- porque ahí el número IDENTIFICA algo, no
+    calcula: la primera versión de esta función sacaba cualquier paréntesis
+    sin letras, así que "Medidor (8399554)" y "Medidor (8399555)" quedaban
+    fusionados en el mismo concepto -- exactamente la granularidad que
+    `quitar_periodo` documenta como intocable.
 
     Tiene que llamarse ANTES de `normalizar`/`quitar_periodo`, que ya
     convierten los paréntesis en espacios sueltos y pierden la distinción
