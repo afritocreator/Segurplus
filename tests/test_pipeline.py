@@ -481,6 +481,40 @@ def test_intento_fallido_de_extraccion_queda_registrado(tmp_path, monkeypatch):
     con.close()
 
 
+def test_json_valido_pero_incompleto_cuenta_para_el_tope_y_queda_registrado(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-2: un JSON
+    sintácticamente válido pero con un campo faltante (el caso real:
+    Gemini omite "descripcion" en un concepto) tiene que comportarse EXACTO
+    igual que cualquier otro ExtraccionError -- contar para el tope (B-4) y
+    quedar registrado con el JSON crudo (B-5). Antes escapaba como
+    KeyError sin pasar por ninguno de los dos."""
+    from core.extraccion.gemini import ExtraccionError
+
+    json_crudo = '{"conceptos": [{"cantidad": 1, "precio_unitario": 10.0, "importe": 10.0}]}'
+
+    def _json_incompleto(*a, **k):
+        raise ExtraccionError(
+            "El JSON de Gemini no tiene la forma esperada: 'descripcion'",
+            respuesta_cruda=json_crudo,
+        )
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _json_incompleto)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "error_extraccion"
+    from core.almacenamiento import intentos_gemini_fallidos_recientes, llamadas_ultima_hora
+
+    assert llamadas_ultima_hora(con) == 1
+    fallidos = intentos_gemini_fallidos_recientes(con)
+    assert len(fallidos) == 1
+    _ruta_pdf, mensaje, respuesta_cruda, _creado_en = fallidos[0]
+    assert "descripcion" in mensaje
+    assert respuesta_cruda == json_crudo
+    con.close()
+
+
 def test_intento_exitoso_tambien_se_registra_y_cuenta_para_el_tope(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()

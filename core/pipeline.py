@@ -113,15 +113,20 @@ def procesar_pdf(
         # columnas o líneas de impuesto con dos montos.
         factura = extraer_con_gemini(contenido_pdf, api_key=api_key, texto_extraido=documento.texto)
     except ExtraccionError as exc:
-        # docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes esto no
-        # dejaba NINGÚN rastro en la base -- se perdía al recargar la
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5: antes esto
+        # no dejaba NINGÚN rastro en la base -- se perdía al recargar la
         # página, y el usuario no tenía forma de contar qué pasó.
+        # respuesta_cruda (hallazgo C-2): si Gemini SÍ llegó a responder
+        # (un JSON válido pero incompleto, ej. sin "descripcion" en un
+        # concepto), queda igual disponible acá para diagnosticar -- antes
+        # ese caso ni siquiera llegaba a este except (ver ExtraccionError).
         registrar_intento_gemini(
             con,
             hash_pdf=documento.hash_sha256,
             ruta_pdf=str(ruta),
             exito=False,
             mensaje=str(exc),
+            respuesta_cruda=getattr(exc, "respuesta_cruda", None),
         )
         return ResultadoPipeline(
             ruta, documento.hash_sha256, estado="error_extraccion", detalle=str(exc)

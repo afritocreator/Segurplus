@@ -69,6 +69,16 @@ def main() -> int:
         )
     except ExtraccionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-2: si Gemini
+        # SÍ devolvió algo (un JSON válido pero con un campo faltante, ej.
+        # sin "descripcion" en un concepto), mostrarlo -- es justo la
+        # promesa que este script no cumplía antes de este fix: "así se ve
+        # qué manda el modelo, incluso si factura_desde_json fallara al
+        # interpretarlo".
+        respuesta_cruda = getattr(exc, "respuesta_cruda", None)
+        if respuesta_cruda:
+            print("\n--- JSON crudo devuelto por el modelo (no se pudo interpretar) ---")
+            print(respuesta_cruda, file=sys.stderr)
         print(
             "\nSi el error menciona un parámetro desconocido o un formato inesperado, "
             "la forma de la API de google-genai cambió -- revisar la documentación "

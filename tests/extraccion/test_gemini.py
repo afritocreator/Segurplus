@@ -90,6 +90,56 @@ def test_texto_extraido_vacio_se_comporta_como_ausente(monkeypatch):
     assert len(contents) == 2
 
 
+# --- C-2: un JSON sintácticamente válido pero con un campo faltante tiene
+# --- que dar ExtraccionError, NO un KeyError crudo (docs/auditoria-2026-09-
+# --- facturas-reales.md) ---------------------------------------------------
+
+
+class _RespuestaJsonIncompleto:
+    # Le falta "descripcion" al concepto -- JSON válido, forma incompleta.
+    text = (
+        '{"conceptos": [{"cantidad": 1, "precio_unitario": 10.0, "importe": 10.0}], '
+        '"moneda": "ARS"}'
+    )
+
+
+class _ModelsJsonIncompleto:
+    def generate_content(self, *, model, contents, config):
+        return _RespuestaJsonIncompleto()
+
+
+class _ClienteJsonIncompleto:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.models = _ModelsJsonIncompleto()
+
+
+def test_json_valido_pero_incompleto_da_extraccion_error_no_keyerror(monkeypatch):
+    import google.genai as genai_mod
+
+    monkeypatch.setattr(genai_mod, "Client", _ClienteJsonIncompleto)
+
+    with pytest.raises(ExtraccionError, match="descripcion"):
+        extraer_con_gemini(b"pdf-fake", api_key="fake")
+
+
+def test_json_valido_pero_incompleto_conserva_la_respuesta_cruda(monkeypatch):
+    import google.genai as genai_mod
+
+    monkeypatch.setattr(genai_mod, "Client", _ClienteJsonIncompleto)
+
+    with pytest.raises(ExtraccionError) as info:
+        extraer_con_gemini(b"pdf-fake", api_key="fake")
+    assert info.value.respuesta_cruda == _RespuestaJsonIncompleto.text
+
+
+def test_sin_api_key_no_tiene_respuesta_cruda(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(ExtraccionError) as info:
+        extraer_con_gemini(b"pdf-fake", api_key=None)
+    assert info.value.respuesta_cruda is None
+
+
 def test_esquema_json_tiene_los_campos_clave():
     esquema = esquema_json_para_modelo()
     propiedades = esquema["properties"]

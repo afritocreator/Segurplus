@@ -77,8 +77,20 @@ formato pedido. Reglas importantes:
 
 
 class ExtraccionError(Exception):
-    """La llamada al modelo falló o no devolvió un JSON parseable contra el
-    esquema esperado. La factura debe ir a cuarentena, nunca al análisis."""
+    """La llamada al modelo falló, no devolvió un JSON parseable, o el JSON
+    que devolvió no tiene la forma que `factura_desde_json` necesita. La
+    factura debe ir a cuarentena, nunca al análisis.
+
+    `respuesta_cruda` (docs/auditoria-2026-09-facturas-reales.md, hallazgo
+    C-2): el texto que Gemini devolvió, si llegó a devolver alguno -- para
+    que `core/pipeline.py` lo pueda pasar a `registrar_intento_gemini` y
+    quede disponible en el diagnóstico de B-5 incluso cuando el JSON era
+    válido pero le faltaba un campo. `None` cuando el fallo fue ANTES de
+    tener una respuesta (sin API key, error de red)."""
+
+    def __init__(self, mensaje: str, *, respuesta_cruda: str | None = None) -> None:
+        super().__init__(mensaje)
+        self.respuesta_cruda = respuesta_cruda
 
 
 def extraer_con_gemini(
@@ -146,7 +158,23 @@ def extraer_con_gemini(
     except json.JSONDecodeError as exc:
         raise ExtraccionError(f"La respuesta de Gemini no es JSON válido: {exc}") from exc
 
-    factura = factura_desde_json(datos)
+    try:
+        factura = factura_desde_json(datos)
+    except (KeyError, TypeError, ValueError) as exc:
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-2: un JSON
+        # SINTÁCTICAMENTE válido puede tener un concepto/impuesto/recargo/
+        # crédito al que le falta una clave requerida (factura_desde_json
+        # indexa "descripcion", "precio_unitario", etc. directo). Antes esto
+        # escapaba como KeyError crudo -- sin envolver en ExtraccionError, el
+        # llamador (core/pipeline.py) no lo atrapaba, así que la llamada NO
+        # se contaba para el tope (anulaba B-4) y no quedaba ningún rastro en
+        # intentos_gemini (anulaba B-5), y el usuario veía un mensaje inútil
+        # como "'descripcion'". Envolver acá, con el texto crudo adjunto,
+        # devuelve las dos cosas.
+        raise ExtraccionError(
+            f"El JSON de Gemini no tiene la forma esperada (falta o está mal tipado: {exc})",
+            respuesta_cruda=texto,
+        ) from exc
     # Estos metadatos permiten reconstruir cómo se produjo cada extracción,
     # aun cuando se actualice el prompt o se rote el modelo en el futuro.
     factura.modelo_extraccion = MODELO
