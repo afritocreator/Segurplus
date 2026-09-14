@@ -242,7 +242,8 @@ def procesar_pdf(
             estado="necesita_datos",
             detalle=(
                 f"Se guardó pero falta completar: {', '.join(datos_faltantes)} -- "
-                'corregilo en "Revisar facturas" para que entre al análisis.'
+                'corregilo Y APROBALO en "Revisar facturas" para que entre al análisis '
+                "(corregir solo no alcanza, la factura sigue sin aprobar)."
             ),
         )
     return ResultadoPipeline(ruta, factura.hash_pdf, estado="guardada")

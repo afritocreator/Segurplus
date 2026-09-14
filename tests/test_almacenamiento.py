@@ -559,6 +559,78 @@ def test_correccion_de_fecha_no_interpretable_se_rechaza(tmp_path):
     con.close()
 
 
+def test_correccion_de_periodo_hasta_mes_anio_normaliza_a_fin_de_mes(tmp_path):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-1: corregir
+    `periodo_hasta` a mano con "MM/AAAA" tiene que ir a FIN de mes, igual
+    que la extracción -- si no, corregir a mano reintroduce el mismo
+    `desde == hasta` que rompía `alertas_por_periodo_faltante`."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    registrar_correccion(
+        con,
+        hash_pdf=factura.hash_pdf,
+        campo="periodo_hasta",
+        valor_nuevo="07/2022",
+        motivo="La factura solo trae mes y año.",
+        actor="revisor@empresa.test",
+    )
+    assert (
+        con.execute(
+            "SELECT periodo_hasta FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == "2022-07-31"
+    )
+    con.close()
+
+
+def test_correccion_de_servicio_desconocido_se_rechaza(tmp_path):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-3: antes se
+    aceptaba en silencio cualquier texto libre -- escribir "luz" en vez de
+    "energia" pasaba, pero la factura perdía TODO el diccionario de
+    homologación específico de energía (A-3 por otra vía)."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    with pytest.raises(ValueError, match="no es un servicio conocido"):
+        registrar_correccion(
+            con,
+            hash_pdf=factura.hash_pdf,
+            campo="servicio",
+            valor_nuevo="luz",
+            motivo="prueba",
+            actor="revisor@empresa.test",
+        )
+    assert (
+        con.execute(
+            "SELECT servicio FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == factura.servicio
+    )
+    con.close()
+
+
+def test_correccion_de_servicio_conocido_se_acepta(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    registrar_correccion(
+        con,
+        hash_pdf=factura.hash_pdf,
+        campo="servicio",
+        valor_nuevo="gas",
+        motivo="El modelo confundió el servicio.",
+        actor="revisor@empresa.test",
+    )
+    assert (
+        con.execute(
+            "SELECT servicio FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == "gas"
+    )
+    con.close()
+
+
 def test_alerta_aprobada_crea_caso_deduplicado_y_asignable(tmp_path):
     from core.analisis.alertas import Alerta
 

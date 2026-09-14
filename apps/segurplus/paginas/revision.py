@@ -18,6 +18,7 @@ from core.almacenamiento import (
     registrar_correccion,
     resumen_financiero_factura,
 )
+from core.extraccion.esquema import SERVICIOS_CONOCIDOS
 from core.formato import pesos_ars
 from core.operacion import revision_humana_obligatoria
 
@@ -85,25 +86,52 @@ def _mostrar_detalle(con, hash_pdf: str) -> dict:
 
 def _formulario_correccion(con, hash_pdf: str, datos: dict) -> None:
     st.subheader("Corregir cabecera")
+    # `campo` FUERA del form (docs/auditoria-2026-09-facturas-reales.md,
+    # hallazgo C-3): así elegirlo dispara un rerun inmediato y el widget de
+    # "Valor corregido" de abajo puede cambiar de tipo según el campo, antes
+    # de que se envíe el formulario.
+    campo = st.selectbox("Campo", CAMPOS_EDITABLES, key=f"campo_correccion_{hash_pdf}")
     with st.form(f"correccion_{hash_pdf}"):
-        campo = st.selectbox("Campo", CAMPOS_EDITABLES)
-        valor = st.text_input("Valor corregido", value=str(datos[campo] or ""))
+        if campo == "servicio":
+            # Selector acotado en vez de texto libre: un valor fuera de
+            # SERVICIOS_CONOCIDOS se aceptaba en silencio y la factura
+            # perdía el diccionario de homologación de su servicio (A-3 por
+            # otra vía). registrar_correccion también valida esto -- este
+            # selector solo evita el error antes de que haga falta.
+            valor_actual = datos[campo] or ""
+            indice = (
+                SERVICIOS_CONOCIDOS.index(valor_actual)
+                if valor_actual in SERVICIOS_CONOCIDOS
+                else 0
+            )
+            valor = st.selectbox("Valor corregido", SERVICIOS_CONOCIDOS, index=indice)
+        else:
+            valor = st.text_input("Valor corregido", value=str(datos[campo] or ""))
         motivo_correccion = st.text_input("Motivo de corrección")
         corregir = st.form_submit_button("Registrar corrección")
     if corregir:
         if not motivo_correccion.strip():
             st.error("Indicá el motivo para que la corrección sea auditable.")
         else:
-            registrar_correccion(
-                con,
-                hash_pdf=hash_pdf,
-                campo=campo,
-                valor_nuevo=valor or None,
-                motivo=motivo_correccion,
-                actor=usuario_actual(),
-            )
-            st.success("Corrección registrada.")
-            st.rerun()
+            # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-4: antes
+            # esto no estaba protegido -- una fecha no interpretable (ej.
+            # "julio 2022") tiraba el ValueError de registrar_correccion
+            # como traceback encima de la página, tapando el mensaje de
+            # ayuda que esa misma función se toma el trabajo de escribir.
+            try:
+                registrar_correccion(
+                    con,
+                    hash_pdf=hash_pdf,
+                    campo=campo,
+                    valor_nuevo=valor or None,
+                    motivo=motivo_correccion,
+                    actor=usuario_actual(),
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.success("Corrección registrada.")
+                st.rerun()
 
 
 st.title("✅ Revisar facturas")

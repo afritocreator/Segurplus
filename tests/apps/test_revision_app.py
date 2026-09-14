@@ -135,10 +135,11 @@ def test_corregir_cabecera_de_una_factura_pendiente(base_con_una_pendiente):
     # vez (sin enviar el form) para que "Valor corregido" recalcule su
     # default a partir del NUEVO campo elegido -- si no, el input que se
     # cargue ahí queda atado al widget del campo anterior y se pierde al
-    # re-ejecutar el script con el campo nuevo.
+    # re-ejecutar el script con el campo nuevo. Con "servicio", "Valor
+    # corregido" también es un selectbox (hallazgo C-3), no un text_input.
     at.selectbox[1].select("servicio").run()
-    at.text_input[1].input("gas")  # "Valor corregido" (text_input[0] es el motivo del lote)
-    at.text_input[2].input("El modelo confundió el servicio.")  # "Motivo de corrección"
+    at.selectbox[2].select("gas")  # "Valor corregido"
+    at.text_input[1].input("El modelo confundió el servicio.")  # "Motivo de corrección"
     at.button[1].click().run()  # "Registrar corrección" (button[0] es el lote)
 
     assert not at.exception
@@ -146,6 +147,30 @@ def test_corregir_cabecera_de_una_factura_pendiente(base_con_una_pendiente):
     servicio = con.execute("SELECT servicio FROM facturas WHERE hash_pdf = 'h1'").fetchone()[0]
     con.close()
     assert servicio == "gas"
+
+
+def test_corregir_fecha_no_interpretable_muestra_error_sin_traceback(base_con_una_pendiente):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-4: antes el
+    ValueError de registrar_correccion no estaba atrapado acá -- escribir
+    "julio 2022" tiraba el traceback de Streamlit encima de la página en
+    vez de mostrar el mensaje de ayuda de la fecha."""
+    at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
+    at.run()
+
+    at.selectbox[1].select("periodo_desde").run()
+    at.text_input[1].input("julio 2022")  # "Valor corregido"
+    at.text_input[2].input("Corrigiendo el período.")  # "Motivo de corrección"
+    at.button[1].click().run()
+
+    assert not at.exception
+    assert any("no se pudo interpretar" in e.value.lower() for e in at.error)
+    con = conectar()
+    periodo_desde = con.execute(
+        "SELECT periodo_desde FROM facturas WHERE hash_pdf = 'h1'"
+    ).fetchone()[0]
+    con.close()
+    assert periodo_desde == "2026-08-01"  # sin cambios: la corrección se rechazó
 
 
 def test_pagina_muestra_una_factura_ya_aprobada(base_con_una_aprobada):
@@ -178,10 +203,11 @@ def test_corregir_cabecera_de_una_factura_ya_aprobada(base_con_una_aprobada):
     # Sin pendientes, solo la pestaña "Ya aprobadas" tiene widgets:
     # selectbox[0]=selector_aprobadas, selectbox[1]="Campo" del formulario.
     # Mismo motivo que en el test de la pendiente: correr una vez tras
-    # cambiar "Campo" para que "Valor corregido" recalcule su default.
+    # cambiar "Campo" para que "Valor corregido" recalcule su default. Con
+    # "servicio", "Valor corregido" también es un selectbox (hallazgo C-3).
     at.selectbox[1].select("servicio").run()
-    at.text_input[0].input("gas")  # "Valor corregido"
-    at.text_input[1].input("El modelo confundió el servicio.")  # "Motivo de corrección"
+    at.selectbox[2].select("gas")  # "Valor corregido"
+    at.text_input[0].input("El modelo confundió el servicio.")  # "Motivo de corrección"
     at.button[0].click().run()  # "Registrar corrección"
 
     assert not at.exception

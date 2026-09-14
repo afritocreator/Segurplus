@@ -33,7 +33,7 @@ from typing import Any
 import duckdb
 
 from core.analisis.alertas import Alerta
-from core.extraccion.esquema import FacturaExtraida, _normalizar_fecha
+from core.extraccion.esquema import SERVICIOS_CONOCIDOS, FacturaExtraida, _normalizar_fecha
 from core.extraccion.validacion import ResultadoValidacion
 
 RUTA_BASE = Path(__file__).resolve().parent.parent / "data" / "reales" / "facturas.duckdb"
@@ -536,6 +536,17 @@ def registrar_correccion(
     campos_fecha = {"periodo_desde", "periodo_hasta", "fecha_emision", "fecha_vencimiento"}
     if campo not in permitidos:
         raise ValueError(f"Campo no editable en revisión: {campo}")
+    if campo == "servicio" and valor_nuevo and valor_nuevo not in SERVICIOS_CONOCIDOS:
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-3: antes se
+        # aceptaba en silencio cualquier texto libre -- escribir "luz" en
+        # vez de "energia" pasaba la validación pero perdía TODO el
+        # diccionario de homologación específico del servicio (A-3 por
+        # otra vía, esta vez entrando por la corrección manual en vez de
+        # por la extracción).
+        raise ValueError(
+            f"{valor_nuevo!r} no es un servicio conocido -- probá uno de: "
+            f"{', '.join(SERVICIOS_CONOCIDOS)}."
+        )
     if campo in campos_fecha and valor_nuevo:
         normalizado = _normalizar_fecha(valor_nuevo, fin_de_mes=(campo == "periodo_hasta"))
         if normalizado is None:

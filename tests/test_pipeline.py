@@ -120,6 +120,11 @@ def test_factura_sin_periodo_no_queda_aprobada_ni_dice_guardada(tmp_path, monkey
 
     assert resultado.estado == "necesita_datos"
     assert "periodo_desde" in resultado.detalle
+    # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-6: el mensaje
+    # decía "corregilo... para que entre al análisis", pero corregir SOLO
+    # no alcanza -- la factura sigue en requiere_revision hasta que además
+    # se aprueba. El mensaje tiene que decir las dos cosas.
+    assert "aprobal" in resultado.detalle.lower()
     fila_estado = con.execute(
         "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
