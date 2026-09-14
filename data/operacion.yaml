@@ -28,3 +28,10 @@ max_llamadas_gemini_por_hora: 30
 # UTC; sin esto, "probá de nuevo después de las HH:MM" mostraba la hora del
 # SERVIDOR, adelantada 3 horas respecto del reloj real de Tandil.
 zona_horaria: America/Argentina/Buenos_Aires
+
+# Retención de la tabla intentos_gemini (docs/auditoria-2026-09-facturas-
+# reales.md, hallazgo C-9) -- una fila por cada llamada REAL a Gemini,
+# nunca se purgaba, en una base gratuita con límite de espacio. 30 días da
+# margen de sobra para diagnosticar un fallo reciente sin acumular para
+# siempre.
+dias_retencion_intentos_gemini: 30

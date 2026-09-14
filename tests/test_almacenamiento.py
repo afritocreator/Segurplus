@@ -305,6 +305,24 @@ def test_intentos_gemini_fallidos_recientes_solo_trae_los_fallidos(tmp_path):
     con.close()
 
 
+def test_registrar_intento_gemini_purga_filas_mas_viejas_que_la_retencion(tmp_path):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-9: la tabla
+    crecía sin límite -- cada llamada real ahora purga lo más viejo que la
+    retención configurada (30 días en data/operacion.yaml)."""
+    con = conectar(tmp_path / "test.duckdb")
+    con.execute(
+        """INSERT INTO intentos_gemini (id, hash_pdf, ruta_pdf, exito, mensaje, creado_en)
+           VALUES ('viejo', 'viejo', 'viejo.pdf', true, '', now() - INTERVAL '31 days')"""
+    )
+    assert con.execute("SELECT count(*) FROM intentos_gemini").fetchone()[0] == 1
+
+    registrar_intento_gemini(con, hash_pdf="nuevo", ruta_pdf="nuevo.pdf", exito=True)
+
+    filas = con.execute("SELECT hash_pdf FROM intentos_gemini").fetchall()
+    assert filas == [("nuevo",)]  # la fila vieja se purgó, la nueva quedó
+    con.close()
+
+
 # --- A-17: reintentar desde cuarentena ------------------------------------
 
 

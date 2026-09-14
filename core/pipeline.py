@@ -139,12 +139,17 @@ def procesar_pdf(
         return ResultadoPipeline(
             ruta, documento.hash_sha256, estado="error_extraccion", detalle=str(exc)
         )
+    # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-10: en un
+    # intento EXITOSO no se manda respuesta_cruda -- esa misma cadena ya va
+    # a facturas.respuesta_extraida vía guardar_factura más abajo.
+    # Duplicar el JSON completo de cada factura acá no compra nada (el
+    # diagnóstico de B-5 solo necesita los FALLIDOS) y ocupa espacio en una
+    # base gratuita.
     registrar_intento_gemini(
         con,
         hash_pdf=documento.hash_sha256,
         ruta_pdf=str(ruta),
         exito=True,
-        respuesta_cruda=factura.respuesta_extraida,
     )
 
     factura.hash_pdf = documento.hash_sha256

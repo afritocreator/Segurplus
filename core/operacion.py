@@ -41,6 +41,19 @@ def max_llamadas_gemini_por_hora() -> int:
     return int(datos["max_llamadas_gemini_por_hora"])
 
 
+def dias_retencion_intentos_gemini() -> int:
+    """Cuántos días se conserva una fila de `intentos_gemini` antes de
+    purgarse (docs/auditoria-2026-09-facturas-reales.md, hallazgo C-9): la
+    tabla crece una fila por cada llamada REAL a Gemini y nunca se
+    purgaba, en una base gratuita con límite de espacio. Se aplica en
+    `core.almacenamiento.registrar_intento_gemini` -- un DELETE por cada
+    llamada real no se nota al lado de la llamada misma."""
+    datos = yaml.safe_load(RUTA_OPERACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "dias_retencion_intentos_gemini" not in datos:
+        raise ValueError(f"{RUTA_OPERACION} no tiene 'dias_retencion_intentos_gemini'")
+    return int(datos["dias_retencion_intentos_gemini"])
+
+
 def zona_horaria() -> str:
     """Nombre de zona horaria IANA del equipo que usa el tablero (docs/
     auditoria-2026-09-facturas-reales.md, hallazgo C-8) -- para mostrar "a

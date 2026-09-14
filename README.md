@@ -82,14 +82,22 @@ facturas reales, siempre va a faltar algún alias. El circuito para completarlo:
    un caso límite conocido (A-3, `docs/auditoria-2026-09.md`) y avisa si un alias nuevo le
    robó el match a otro concepto.
 
+**No es solo el diccionario** (docs/auditoria-2026-09-facturas-reales.md, hallazgo C-12):
+tocar la LÓGICA de homologación -- `quitar_periodo`, `quitar_detalle_numerico`, el umbral de
+`data/homologacion.yaml` -- también cambia cómo homologa lo que ya está cargado, y ese
+cambio no se aplica solo. Correr "Re-homologar ahora" (o `scripts/rehomologar.py
+--aplicar`) después de CUALQUIER cambio en `core/analisis/homologacion.py`, no solo
+después de agregar un alias.
+
 ## Diagnosticar una factura que no entra
 
 Cuando una factura da error, va a cuarentena, o simplemente no aparece donde se esperaba:
 
-1. La página **Cargar facturas** tiene un expander "Últimos intentos de extracción
+1. La página **Cargar facturas** tiene un checkbox "Ver últimos intentos de extracción
    fallidos" con el historial persistido (tabla `intentos_gemini`) -- sigue disponible
    después de recargar la página o de haber cerrado la sesión donde se subió, a diferencia
-   del resumen de la corrida, que se pierde al navegar.
+   del resumen de la corrida, que se pierde al navegar. Sin marcar, no conecta a la base
+   (docs/auditoria-2026-09-facturas-reales.md, hallazgo C-7).
 2. Para ver exactamente qué le contestó Gemini a una factura puntual, sin tocar la base:
 
    ```bash

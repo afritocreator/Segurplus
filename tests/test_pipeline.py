@@ -534,6 +534,26 @@ def test_intento_exitoso_tambien_se_registra_y_cuenta_para_el_tope(tmp_path, mon
     con.close()
 
 
+def test_intento_exitoso_no_duplica_la_respuesta_cruda(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-10: esa misma
+    cadena ya va a facturas.respuesta_extraida -- guardarla también en
+    intentos_gemini duplica los datos completos de cada factura sin
+    ninguna necesidad (el diagnóstico de B-5 solo usa los fallidos)."""
+    factura_con_respuesta = replace(
+        _factura_telefonia_julio(), respuesta_extraida='{"total": 12584.0}'
+    )
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_con_respuesta)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    respuesta_cruda = con.execute(
+        "SELECT respuesta_cruda FROM intentos_gemini WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()[0]
+    assert respuesta_cruda is None
+    con.close()
+
+
 def test_sin_item_duplicado_no_guarda_alertas(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()

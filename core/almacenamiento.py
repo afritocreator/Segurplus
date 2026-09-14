@@ -35,6 +35,7 @@ import duckdb
 from core.analisis.alertas import Alerta
 from core.extraccion.esquema import SERVICIOS_CONOCIDOS, FacturaExtraida, _normalizar_fecha
 from core.extraccion.validacion import ResultadoValidacion
+from core.operacion import dias_retencion_intentos_gemini
 
 RUTA_BASE = Path(__file__).resolve().parent.parent / "data" / "reales" / "facturas.duckdb"
 
@@ -174,6 +175,14 @@ CREATE TABLE IF NOT EXISTS intentos_gemini (
     respuesta_cruda VARCHAR,
     creado_en TIMESTAMP DEFAULT now()
 );
+-- docs/auditoria-2026-09-facturas-reales.md, hallazgo C-9: llamadas_ultima_hora
+-- y proxima_ventana_libre filtran por creado_en en CADA PDF procesado --
+-- sin índice, eso es un table scan completo de intentos_gemini una vez que
+-- la tabla acumula meses de uso. La purga por retención (ver
+-- registrar_intento_gemini) mantiene la tabla chica en el volumen de este
+-- piloto, pero el índice es la protección real contra el costo de la
+-- consulta en sí.
+CREATE INDEX IF NOT EXISTS idx_intentos_gemini_creado_en ON intentos_gemini (creado_en);
 """
 
 ESTADOS_FACTURA = frozenset(
@@ -294,13 +303,18 @@ def registrar_intento_gemini(
     respuesta_cruda: str | None = None,
 ) -> None:
     """Registra UNA llamada real a Gemini, haya salido bien o mal (docs/
-    auditoria-2026-09-piloto.md, hallazgos B-4 y B-5) -- llamar una sola
-    vez por cada llamada real a `core.extraccion.gemini.extraer_con_gemini`,
-    nunca por PDF que ni siquiera llegó a esa llamada (ej. uno que ya
-    estaba procesado, o sin texto extraíble). Es la fuente de
-    `llamadas_ultima_hora` y de lo que `apps/segurplus/paginas/cargar.py`
-    puede mostrar para diagnosticar un fallo que ya no está en pantalla
-    porque se recargó la página."""
+    auditoria-2026-09-facturas-reales.md, hallazgos B-4 y B-5) -- llamar
+    una sola vez por cada llamada real a
+    `core.extraccion.gemini.extraer_con_gemini`, nunca por PDF que ni
+    siquiera llegó a esa llamada (ej. uno que ya estaba procesado, o sin
+    texto extraíble). Es la fuente de `llamadas_ultima_hora` y de lo que
+    `apps/segurplus/paginas/cargar.py` puede mostrar para diagnosticar un
+    fallo que ya no está en pantalla porque se recargó la página.
+
+    Purga las filas más viejas que `core.operacion.dias_retencion_intentos_gemini`
+    en cada llamada (hallazgo C-9) -- un DELETE por cada llamada real a
+    Gemini no se nota al lado de la llamada misma, y evita que la tabla
+    crezca sin límite en una base gratuita."""
     con.execute(
         """INSERT INTO intentos_gemini (id, hash_pdf, ruta_pdf, exito, mensaje, respuesta_cruda)
            VALUES (?, ?, ?, ?, ?, ?)""",
@@ -312,6 +326,10 @@ def registrar_intento_gemini(
             mensaje,
             respuesta_cruda,
         ],
+    )
+    dias = dias_retencion_intentos_gemini()
+    con.execute(
+        f"DELETE FROM intentos_gemini WHERE creado_en < now() - INTERVAL '{int(dias)} days'"
     )
 
 
