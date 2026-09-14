@@ -140,17 +140,21 @@ def recalcular(
 def leer_filas_a_rehomologar(
     con: duckdb.DuckDBPyConnection, *, servicio: str | None = None
 ) -> list[FilaARehomologar]:
-    """Lee todas las filas de `conceptos`, joineando `facturas` para saber
-    el `servicio` de cada una -- necesario para acotar el diccionario a
-    usar (docs/auditoria-2026-09.md, hallazgo A-3: homologar sin acotar por
-    servicio hace competir conceptos de servicios distintos entre sí)."""
-    condicion = "WHERE f.servicio = ?" if servicio is not None else ""
+    """Lee las filas de `conceptos` de facturas APROBADAS, joineando
+    `facturas` para saber el `servicio` de cada una -- necesario para
+    acotar el diccionario a usar (docs/auditoria-2026-09.md, hallazgo A-3:
+    homologar sin acotar por servicio hace competir conceptos de servicios
+    distintos entre sí). Solo `estado = 'aprobada'`
+    (docs/auditoria-2026-09-piloto.md, A-55): re-homologar reescribe
+    `concepto_normalizado`, y hacerlo sobre una factura rechazada tocaría
+    datos que el análisis ya ignora, sin ningún beneficio."""
+    condicion = "AND f.servicio = ?" if servicio is not None else ""
     parametros = [servicio] if servicio is not None else []
     filas = con.execute(
         f"""SELECT c.hash_pdf, c.orden, c.descripcion, f.servicio,
                    c.concepto_normalizado, c.score_homologacion
             FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-            {condicion}
+            WHERE f.estado = 'aprobada' {condicion}
             ORDER BY f.servicio, c.hash_pdf, c.orden""",
         parametros,
     ).fetchall()

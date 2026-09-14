@@ -128,6 +128,7 @@ def test_tasa_cuarentena_calculada_a_mano():
         emisor="Movistar",
         facturas_cargadas=1,
         facturas_en_cuarentena=3,
+        facturas_rechazadas=0,
         conceptos_totales=2,
         conceptos_sin_homologar=1,
         importe_sin_homologar=500.0,
@@ -142,6 +143,7 @@ def test_tasa_cuarentena_none_sin_ningun_pdf_visto():
         emisor="(sin emisor)",
         facturas_cargadas=0,
         facturas_en_cuarentena=0,
+        facturas_rechazadas=0,
         conceptos_totales=0,
         conceptos_sin_homologar=0,
         importe_sin_homologar=0.0,
@@ -159,6 +161,7 @@ def test_tasa_sin_homologar_none_sin_conceptos_pero_con_cuarentena():
         emisor="Proveedor Nuevo",
         facturas_cargadas=0,
         facturas_en_cuarentena=2,
+        facturas_rechazadas=0,
         conceptos_totales=0,
         conceptos_sin_homologar=0,
         importe_sin_homologar=0.0,
@@ -167,11 +170,27 @@ def test_tasa_sin_homologar_none_sin_conceptos_pero_con_cuarentena():
     assert m.tasa_sin_homologar is None
 
 
+def test_total_facturas_vistas_no_cuenta_las_rechazadas_dos_veces():
+    # Una rechazada ya está adentro de facturas_cargadas (validó
+    # aritméticamente y llegó a `facturas` antes de que alguien la
+    # rechazara) -- sumarla aparte la contaría dos veces.
+    m = MetricasProveedor(
+        emisor="Movistar",
+        facturas_cargadas=5,
+        facturas_en_cuarentena=1,
+        facturas_rechazadas=2,
+        conceptos_totales=3,
+        conceptos_sin_homologar=0,
+        importe_sin_homologar=0.0,
+    )
+    assert m.total_facturas_vistas == 6
+
+
 def test_metricas_por_proveedor_ordena_por_tasa_de_cuarentena_descendente():
     filas = [
-        ("Bueno", 10, 0, 10, 0, 0.0),  # tasa_cuarentena = 0
-        ("Malo", 1, 3, 1, 0, 0.0),  # tasa_cuarentena = 0.75
-        ("Regular", 2, 1, 2, 0, 0.0),  # tasa_cuarentena = 0.333...
+        ("Bueno", 10, 0, 0, 10, 0, 0.0),  # tasa_cuarentena = 0
+        ("Malo", 1, 3, 0, 1, 0, 0.0),  # tasa_cuarentena = 0.75
+        ("Regular", 2, 1, 0, 2, 0, 0.0),  # tasa_cuarentena = 0.333...
     ]
     ordenadas = metricas_por_proveedor(filas)
     assert [m.emisor for m in ordenadas] == ["Malo", "Regular", "Bueno"]

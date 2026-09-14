@@ -76,6 +76,7 @@ class MetricasProveedor:
     emisor: str
     facturas_cargadas: int
     facturas_en_cuarentena: int
+    facturas_rechazadas: int
     conceptos_totales: int
     conceptos_sin_homologar: int
     importe_sin_homologar: float
@@ -83,7 +84,12 @@ class MetricasProveedor:
     @property
     def total_facturas_vistas(self) -> int:
         """Cargadas + cuarentena -- el universo real de PDFs de este
-        proveedor que pasaron por el pipeline, para poder calcular una tasa."""
+        proveedor que pasaron por el pipeline, para poder calcular una tasa.
+        No suma `facturas_rechazadas` -- una rechazada ya está contada
+        dentro de `facturas_cargadas` (llegó a validar aritméticamente y
+        pasar a `facturas`, después alguien la rechazó; ver
+        `core.almacenamiento.decision_factura`), sumarla de nuevo la
+        contaría dos veces."""
         return self.facturas_cargadas + self.facturas_en_cuarentena
 
     @property
@@ -97,17 +103,20 @@ class MetricasProveedor:
 
     @property
     def tasa_sin_homologar(self) -> float | None:
-        """Proporción de conceptos de las facturas YA CARGADAS de este
-        proveedor que no homologaron a ningún concepto normalizado. `None`
-        si el proveedor no tiene ningún concepto cargado todavía (solo
-        cuarentena, o nada)."""
+        """Proporción de conceptos de las facturas ya cargadas y APROBADAS
+        de este proveedor que no homologaron a ningún concepto normalizado
+        (`conceptos_totales`/`conceptos_sin_homologar` ya vienen filtrados
+        por `estado = 'aprobada'` desde `core.almacenamiento.
+        metricas_por_proveedor`, docs/auditoria-2026-09-piloto.md, A-55).
+        `None` si el proveedor no tiene ningún concepto aprobado todavía
+        (solo cuarentena, solo rechazadas, o nada)."""
         if self.conceptos_totales == 0:
             return None
         return self.conceptos_sin_homologar / self.conceptos_totales
 
 
 def metricas_por_proveedor(
-    filas: list[tuple[str, int, int, int, int, float]],
+    filas: list[tuple[str, int, int, int, int, int, float]],
 ) -> list[MetricasProveedor]:
     """Envuelve las filas crudas de `core.almacenamiento.metricas_por_proveedor`
     en `MetricasProveedor`, ordenadas por tasa de cuarentena descendente (el

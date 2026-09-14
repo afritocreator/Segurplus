@@ -5,7 +5,7 @@ cambio/sin_cambio) para que el script de calibración avise de regresiones."""
 
 import pytest
 
-from core.almacenamiento import conectar, guardar_factura
+from core.almacenamiento import conectar, decision_factura, guardar_factura
 from core.extraccion.esquema import Concepto, FacturaExtraida
 from core.rehomologacion import (
     CambioHomologacion,
@@ -197,6 +197,20 @@ def test_leer_filas_a_rehomologar_acotado_por_servicio(tmp_path):
     solo_telefonia = leer_filas_a_rehomologar(con, servicio="telefonia")
     assert len(solo_telefonia) == 1
     assert solo_telefonia[0].servicio == "telefonia"
+
+
+def test_leer_filas_a_rehomologar_excluye_facturas_rechazadas(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, A-55: re-homologar reescribe
+    concepto_normalizado -- hacerlo sobre una factura rechazada tocaría
+    datos que el análisis ya ignora."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada", scores_homologacion={0: 0.3})
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
+    )
+    assert leer_filas_a_rehomologar(con) == []
+    con.close()
     con.close()
 
 

@@ -240,8 +240,22 @@ def llamadas_ultima_hora(con: duckdb.DuckDBPyConnection) -> int:
 
 
 def factura_ya_procesada(con: duckdb.DuckDBPyConnection, hash_pdf: str) -> bool:
-    """Idempotencia: True si ese PDF (por hash) ya está en `facturas` o `cuarentena`."""
-    en_facturas = con.execute("SELECT 1 FROM facturas WHERE hash_pdf = ?", [hash_pdf]).fetchone()
+    """Idempotencia: True si ese PDF (por hash) ya está en `facturas` (y no
+    fue rechazado) o en `cuarentena`.
+
+    Una factura `rechazada` NO cuenta como "ya procesada"
+    (docs/auditoria-2026-09-piloto.md, A-56): antes de esta corrección, un
+    PDF rechazado quedaba bloqueado para siempre -- ni siquiera después de
+    corregir la causa del rechazo (ajustar el prompt, agregar un alias) se
+    podía volver a cargar. Mismo criterio que ya tiene la cuarentena desde
+    A-17 (`borrar_de_cuarentena`, botón "Reintentar"): rechazar saca la
+    factura del análisis, no bloquea el PDF para siempre. Volver a subir el
+    mismo PDF lo reprocesa de cero -- `guardar_factura` pisa el registro
+    anterior (`ON CONFLICT ... DO UPDATE`), y el rechazo queda igual en el
+    historial de `decisiones_factura`, que nunca se edita ni se borra."""
+    en_facturas = con.execute(
+        "SELECT 1 FROM facturas WHERE hash_pdf = ? AND estado <> 'rechazada'", [hash_pdf]
+    ).fetchone()
     en_cuarentena = con.execute(
         "SELECT 1 FROM cuarentena WHERE hash_pdf = ?", [hash_pdf]
     ).fetchone()
@@ -582,14 +596,20 @@ def conceptos_sin_clasificar(
     la plata manda: el alias que más conviene agregar a
     `data/conceptos/*.yaml` es el que más plata deja sin clasificar (ver
     `apps/segurplus/paginas/sin_clasificar.py` y `core/rehomologacion.py`,
-    el circuito de calibración de docs/auditoria-2026-09.md, Bloque 9)."""
+    el circuito de calibración de docs/auditoria-2026-09.md, Bloque 9).
+
+    Solo mira facturas `aprobada` (docs/auditoria-2026-09-piloto.md, A-55):
+    el resto del análisis (Evolución, totales, alertas) ya filtra por
+    `estado`, y antes de esta corrección la calibración no -- mostraba
+    plata y conceptos de facturas rechazadas, que ni siquiera existen para
+    el análisis."""
     condicion = "AND f.servicio = ?" if servicio is not None else ""
     parametros = [servicio] if servicio is not None else []
     filas = con.execute(
         f"""SELECT f.servicio, c.descripcion, max(c.score_homologacion),
                    sum(c.importe), count(*), max(f.periodo_desde)
             FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-            WHERE c.concepto_normalizado IS NULL {condicion}
+            WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada' {condicion}
             GROUP BY f.servicio, c.descripcion
             ORDER BY sum(c.importe) DESC""",
         parametros,
@@ -601,21 +621,23 @@ def conceptos_sin_clasificar(
 def filas_sin_clasificar_por_periodo(
     con: duckdb.DuckDBPyConnection,
 ) -> list[tuple[str | None, str, float | None, float, str]]:
-    """Filas sin clasificar sin mezclar períodos; la calibración las deflacta después."""
+    """Filas sin clasificar sin mezclar períodos; la calibración las deflacta
+    después. Solo facturas `aprobada` -- ver `conceptos_sin_clasificar`."""
     return con.execute(
         """SELECT f.servicio, c.descripcion, c.score_homologacion, c.importe, f.periodo_desde
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE c.concepto_normalizado IS NULL AND f.periodo_desde IS NOT NULL"""
+           WHERE c.concepto_normalizado IS NULL AND f.periodo_desde IS NOT NULL
+             AND f.estado = 'aprobada'"""
     ).fetchall()
 
 
 def metricas_por_proveedor(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
-) -> list[tuple[str, int, int, int, int, float]]:
+) -> list[tuple[str, int, int, int, int, int, float]]:
     """Cifras crudas por `emisor` (nunca proporciones -- eso es cálculo,
     va a `core.analisis.calibracion.MetricasProveedor`, con test):
-    `(emisor, facturas_cargadas, facturas_en_cuarentena, conceptos_totales,
-    conceptos_sin_homologar, importe_sin_homologar)`.
+    `(emisor, facturas_cargadas, facturas_en_cuarentena, facturas_rechazadas,
+    conceptos_totales, conceptos_sin_homologar, importe_sin_homologar)`.
 
     Sirve para responder "¿la herramienta está leyendo bien a ESTE
     proveedor?" -- una tasa alta de cuarentena o de conceptos sin
@@ -624,7 +646,16 @@ def metricas_por_proveedor(
     todos los proveedores mezclados. `emisor IS NULL` se agrupa aparte
     (una extracción que no pudo leer el emisor sigue siendo información).
 
-    Cuatro consultas simples combinadas en Python en vez de un único JOIN
+    Las columnas de CONCEPTOS (totales, sin homologar, importe) solo miran
+    facturas `aprobada` (docs/auditoria-2026-09-piloto.md, A-55) -- antes
+    de esta corrección contaban también conceptos de facturas rechazadas,
+    que el resto del análisis ya ignora. `facturas_cargadas` y
+    `facturas_en_cuarentena` siguen contando TODO lo que se cargó/cuarentenó
+    alguna vez (es la métrica de volumen, no de calibración); para no
+    perder la señal de calidad al filtrar los conceptos, se agrega
+    `facturas_rechazadas` aparte.
+
+    Cinco consultas simples combinadas en Python en vez de un único JOIN
     con FULL OUTER: mezclar `facturas` y `cuarentena` (que no comparten
     columnas de conceptos) en un solo JOIN sería más difícil de leer que
     combinar los conteos ya agregados."""
@@ -634,10 +665,16 @@ def metricas_por_proveedor(
     cuarentena_por_emisor = dict(
         con.execute("SELECT emisor, count(*) FROM cuarentena GROUP BY emisor").fetchall()
     )
+    rechazadas_por_emisor = dict(
+        con.execute(
+            "SELECT emisor, count(*) FROM facturas WHERE estado = 'rechazada' GROUP BY emisor"
+        ).fetchall()
+    )
     conceptos_por_emisor = dict(
         con.execute(
             """SELECT f.emisor, count(*)
                FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
+               WHERE f.estado = 'aprobada'
                GROUP BY f.emisor"""
         ).fetchall()
     )
@@ -645,7 +682,7 @@ def metricas_por_proveedor(
         con.execute(
             """SELECT f.emisor, count(*)
                FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-               WHERE c.concepto_normalizado IS NULL
+               WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada'
                GROUP BY f.emisor"""
         ).fetchall()
     )
@@ -653,7 +690,7 @@ def metricas_por_proveedor(
         con.execute(
             """SELECT f.emisor, sum(c.importe)
                FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-               WHERE c.concepto_normalizado IS NULL
+               WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada'
                GROUP BY f.emisor"""
         ).fetchall()
     )
@@ -661,6 +698,7 @@ def metricas_por_proveedor(
     emisores = (
         set(facturas_por_emisor)
         | set(cuarentena_por_emisor)
+        | set(rechazadas_por_emisor)
         | set(conceptos_por_emisor)
         | set(sin_homologar_por_emisor)
     )
@@ -669,6 +707,7 @@ def metricas_por_proveedor(
             emisor if emisor is not None else "(sin emisor)",
             facturas_por_emisor.get(emisor, 0),
             cuarentena_por_emisor.get(emisor, 0),
+            rechazadas_por_emisor.get(emisor, 0),
             conceptos_por_emisor.get(emisor, 0),
             sin_homologar_por_emisor.get(emisor, 0),
             importe_sin_homologar_por_emisor.get(emisor, 0.0) or 0.0,
@@ -698,11 +737,13 @@ def motivos_cuarentena_por_proveedor(
 
 
 def importes_por_periodo(con: duckdb.DuckDBPyConnection) -> list[tuple[float, str]]:
-    """Todos los importes de conceptos con su período, para totales comparables."""
+    """Todos los importes de conceptos APROBADOS con su período, para
+    totales comparables (docs/auditoria-2026-09-piloto.md, A-55 -- ver
+    `conceptos_sin_clasificar`)."""
     return con.execute(
         """SELECT c.importe, f.periodo_desde FROM conceptos c
            JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE f.periodo_desde IS NOT NULL"""
+           WHERE f.periodo_desde IS NOT NULL AND f.estado = 'aprobada'"""
     ).fetchall()
 
 

@@ -308,6 +308,20 @@ def test_conceptos_sin_clasificar_acotado_por_servicio(tmp_path):
     con.close()
 
 
+def test_conceptos_sin_clasificar_excluye_facturas_rechazadas(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, A-55: antes de esta corrección, la
+    pantalla de calibración mostraba plata y conceptos de facturas
+    rechazadas, que el análisis (Evolución, totales) ya ignora."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada", scores_homologacion={0: 0.3})
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
+    )
+    assert conceptos_sin_clasificar(con) == []
+    con.close()
+
+
 # --- totales_por_periodo: la serie temporal (Bloque 7) --------------------
 
 
@@ -572,8 +586,10 @@ def test_metricas_por_proveedor_combina_cargadas_cuarentena_y_sin_homologar(tmp_
 
     filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
 
-    assert filas["Movistar"] == ("Movistar", 1, 1, 1, 1, 10000.0)
-    assert filas["Edesur"] == ("Edesur", 1, 0, 1, 0, 0.0)
+    # (emisor, facturas_cargadas, facturas_en_cuarentena, facturas_rechazadas,
+    #  conceptos_totales, conceptos_sin_homologar, importe_sin_homologar)
+    assert filas["Movistar"] == ("Movistar", 1, 1, 0, 1, 1, 10000.0)
+    assert filas["Edesur"] == ("Edesur", 1, 0, 0, 1, 0, 0.0)
     con.close()
 
 
@@ -585,6 +601,28 @@ def test_metricas_por_proveedor_agrupa_emisor_desconocido(tmp_path):
 
     filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
     assert filas["(sin emisor)"][1] == 1
+    con.close()
+
+
+def test_metricas_por_proveedor_cuenta_rechazadas_y_no_sus_conceptos(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, A-55: las columnas de conceptos
+    (totales, sin homologar, importe) solo miran facturas aprobadas -- una
+    rechazada se cuenta en facturas_rechazadas, pero sus conceptos no
+    contaminan las cifras de calibración."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada", conceptos_normalizados={})
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
+    )
+
+    filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
+    fila = filas["Movistar"]
+    assert fila[1] == 1  # facturas_cargadas: sigue contando la rechazada
+    assert fila[3] == 1  # facturas_rechazadas
+    assert fila[4] == 0  # conceptos_totales: NO cuenta los de la rechazada
+    assert fila[5] == 0  # conceptos_sin_homologar
+    assert fila[6] == 0.0  # importe_sin_homologar
     con.close()
 
 
@@ -720,4 +758,57 @@ def test_no_se_puede_corregir_ni_decidir_una_factura_rechazada(tmp_path):
         )
     with pytest.raises(ValueError):
         decision_factura(con, hash_pdf=factura.hash_pdf, estado="aprobada", actor="a", motivo="m")
+    con.close()
+
+
+# --- A-56: una factura rechazada libera el hash para volver a cargarse ----
+
+
+def test_factura_ya_procesada_es_false_para_una_rechazada(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada")
+    assert factura_ya_procesada(con, factura.hash_pdf)
+
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
+    )
+    assert not factura_ya_procesada(con, factura.hash_pdf)
+    con.close()
+
+
+def test_factura_ya_procesada_sigue_true_para_una_aprobada_o_pendiente(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    aprobada = _factura("aprobada")
+    guardar_factura(con, aprobada, estado="aprobada")
+    pendiente = _factura("pendiente")
+    guardar_factura(con, pendiente, estado="requiere_revision")
+
+    assert factura_ya_procesada(con, aprobada.hash_pdf)
+    assert factura_ya_procesada(con, pendiente.hash_pdf)
+    con.close()
+
+
+def test_reguardar_una_factura_rechazada_la_reprocesa_de_cero(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada")
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
+    )
+
+    guardar_factura(con, factura, estado="aprobada")  # se vuelve a "subir" el mismo PDF
+    estado = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+    ).fetchone()[0]
+    assert estado == "aprobada"
+    # el rechazo anterior sigue en la auditoría, no se borró ni se editó
+    decisiones = [
+        accion
+        for (accion,) in con.execute(
+            "SELECT accion FROM decisiones_factura WHERE hash_pdf = ? ORDER BY creado_en",
+            [factura.hash_pdf],
+        ).fetchall()
+    ]
+    assert "rechazada" in decisiones
     con.close()

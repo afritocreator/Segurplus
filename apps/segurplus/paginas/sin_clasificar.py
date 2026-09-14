@@ -64,6 +64,7 @@ try:
                     "Proveedor": m.emisor,
                     "Facturas cargadas": m.facturas_cargadas,
                     "Facturas en cuarentena": m.facturas_en_cuarentena,
+                    "Facturas rechazadas": m.facturas_rechazadas,
                     "Tasa de cuarentena": (
                         f"{m.tasa_cuarentena:.0%}" if m.tasa_cuarentena is not None else "—"
                     ),

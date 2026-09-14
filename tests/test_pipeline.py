@@ -134,6 +134,34 @@ def test_reprocesar_el_mismo_pdf_no_duplica(tmp_path, monkeypatch):
     con.close()
 
 
+def test_rechazar_una_factura_permite_volver_a_subir_el_mismo_pdf(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, A-56, de punta a punta: cargar un
+    PDF, rechazar la factura resultante, y volver a subir el MISMO PDF --
+    antes de esta corrección, el segundo intento devolvía "ya_procesada"
+    para siempre, sin ninguna forma de reprocesarlo."""
+    from core.almacenamiento import decision_factura
+
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    r1 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert r1.estado == "guardada"
+
+    decision_factura(
+        con, hash_pdf=r1.hash_pdf, estado="rechazada", actor="ana", motivo="emisor equivocado"
+    )
+
+    r2 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert r2.estado == "guardada"  # se reprocesó, no "ya_procesada"
+    estado_final = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [r1.hash_pdf]
+    ).fetchone()[0]
+    assert estado_final == "aprobada"  # el pipeline la vuelve a guardar aprobada
+    con.close()
+
+
 def test_homologa_conceptos_al_guardar(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
