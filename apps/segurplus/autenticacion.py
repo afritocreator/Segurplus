@@ -37,12 +37,40 @@ def rol_actual() -> str:
 
 
 def requerir_rol(*roles: str) -> None:
+    """docs/auditoria-2026-09-piloto.md, A-58: si OIDC está activo pero
+    ningún ROLE_*_EMAILS quedó configurado, `_rol_oidc` falla ABIERTO
+    (todos entran como administrador) en vez de dejar a todo el mundo
+    afuera de su propia herramienta -- pero eso no debe pasar
+    desapercibido, así que se avisa acá, en cada página que exige un rol,
+    mientras siga sin configurarse."""
+    if st.session_state.get("segurplus_roles_sin_configurar"):
+        st.warning(
+            "Los roles de acceso no están configurados (ningún secret "
+            "`ROLE_*_EMAILS` tiene contenido): por ahora, cualquier persona autenticada "
+            "entra como administrador. Configurá al menos `ROLE_ADMINISTRADOR_EMAILS` "
+            "para que esto restrinja el acceso de verdad."
+        )
     if rol_actual() not in roles:
         st.error("No tenés permisos para realizar esta acción.")
         st.stop()
 
 
-def _rol_oidc(email: str) -> str:
+def _algun_rol_configurado() -> bool:
+    """True si al menos un `ROLE_*_EMAILS` tiene contenido. Si ninguno está
+    configurado, nadie -- ni quien configuró el sistema -- podría entrar
+    nunca a "Revisar facturas" ni a "Casos" (todos quedarían con
+    "cargador", el rol de menor privilegio): se prefiere fallar abierto
+    (con aviso visible, ver `requerir_rol`) a dejar a todo el mundo
+    bloqueado de su propia herramienta -- mismo criterio de "fallar
+    abierto ante configuración ausente" que ya usan los hooks de
+    protección del repo (ver ADR-002 de Consultora)."""
+    return any(
+        leer_secret(f"ROLE_{rol.upper()}_EMAILS")
+        for rol in ("administrador", "responsable", "revisor", "cargador")
+    )
+
+
+def _rol_oidc(email: str, *, algun_rol_configurado: bool) -> str:
     """Resuelve roles por listas de e-mails en secrets, sin roles en cliente."""
     for rol in ("administrador", "responsable", "revisor", "cargador"):
         permitidos = leer_secret(f"ROLE_{rol.upper()}_EMAILS") or ""
@@ -50,7 +78,7 @@ def _rol_oidc(email: str) -> str:
             valor.strip().lower() for valor in permitidos.split(",") if valor.strip()
         }:
             return rol
-    return "cargador"
+    return "administrador" if not algun_rol_configurado else "cargador"
 
 
 def _requerir_oidc(proveedor: str) -> None:
@@ -63,7 +91,11 @@ def _requerir_oidc(proveedor: str) -> None:
         st.error("El proveedor de identidad no informó un e-mail verificable.")
         st.stop()
     st.session_state["segurplus_usuario"] = email
-    st.session_state["segurplus_rol"] = _rol_oidc(email)
+    algun_rol_configurado = _algun_rol_configurado()
+    st.session_state["segurplus_rol"] = _rol_oidc(
+        email, algun_rol_configurado=algun_rol_configurado
+    )
+    st.session_state["segurplus_roles_sin_configurar"] = not algun_rol_configurado
 
 
 def requerir_contrasena() -> None:

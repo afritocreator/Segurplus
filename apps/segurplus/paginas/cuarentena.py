@@ -32,7 +32,10 @@ else:
             col_info, col_boton = st.columns([5, 1])
             with col_info:
                 st.write(f"**{ruta}**")
-                st.caption(motivos)
+                # motivos se guarda separado por "\n" (core.almacenamiento.
+                # guardar_en_cuarentena, A-59) -- acá se muestra en una
+                # sola línea, igual que antes.
+                st.caption(motivos.replace("\n", " · "))
             with col_boton:
                 if st.button("Reintentar", key=f"reintentar_{hash_pdf}"):
                     borrar_de_cuarentena(con, hash_pdf)

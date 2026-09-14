@@ -135,6 +135,13 @@ CREATE TABLE IF NOT EXISTS correcciones_factura (
 );
 CREATE TABLE IF NOT EXISTS casos_alerta (
     clave VARCHAR PRIMARY KEY,
+    -- hash_pdf NO siempre es un hash de PDF (docs/auditoria-2026-09-piloto.md,
+    -- A-59): para un caso que nace de UNA factura concreta sí lo es, pero
+    -- para un caso que nace de una COMPARACIÓN entre dos períodos (ver
+    -- sincronizar_casos_alertas) es un identificador sintético de esa
+    -- comparación (ej. "comparacion:telefonia:2026-08-01:2026-09-01"), sin
+    -- PDF asociado. No se renombra la columna para no romper un ALTER TABLE
+    -- idempotente -- queda documentado acá y en sincronizar_casos_alertas.
     hash_pdf VARCHAR,
     tipo VARCHAR,
     severidad VARCHAR,
@@ -751,23 +758,37 @@ def metricas_por_proveedor(
     ]
 
 
+def _partir_motivos(motivos: str) -> list[str]:
+    """Separa el string de `cuarentena.motivos` en motivos individuales.
+
+    Se guarda con `\\n` como separador (ver `guardar_en_cuarentena`) -- un
+    motivo real (ver `ResultadoValidacion.motivos_de_falla`) nunca trae un
+    salto de línea, así que es un delimitador seguro, a diferencia del
+    `"; "` que se usaba antes (docs/auditoria-2026-09-piloto.md, A-59: un
+    motivo que por casualidad contuviera esa secuencia se partía en dos).
+    Si el string no tiene ningún `\\n`, se asume una fila guardada ANTES de
+    este cambio y se separa por `"; "` para no perder la compatibilidad
+    con datos ya cargados."""
+    if "\n" in motivos:
+        return [m.strip() for m in motivos.split("\n") if m.strip()]
+    return [m.strip() for m in motivos.split("; ") if m.strip()]
+
+
 def motivos_cuarentena_por_proveedor(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
 ) -> list[tuple[str, str, int]]:
     """`(emisor, motivo, veces)` -- por qué fue a cuarentena cada proveedor,
-    no solo cuántas veces. `motivos` guarda varios motivos separados por
-    "; " en una sola factura (ver `guardar_en_cuarentena`), así que cada
+    no solo cuántas veces. `motivos` guarda varios motivos en una sola
+    factura (ver `guardar_en_cuarentena` y `_partir_motivos`), así que cada
     motivo individual se cuenta por separado."""
     filas = con.execute(
         "SELECT coalesce(emisor, '(sin emisor)'), motivos FROM cuarentena"
     ).fetchall()
     conteo: dict[tuple[str, str], int] = {}
     for emisor, motivos in filas:
-        for motivo in (motivos or "").split("; "):
-            motivo = motivo.strip()
-            if motivo:
-                clave = (emisor, motivo)
-                conteo[clave] = conteo.get(clave, 0) + 1
+        for motivo in _partir_motivos(motivos or ""):
+            clave = (emisor, motivo)
+            conteo[clave] = conteo.get(clave, 0) + 1
     return [(emisor, motivo, veces) for (emisor, motivo), veces in sorted(conteo.items())]
 
 
@@ -878,7 +899,14 @@ def sincronizar_casos_alertas(
     volver a ver la misma comparación) hacía un INSERT/UPDATE por alerta en
     cada render, y `actualizado_en` pasaba a significar "cuándo se miró la
     página" en vez de "cuándo cambió el caso". Un solo SELECT primero (no
-    uno por alerta) para saber qué ya está igual."""
+    uno por alerta) para saber qué ya está igual.
+
+    `referencia` se guarda tal cual en `casos_alerta.hash_pdf`
+    (docs/auditoria-2026-09-piloto.md, A-59): cuando la llama
+    `sincronizar_casos_de_factura` es un `hash_pdf` real, pero
+    `evolucion.py` la llama con un identificador sintético de comparación
+    (ej. "comparacion:telefonia:2026-08-01:2026-09-01") -- esa columna no
+    es siempre un hash de PDF, ver el comentario en el `_DDL`."""
     if not alertas:
         return
     claves = [_clave_caso(referencia, alerta) for alerta in alertas]
@@ -987,7 +1015,8 @@ def guardar_en_cuarentena(
     la extracción sí pudo leer quién la emitió y de qué servicio se trata --
     guardarlos permite `metricas_por_proveedor` (core/almacenamiento.py) sin
     tener que adivinar de qué proveedor viene una cuarentena."""
-    motivos = "; ".join(resultado.motivos_de_falla())
+    # "\n" como separador, no "; " -- ver _partir_motivos (A-59).
+    motivos = "\n".join(resultado.motivos_de_falla())
     con.execute(
         """INSERT INTO cuarentena (hash_pdf, ruta_pdf, motivos, ruta_evidencia, emisor, servicio)
            VALUES (?, ?, ?, ?, ?, ?)

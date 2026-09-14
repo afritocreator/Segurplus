@@ -928,3 +928,67 @@ def test_sincronizar_casos_alertas_con_lista_vacia_no_hace_nada(tmp_path):
     sincronizar_casos_alertas(con, referencia="comparacion:x", alertas=[])  # no debe explotar
     assert listar_casos_alerta(con) == []
     con.close()
+
+
+# --- A-59: motivos de cuarentena separados por "\n", no "; " -------------
+
+
+def test_motivo_que_contiene_punto_y_coma_no_se_parte(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, A-59: con "; " como separador, un
+    motivo que por casualidad contuviera esa secuencia se partía en dos.
+    Con "\\n" como separador entre motivos, un motivo individual que
+    contenga "; " queda intacto -- a diferencia del test de compatibilidad
+    de abajo, acá SÍ hay más de un motivo (y por lo tanto un "\\n" real en
+    el string guardado), que es el caso en que la ambigüedad con el
+    formato viejo no existe."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    resultado = validar_factura(factura)  # válida -- los motivos son sintéticos
+    guardar_en_cuarentena(
+        con,
+        hash_pdf=factura.hash_pdf,
+        ruta_pdf=factura.ruta_pdf,
+        resultado=resultado,
+        emisor="Movistar",
+    )
+    # Sobreescribe el campo motivos directo, simulando el caso del hallazgo:
+    # dos motivos reales, uno de ellos con "; " adentro.
+    con.execute(
+        "UPDATE cuarentena SET motivos = ? WHERE hash_pdf = ?",
+        [
+            "el subtotal (que debería ser X; revisar) no cierra\nel total no cierra",
+            factura.hash_pdf,
+        ],
+    )
+    motivos = motivos_cuarentena_por_proveedor(con)
+    assert motivos == [
+        ("Movistar", "el subtotal (que debería ser X; revisar) no cierra", 1),
+        ("Movistar", "el total no cierra", 1),
+    ]
+    con.close()
+
+
+def test_motivos_cuarentena_compatible_con_formato_viejo_separado_por_punto_y_coma(tmp_path):
+    """Una fila guardada ANTES de este cambio (separador "; ", sin ningún
+    "\\n") se sigue partiendo correctamente -- no hace falta migrar datos
+    viejos para que la pantalla siga funcionando."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    resultado = validar_factura(factura)
+    guardar_en_cuarentena(
+        con,
+        hash_pdf=factura.hash_pdf,
+        ruta_pdf=factura.ruta_pdf,
+        resultado=resultado,
+        emisor="Movistar",
+    )
+    con.execute(
+        "UPDATE cuarentena SET motivos = ? WHERE hash_pdf = ?",
+        ["motivo viejo uno; motivo viejo dos", factura.hash_pdf],
+    )
+    motivos = motivos_cuarentena_por_proveedor(con)
+    assert set(motivos) == {
+        ("Movistar", "motivo viejo uno", 1),
+        ("Movistar", "motivo viejo dos", 1),
+    }
+    con.close()

@@ -171,10 +171,13 @@ def efecto_dominante(
     if variacion_total == 0:
         return "sin_variacion", 0.0
 
+    # Si llegamos acá, variacion_total != 0 -- y como variacion_total es la
+    # SUMA de los tres efectos (sin valor absoluto), que sea distinta de
+    # cero implica que al menos uno de los tres no es cero, así que
+    # `denominador` (la suma de sus valores absolutos) nunca puede dar 0
+    # en esta rama: no hace falta guardia (docs/auditoria-2026-09-piloto.md,
+    # A-59 -- antes había un `if denominador == 0` inalcanzable acá).
     denominador = abs(suma_cantidad) + abs(suma_precio) + abs(suma_cruzado)
-    if denominador == 0:
-        return "sin_variacion", 0.0
-
     proporcion_cantidad = suma_cantidad / denominador
     proporcion_precio = suma_precio / denominador
 
