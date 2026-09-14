@@ -103,7 +103,10 @@ def test_recalcular_tipo_cambio():
     assert cambios[0].concepto_despues == "consumo_datos"
 
 
-def test_recalcular_servicio_sin_diccionario_falla_seguro():
+def test_recalcular_servicio_sin_diccionario_se_omite_no_aborta():
+    """docs/auditoria-2026-09-piloto.md, A-51: una fila sin diccionario
+    (servicio no reconocido, o sin servicio) se OMITE -- no se homologa a
+    ciegas (A-40 sigue vigente), pero tampoco aborta el resto del lote."""
     fila = FilaARehomologar(
         hash_pdf="h1",
         orden=0,
@@ -112,8 +115,39 @@ def test_recalcular_servicio_sin_diccionario_falla_seguro():
         concepto_actual=None,
         score_actual=None,
     )
-    with pytest.raises(ValueError, match="Diccionario inseguro"):
-        recalcular([fila], {"telefonia": DICCIONARIO})
+    cambios = recalcular([fila], {"telefonia": DICCIONARIO})
+    assert len(cambios) == 1
+    assert cambios[0].tipo == "omitido"
+    assert cambios[0].motivo_omision is not None
+    assert cambios[0].concepto_despues is None  # no se tocó
+
+
+def test_recalcular_fila_sin_servicio_se_omite_y_las_demas_se_procesan():
+    """Una sola factura sin servicio detectado no debe inutilizar la
+    re-homologación de las demás -- antes de esta corrección, cualquier
+    fila con servicio None abortaba recalcular() entero con ValueError."""
+    sin_servicio = FilaARehomologar(
+        hash_pdf="h1",
+        orden=0,
+        descripcion="algo raro",
+        servicio=None,
+        concepto_actual=None,
+        score_actual=None,
+    )
+    con_servicio = FilaARehomologar(
+        hash_pdf="h2",
+        orden=0,
+        descripcion="Abono linea movil",
+        servicio="telefonia",
+        concepto_actual=None,
+        score_actual=None,
+    )
+    cambios = recalcular([sin_servicio, con_servicio], {"telefonia": DICCIONARIO})
+    assert len(cambios) == 2
+    por_hash = {c.hash_pdf: c for c in cambios}
+    assert por_hash["h1"].tipo == "omitido"
+    assert por_hash["h2"].tipo == "nuevo"  # la fila con servicio sí se procesó
+    assert por_hash["h2"].concepto_despues == "abono_movil"
 
 
 # --- contra DuckDB real (temporal) -----------------------------------------
@@ -214,6 +248,29 @@ def test_aplicar_cambios_es_idempotente(tmp_path):
         "SELECT COUNT(*) FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf]
     ).fetchone()[0]
     assert cantidad == 1
+    con.close()
+
+
+def test_aplicar_cambios_no_escribe_las_filas_omitidas(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(
+        con, factura, conceptos_normalizados={0: "abono_movil"}, scores_homologacion={0: 0.9}
+    )
+
+    omitido = CambioHomologacion(
+        hash_pdf=factura.hash_pdf,
+        orden=0,
+        descripcion="Abono linea movil",
+        servicio=None,
+        concepto_antes="abono_movil",
+        score_antes=0.9,
+        concepto_despues="abono_movil",
+        score_despues=0.9,
+        motivo_omision="sin servicio asignado",
+    )
+    tocadas = aplicar_cambios(con, [omitido])
+    assert tocadas == 0
     con.close()
 
 

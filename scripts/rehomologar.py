@@ -32,7 +32,7 @@ from pathlib import Path
 # scripts/probar_extraccion.py y streamlit_app.py).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.almacenamiento import RUTA_BASE, conectar  # noqa: E402
+from core.almacenamiento import conectar  # noqa: E402
 from core.analisis.diccionario import cargar_diccionario  # noqa: E402
 from core.analisis.homologacion import umbral_coincidencia  # noqa: E402
 from core.rehomologacion import (  # noqa: E402
@@ -51,7 +51,10 @@ def main() -> int:
         "--base",
         type=Path,
         default=None,
-        help="Ruta a la base DuckDB (default: data/reales/facturas.duckdb).",
+        help=(
+            "Ruta a una base DuckDB puntual. Sin esto, usa DATABASE_URL si está "
+            "configurada (Postgres), o si no data/reales/facturas.duckdb."
+        ),
     )
     parser.add_argument(
         "--aplicar",
@@ -60,8 +63,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    ruta = args.base or RUTA_BASE
-    con = conectar(ruta)
+    # docs/auditoria-2026-09-piloto.md, A-49: pasar `args.base` tal cual (None si no
+    # se usó --base) en vez de resolverlo acá a RUTA_BASE -- conectar(ruta=None) es
+    # lo que le da a DATABASE_URL la chance de tomar precedencia cuando corresponde;
+    # forzar siempre una ruta hacía que este script NUNCA pudiera usar Postgres.
+    con = conectar(args.base)
     try:
         filas = leer_filas_a_rehomologar(con, servicio=args.servicio)
         if not filas:
@@ -69,17 +75,14 @@ def main() -> int:
             return 0
 
         servicios = {f.servicio for f in filas}
-        if None in servicios:
-            print("No se re-homologa: hay filas sin servicio asignado.", file=sys.stderr)
-            return 2
-        diccionarios = {s: cargar_diccionario(s) for s in servicios}
-        inseguros = sorted(s for s, d in diccionarios.items() if not d)
-        if inseguros:
-            print(
-                f"No se re-homologa: diccionario vacío para {', '.join(inseguros)}.",
-                file=sys.stderr,
-            )
-            return 2
+        # docs/auditoria-2026-09-piloto.md, A-51: `cargar_diccionario(None)`
+        # combina TODOS los YAML de la carpeta (pensado para herramientas de
+        # diagnóstico) -- pedirlo acá para el servicio None reintroduciría la
+        # competencia entre servicios que A-3 evitó. Una fila sin servicio se
+        # omite directamente en `recalcular` (chequea `fila.servicio is None`
+        # antes de mirar el diccionario), así que ni hace falta cargar nada
+        # para esa clave.
+        diccionarios = {s: cargar_diccionario(s) for s in servicios if s is not None}
 
         cambios = recalcular(filas, diccionarios, umbral=umbral_coincidencia())
         conteo = Counter(c.tipo for c in cambios)
@@ -88,7 +91,15 @@ def main() -> int:
         print(f"  regresion:  {conteo['regresion']}")
         print(f"  cambio:     {conteo['cambio']}")
         print(f"  sin_cambio: {conteo['sin_cambio']}")
+        print(f"  omitido:    {conteo['omitido']}")
         print()
+
+        omitidas = [c for c in cambios if c.tipo == "omitido"]
+        if omitidas:
+            print("=== OMITIDAS -- no se tocaron, revisar por qué ===")
+            for c in omitidas:
+                print(f"  {c.descripcion!r} ({c.hash_pdf}): {c.motivo_omision}")
+            print()
 
         regresiones = [c for c in cambios if c.tipo == "regresion"]
         if regresiones:

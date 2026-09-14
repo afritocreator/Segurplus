@@ -49,16 +49,22 @@ class CambioHomologacion:
     concepto_despues: str | None
     score_despues: float
     candidatos_empatados: tuple[str, ...] = ()
+    motivo_omision: str | None = None
 
     @property
     def tipo(self) -> str:
-        """ "nuevo": no homologaba, ahora sí (un alias nuevo lo captó).
+        """ "omitido": no se evaluó -- fila sin servicio, o con diccionario
+        vacío para su servicio (ver `motivo_omision`); homologar a ciegas
+        ahí sería peor que no homologar (docs/auditoria-2026-09-rediseno.md,
+        A-40). "nuevo": no homologaba, ahora sí (un alias nuevo lo captó).
         "regresion": homologaba, ahora no -- posible señal de que un alias
         nuevo le robó el match a este concepto (ver el aviso en el
         docstring de `recalcular`). "cambio": homologaba a un concepto,
         ahora homologa a otro. "sin_cambio": el concepto no varió (el
         score puede haber cambiado igual, ej. por un alias nuevo del mismo
         concepto)."""
+        if self.motivo_omision is not None:
+            return "omitido"
         if self.concepto_antes is None and self.concepto_despues is not None:
             return "nuevo"
         if self.concepto_antes is not None and self.concepto_despues is None:
@@ -79,12 +85,40 @@ def recalcular(
     al diccionario ya obtenido con `cargar_diccionario(servicio)` -- se
     carga UNA VEZ por servicio afuera de acá, no una vez por fila (con
     decenas de conceptos por servicio, releer el YAML por cada uno sería
-    decenas de lecturas de disco redundantes)."""
+    decenas de lecturas de disco redundantes).
+
+    Una fila sin `servicio` o con diccionario vacío para su servicio se
+    OMITE (no se toca, `tipo == "omitido"`), no aborta el lote entero --
+    antes de esta corrección (docs/auditoria-2026-09-piloto.md, A-51) una
+    sola factura sin servicio detectado dejaba la re-homologación de TODA
+    la base inutilizable, sin forma de arreglarla mientras esa factura
+    siguiera sin servicio. El criterio de fondo (nunca homologar a ciegas
+    contra un diccionario vacío o inexistente, A-40) se mantiene -- ahora
+    por fila, no por lote."""
     umbral = umbral if umbral is not None else umbral_coincidencia()
     cambios = []
     for fila in filas:
-        if fila.servicio is None or not diccionarios_por_servicio.get(fila.servicio):
-            raise ValueError(f"Diccionario inseguro o servicio ausente: {fila.servicio!r}")
+        if fila.servicio is None:
+            motivo = "sin servicio asignado"
+        elif not diccionarios_por_servicio.get(fila.servicio):
+            motivo = f"diccionario vacío para {fila.servicio!r}"
+        else:
+            motivo = None
+        if motivo is not None:
+            cambios.append(
+                CambioHomologacion(
+                    hash_pdf=fila.hash_pdf,
+                    orden=fila.orden,
+                    descripcion=fila.descripcion,
+                    servicio=fila.servicio,
+                    concepto_antes=fila.concepto_actual,
+                    score_antes=fila.score_actual,
+                    concepto_despues=fila.concepto_actual,
+                    score_despues=fila.score_actual or 0.0,
+                    motivo_omision=motivo,
+                )
+            )
+            continue
         diccionario = diccionarios_por_servicio[fila.servicio]
         resultado = homologar_concepto(fila.descripcion, diccionario, umbral=umbral)
         cambios.append(
@@ -134,8 +168,10 @@ def leer_filas_a_rehomologar(
 
 
 def aplicar_cambios(con: duckdb.DuckDBPyConnection, cambios: list[CambioHomologacion]) -> int:
-    """Aplica solo cambios semánticos, en una única transacción."""
-    tocados = [c for c in cambios if c.tipo != "sin_cambio"]
+    """Aplica solo cambios semánticos, en una única transacción -- ni los
+    `sin_cambio` ni los `omitido` (fila sin servicio o sin diccionario, ver
+    `recalcular`) se escriben."""
+    tocados = [c for c in cambios if c.tipo not in ("sin_cambio", "omitido")]
     if not tocados:
         return 0
     con.execute("BEGIN")

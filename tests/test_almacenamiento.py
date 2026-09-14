@@ -16,6 +16,7 @@ from core.almacenamiento import (
     guardar_en_cuarentena,
     guardar_factura,
     listar_casos_alerta,
+    listar_facturas_aprobadas,
     listar_facturas_pendientes,
     llamadas_ultima_hora,
     metricas_por_proveedor,
@@ -606,4 +607,117 @@ def test_motivos_cuarentena_por_proveedor_desglosa_cada_motivo(tmp_path):
     assert len(motivos) == len(resultado.motivos_de_falla())
     assert all(emisor == "Movistar" for emisor, _motivo, _veces in motivos)
     assert all(veces == 1 for _emisor, _motivo, veces in motivos)
+    con.close()
+
+
+# --- A-49: conectar(ruta) nunca debe ir a Postgres si se pide un archivo --
+
+
+def test_conectar_con_ruta_explicita_usa_duckdb_aunque_haya_database_url(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, A-49: antes de esta corrección,
+    conectar(ruta) miraba DATABASE_URL primero e ignoraba `ruta` por
+    completo -- un pytest de rutina con esa variable exportada terminaba
+    escribiendo en la base de producción en vez del archivo temporal que
+    el test pedía explícitamente. Con una DATABASE_URL a un host que no
+    existe, si conectar() intentara usarla explotaría -- que NO explote
+    (y que devuelva una conexión DuckDB funcional) prueba que la ignoró."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host-inexistente.invalid:5432/db")
+    con = conectar(tmp_path / "explicita.duckdb")
+    con.execute("SELECT 1").fetchone()  # una conexión DuckDB real responde
+    assert (tmp_path / "explicita.duckdb").exists()
+    con.close()
+
+
+# --- A-50: corregir y rechazar una factura YA APROBADA --------------------
+
+
+def test_rechazar_una_factura_ya_aprobada(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, A-50: con revision_humana_obligatoria
+    en false (el default), toda factura nace aprobada -- antes de esta
+    corrección, decision_factura exigía 'requiere_revision' como estado de
+    partida, así que una factura mal leída no se podía rechazar nunca."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada")
+    assert listar_facturas_aprobadas(con)[0][0] == factura.hash_pdf
+
+    decision_factura(
+        con,
+        hash_pdf=factura.hash_pdf,
+        estado="rechazada",
+        actor="ana",
+        motivo="Emisor equivocado, era otro proveedor.",
+    )
+    estado = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+    ).fetchone()[0]
+    assert estado == "rechazada"
+    assert listar_facturas_aprobadas(con) == []
+    decisiones = con.execute(
+        "SELECT accion, actor FROM decisiones_factura WHERE hash_pdf = ? ORDER BY creado_en",
+        [factura.hash_pdf],
+    ).fetchall()
+    assert decisiones[-1] == ("rechazada", "ana")
+    con.close()
+
+
+def test_rechazar_una_factura_aprobada_borra_sus_casos(tmp_path):
+    from core.analisis.alertas import Alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada")
+    alerta = Alerta(
+        tipo="item_duplicado", severidad="media", mensaje="Abono repetido", concepto="Abono"
+    )
+    guardar_alertas(con, factura.hash_pdf, [alerta])
+    sincronizar_casos_alertas(con, referencia=factura.hash_pdf, alertas=[alerta])
+    assert len(listar_casos_alerta(con)) == 1
+
+    decision_factura(
+        con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
+    )
+    assert listar_casos_alerta(con) == []
+    con.close()
+
+
+def test_corregir_cabecera_de_una_factura_ya_aprobada(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada")
+
+    registrar_correccion(
+        con,
+        hash_pdf=factura.hash_pdf,
+        campo="servicio",
+        valor_nuevo="gas",
+        motivo="El modelo confundió el servicio.",
+        actor="revisor@empresa.test",
+    )
+    assert (
+        con.execute(
+            "SELECT servicio FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == "gas"
+    )
+    con.close()
+
+
+def test_no_se_puede_corregir_ni_decidir_una_factura_rechazada(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="aprobada")
+    decision_factura(con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal")
+
+    with pytest.raises(ValueError):
+        registrar_correccion(
+            con,
+            hash_pdf=factura.hash_pdf,
+            campo="servicio",
+            valor_nuevo="gas",
+            motivo="m",
+            actor="a",
+        )
+    with pytest.raises(ValueError):
+        decision_factura(con, hash_pdf=factura.hash_pdf, estado="aprobada", actor="a", motivo="m")
     con.close()

@@ -190,24 +190,21 @@ try:
     if st.button("Previsualizar cambios", type="primary"):
         filas_rehomologar = leer_filas_a_rehomologar(con)
         servicios = {f.servicio for f in filas_rehomologar}
-        if None in servicios:
-            st.error("No se puede re-homologar: hay filas sin servicio asignado.")
-        else:
-            diccionarios = {s: cargar_diccionario(s) for s in servicios}
-            inseguros = sorted(s for s, d in diccionarios.items() if not d)
-            if inseguros:
-                st.error(
-                    f"No se puede re-homologar: diccionario vacío para {', '.join(inseguros)}."
-                )
-            else:
-                st.session_state["rehomologacion_preview"] = recalcular(
-                    filas_rehomologar, diccionarios, umbral=umbral
-                )
-                st.session_state["rehomologacion_firma"] = _firma_diccionarios(diccionarios)
+        # docs/auditoria-2026-09-piloto.md, A-51: cargar_diccionario(None)
+        # combina TODOS los YAML (pensado para diagnóstico), no el de "sin
+        # servicio" -- filtrarlo acá evita reintroducir la competencia entre
+        # servicios que A-3 evitó. Una fila sin servicio se omite sola en
+        # recalcular, sin necesitar diccionario.
+        diccionarios = {s: cargar_diccionario(s) for s in servicios if s is not None}
+        st.session_state["rehomologacion_preview"] = recalcular(
+            filas_rehomologar, diccionarios, umbral=umbral
+        )
+        st.session_state["rehomologacion_firma"] = _firma_diccionarios(diccionarios)
 
     preview = st.session_state.get("rehomologacion_preview")
     if preview is not None:
-        cambiados = [c for c in preview if c.tipo != "sin_cambio"]
+        cambiados = [c for c in preview if c.tipo not in ("sin_cambio", "omitido")]
+        omitidas = [c for c in preview if c.tipo == "omitido"]
         regresiones = [c for c in cambiados if c.tipo == "regresion"]
         st.info(f"Previsualización: {len(preview)} filas evaluadas; {len(cambiados)} cambios.")
         for c in cambiados:
@@ -217,6 +214,10 @@ try:
             antes = c.concepto_antes or "(sin clasificar)"
             despues = c.concepto_despues or "(sin clasificar)"
             st.write(f"- **{c.descripcion}**: {antes} → {despues}{empate}")
+        if omitidas:
+            with st.expander(f"{len(omitidas)} fila(s) omitida(s) -- no se evaluaron"):
+                for c in omitidas:
+                    st.write(f"- **{c.descripcion}**: {c.motivo_omision}")
         if regresiones:
             st.warning(
                 f"Hay {len(regresiones)} regresión(es). "

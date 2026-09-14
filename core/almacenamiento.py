@@ -193,15 +193,31 @@ def conectar(ruta: Path | None = None) -> duckdb.DuckDBPyConnection | ConexionPo
 
     ``DATABASE_URL`` apunta a PostgreSQL administrado. DuckDB queda como modo
     local explícito para desarrollo, fixtures y análisis sin conexión externa.
-    """
+
+    Pasar `ruta` explícitamente SIEMPRE usa DuckDB en esa ruta, ignorando
+    `DATABASE_URL` aunque esté seteada -- pedir un archivo puntual significa
+    "quiero este archivo", no "salvo que haya una base de producción
+    configurada". Antes de esta corrección, `conectar(tmp_path/"x.duckdb")`
+    igual se conectaba a Postgres si `DATABASE_URL` estaba en el entorno --
+    con esa variable puesta (el caso normal desde que hay un deploy real),
+    CUALQUIER test que pasara una ruta de archivo temporal terminaba
+    escribiendo en la base de producción (docs/auditoria-2026-09-piloto.md,
+    A-49). `tests/conftest.py` además saca `DATABASE_URL` del entorno para
+    toda la corrida de tests, porque varios tests (los de páginas con
+    AppTest) llaman `conectar()` SIN pasar `ruta` -- ese caso solo lo cubre
+    la variable de entorno, no este chequeo."""
+    if ruta is not None:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        con = duckdb.connect(str(ruta))
+        _ejecutar_ddl(con)
+        return con
     url = os.environ.get("DATABASE_URL")
     if url:
         con = ConexionPostgres(url)
         _ejecutar_ddl(con)
         return con
-    ruta = ruta or RUTA_BASE
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(ruta))
+    RUTA_BASE.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(RUTA_BASE))
     _ejecutar_ddl(con)
     return con
 
@@ -251,6 +267,9 @@ def _registrar_decision(
     )
 
 
+_ESTADOS_DECIDIBLES = frozenset({"requiere_revision", "aprobada"})
+
+
 def listar_facturas_pendientes(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
 ) -> list[tuple[str, str | None, str | None, str | None, float | None, str | None]]:
@@ -258,6 +277,21 @@ def listar_facturas_pendientes(
     return con.execute(
         """SELECT hash_pdf, emisor, servicio, periodo_desde, total, ruta_evidencia
            FROM facturas WHERE estado = 'requiere_revision' ORDER BY creado_en"""
+    ).fetchall()
+
+
+def listar_facturas_aprobadas(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+) -> list[tuple[str, str | None, str | None, str | None, float | None, str | None]]:
+    """Facturas ya aprobadas, para poder corregirlas o rechazarlas después de
+    la carga (docs/auditoria-2026-09-piloto.md, A-50) -- con
+    `revision_humana_obligatoria` en false (el default), TODA factura nace
+    aprobada directo, así que esta es la única lista desde la que se puede
+    corregir una cabecera mal leída o sacar del análisis una factura que
+    resultó estar mal. Mismos campos que `listar_facturas_pendientes`."""
+    return con.execute(
+        """SELECT hash_pdf, emisor, servicio, periodo_desde, total, ruta_evidencia
+           FROM facturas WHERE estado = 'aprobada' ORDER BY creado_en DESC"""
     ).fetchall()
 
 
@@ -269,14 +303,21 @@ def decision_factura(
     actor: str,
     motivo: str,
 ) -> None:
-    """Aprueba o rechaza una factura pendiente y conserva el motivo y actor."""
+    """Aprueba o rechaza una factura, desde `requiere_revision` (el flujo de
+    revisión normal) o desde `aprobada` (corregir el rumbo después de la
+    carga -- docs/auditoria-2026-09-piloto.md, A-50: antes de esto, con
+    `revision_humana_obligatoria` en false, ninguna factura llegaba nunca a
+    `requiere_revision`, así que rechazar una factura mal leída era
+    imposible). Rechazar una factura que estaba aprobada borra sus casos
+    operativos (`casos_alerta`): una factura que sale del análisis no debe
+    dejar trabajo operativo colgado sobre alertas que ya no cuentan."""
     if estado not in {"aprobada", "rechazada"}:
         raise ValueError("Una decisión solo puede aprobar o rechazar una factura.")
     fila = con.execute("SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]).fetchone()
     if fila is None:
         raise ValueError("No existe la factura a decidir.")
-    if fila[0] != "requiere_revision":
-        raise ValueError("Solo se pueden decidir facturas que requieren revisión.")
+    if fila[0] not in _ESTADOS_DECIDIBLES:
+        raise ValueError("Solo se pueden decidir facturas pendientes o ya aprobadas.")
     con.execute(
         "UPDATE facturas SET estado = ?, actualizado_en = now() WHERE hash_pdf = ?",
         [estado, hash_pdf],
@@ -284,6 +325,8 @@ def decision_factura(
     _registrar_decision(con, hash_pdf, estado, actor, motivo)
     if estado == "aprobada":
         sincronizar_casos_de_factura(con, hash_pdf)
+    elif estado == "rechazada":
+        con.execute("DELETE FROM casos_alerta WHERE hash_pdf = ?", [hash_pdf])
 
 
 def aprobar_pendientes(
@@ -319,7 +362,10 @@ def registrar_correccion(
     motivo: str,
     actor: str,
 ) -> None:
-    """Corrige una cabecera en revisión, dejando valor anterior y evidencia."""
+    """Corrige una cabecera de una factura pendiente o ya aprobada (ver
+    `decision_factura` y A-50 -- una `rechazada` no es corregible: si el
+    dato estaba mal y se quiere reintentar, se vuelve a subir el PDF, ver
+    A-56), dejando valor anterior y evidencia."""
     permitidos = {
         "emisor",
         "cuit",
@@ -336,7 +382,7 @@ def registrar_correccion(
     fila = con.execute(
         f"SELECT {campo}, estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]
     ).fetchone()
-    if fila is None or fila[1] != "requiere_revision":
+    if fila is None or fila[1] not in _ESTADOS_DECIDIBLES:
         raise ValueError("La factura no está disponible para corrección.")
     con.execute(
         f"UPDATE facturas SET {campo} = ?, actualizado_en = now() WHERE hash_pdf = ?",

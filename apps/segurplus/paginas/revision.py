@@ -1,4 +1,8 @@
-"""Revisión humana: una factura validada no afecta análisis hasta aprobarse."""
+"""Revisión humana: aprobar/rechazar lo pendiente, y corregir o rechazar
+después una factura que ya quedó aprobada (docs/auditoria-2026-09-piloto.md,
+A-50: con revision_humana_obligatoria en false -- el default -- TODA
+factura nace aprobada, así que esta segunda vía es la única forma de sacar
+del análisis una factura mal leída o corregirle la cabecera)."""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from core.almacenamiento import (
     aprobar_pendientes,
     conectar,
     decision_factura,
+    listar_facturas_aprobadas,
     listar_facturas_pendientes,
     registrar_correccion,
     resumen_financiero_factura,
@@ -16,72 +21,38 @@ from core.almacenamiento import (
 from core.formato import pesos_ars
 from core.operacion import revision_humana_obligatoria
 
-st.title("✅ Revisar facturas")
-requerir_rol("revisor", "responsable", "administrador")
+CAMPOS_EDITABLES = [
+    "emisor",
+    "cuit",
+    "servicio",
+    "periodo_desde",
+    "periodo_hasta",
+    "fecha_emision",
+    "fecha_vencimiento",
+    "numero_comprobante",
+    "moneda",
+]
 
-con = conectar()
-try:
-    if revision_humana_obligatoria():
-        st.caption(
-            "La revisión humana está OBLIGATORIA (`data/operacion.yaml`): una factura "
-            "validada por reglas no impacta Evolución, alertas ni Excel hasta que se "
-            "aprueba acá, de a una o en lote."
-        )
-    else:
-        st.caption(
-            "La revisión humana está OPCIONAL (`data/operacion.yaml`): las facturas nuevas "
-            "ya se guardan aprobadas y aparecen directo en Evolución. Esta pantalla solo "
-            "muestra facturas que quedaron pendientes de una carga anterior con la "
-            "revisión obligatoria activada, o que fueron rechazadas y corregidas."
-        )
 
-    pendientes = listar_facturas_pendientes(con)
-    if not pendientes:
-        st.success("No hay facturas pendientes de revisión.")
-        st.stop()
-
-    st.subheader("Aprobar todas las pendientes")
-    st.caption(
-        f"Hay {len(pendientes)} factura(s) pendiente(s). Aprobarlas en lote registra el "
-        "mismo rastro de auditoría (actor, motivo, momento) que aprobarlas una por una."
-    )
-    with st.form("aprobar_lote"):
-        motivo_lote = st.text_input("Motivo para el lote completo")
-        aprobar_lote_enviado = st.form_submit_button("Aprobar todas las pendientes", type="primary")
-    if aprobar_lote_enviado:
-        if not motivo_lote.strip():
-            st.error("La aprobación en lote también necesita una breve constancia.")
-        else:
-            cantidad = aprobar_pendientes(con, actor=usuario_actual(), motivo=motivo_lote)
-            st.success(f"{cantidad} factura(s) aprobada(s).")
-            st.rerun()
-
-    st.divider()
-    st.subheader("Revisar de a una")
+def _selector(facturas: list, *, key: str) -> str:
     opciones = {
         f"{emisor or '(sin emisor)'} · {periodo or '(sin período)'} · {hash_pdf[:10]}": hash_pdf
-        for hash_pdf, emisor, _servicio, periodo, _total, _evidencia in pendientes
+        for hash_pdf, emisor, _servicio, periodo, _total, _evidencia in facturas
     }
-    seleccion = st.selectbox("Factura", list(opciones))
-    hash_pdf = opciones[seleccion]
+    seleccion = st.selectbox("Factura", list(opciones), key=key)
+    return opciones[seleccion]
+
+
+def _mostrar_detalle(con, hash_pdf: str) -> dict:
     fila = con.execute(
         """SELECT emisor, cuit, servicio, periodo_desde, periodo_hasta, fecha_emision,
            fecha_vencimiento, numero_comprobante, moneda, subtotal, total, ruta_evidencia,
            respuesta_extraida FROM facturas WHERE hash_pdf = ?""",
         [hash_pdf],
     ).fetchone()
-    campos = [
-        "emisor",
-        "cuit",
-        "servicio",
-        "periodo_desde",
-        "periodo_hasta",
-        "fecha_emision",
-        "fecha_vencimiento",
-        "numero_comprobante",
-        "moneda",
-    ]
-    datos = dict(zip(campos + ["subtotal", "total", "evidencia", "respuesta"], fila, strict=True))
+    datos = dict(
+        zip(CAMPOS_EDITABLES + ["subtotal", "total", "evidencia", "respuesta"], fila, strict=True)
+    )
     resumen = resumen_financiero_factura(con, hash_pdf)
     columnas = st.columns(5)
     for columna, (etiqueta, valor) in zip(
@@ -99,7 +70,7 @@ try:
     st.dataframe(
         [
             {"Campo": campo, "Valor": datos[campo] if datos[campo] is not None else "—"}
-            for campo in campos
+            for campo in CAMPOS_EDITABLES
         ],
         width="stretch",
         hide_index=True,
@@ -109,10 +80,13 @@ try:
     if datos["respuesta"]:
         with st.expander("JSON original de extracción"):
             st.code(datos["respuesta"], language="json")
+    return datos
 
+
+def _formulario_correccion(con, hash_pdf: str, datos: dict) -> None:
     st.subheader("Corregir cabecera")
     with st.form(f"correccion_{hash_pdf}"):
-        campo = st.selectbox("Campo", campos)
+        campo = st.selectbox("Campo", CAMPOS_EDITABLES)
         valor = st.text_input("Valor corregido", value=str(datos[campo] or ""))
         motivo_correccion = st.text_input("Motivo de corrección")
         corregir = st.form_submit_button("Registrar corrección")
@@ -131,36 +105,129 @@ try:
             st.success("Corrección registrada.")
             st.rerun()
 
-    col_aprobar, col_rechazar = st.columns(2)
-    with col_aprobar:
-        motivo_aprobar = st.text_input("Motivo de aprobación", key=f"aprobar_{hash_pdf}")
-        if st.button("Aprobar factura", type="primary"):
-            if not motivo_aprobar.strip():
-                st.error("La aprobación necesita una breve constancia.")
-            else:
-                decision_factura(
-                    con,
-                    hash_pdf=hash_pdf,
-                    estado="aprobada",
-                    actor=usuario_actual(),
-                    motivo=motivo_aprobar,
+
+st.title("✅ Revisar facturas")
+requerir_rol("revisor", "responsable", "administrador")
+
+con = conectar()
+try:
+    if revision_humana_obligatoria():
+        st.caption(
+            "La revisión humana está OBLIGATORIA (`data/operacion.yaml`): una factura "
+            "validada por reglas no impacta Evolución, alertas ni Excel hasta que se "
+            "aprueba acá, de a una o en lote."
+        )
+    else:
+        st.caption(
+            "La revisión humana está OPCIONAL (`data/operacion.yaml`): las facturas nuevas "
+            "ya se guardan aprobadas y aparecen directo en Evolución. Usá la pestaña "
+            '"Ya aprobadas" para corregir una cabecera mal leída o rechazar una factura '
+            "que resultó estar mal, aunque ya haya impactado el análisis."
+        )
+
+    pendientes = listar_facturas_pendientes(con)
+    aprobadas = listar_facturas_aprobadas(con)
+
+    if not pendientes and not aprobadas:
+        st.success("No hay ninguna factura para revisar.")
+        st.stop()
+
+    tab_pendientes, tab_aprobadas = st.tabs(
+        [f"Pendientes ({len(pendientes)})", f"Ya aprobadas ({len(aprobadas)})"]
+    )
+
+    with tab_pendientes:
+        if not pendientes:
+            st.info("No hay facturas pendientes de revisión.")
+        else:
+            st.subheader("Aprobar todas las pendientes")
+            st.caption(
+                f"Hay {len(pendientes)} factura(s) pendiente(s). Aprobarlas en lote registra "
+                "el mismo rastro de auditoría (actor, motivo, momento) que una por una."
+            )
+            with st.form("aprobar_lote"):
+                motivo_lote = st.text_input("Motivo para el lote completo")
+                aprobar_lote_enviado = st.form_submit_button(
+                    "Aprobar todas las pendientes", type="primary"
                 )
-                st.success("Factura aprobada: ya puede impactar el análisis.")
-                st.rerun()
-    with col_rechazar:
-        motivo_rechazar = st.text_input("Motivo de rechazo", key=f"rechazar_{hash_pdf}")
-        if st.button("Rechazar factura"):
-            if not motivo_rechazar.strip():
-                st.error("El rechazo necesita una explicación para poder resolverlo.")
-            else:
-                decision_factura(
-                    con,
-                    hash_pdf=hash_pdf,
-                    estado="rechazada",
-                    actor=usuario_actual(),
-                    motivo=motivo_rechazar,
-                )
-                st.warning("Factura rechazada: no impactará el análisis.")
-                st.rerun()
+            if aprobar_lote_enviado:
+                if not motivo_lote.strip():
+                    st.error("La aprobación en lote también necesita una breve constancia.")
+                else:
+                    cantidad = aprobar_pendientes(con, actor=usuario_actual(), motivo=motivo_lote)
+                    st.success(f"{cantidad} factura(s) aprobada(s).")
+                    st.rerun()
+
+            st.divider()
+            st.subheader("Revisar de a una")
+            hash_pdf = _selector(pendientes, key="selector_pendientes")
+            datos = _mostrar_detalle(con, hash_pdf)
+            _formulario_correccion(con, hash_pdf, datos)
+
+            col_aprobar, col_rechazar = st.columns(2)
+            with col_aprobar:
+                motivo_aprobar = st.text_input("Motivo de aprobación", key=f"aprobar_{hash_pdf}")
+                if st.button("Aprobar factura", type="primary", key=f"btn_aprobar_{hash_pdf}"):
+                    if not motivo_aprobar.strip():
+                        st.error("La aprobación necesita una breve constancia.")
+                    else:
+                        decision_factura(
+                            con,
+                            hash_pdf=hash_pdf,
+                            estado="aprobada",
+                            actor=usuario_actual(),
+                            motivo=motivo_aprobar,
+                        )
+                        st.success("Factura aprobada: ya puede impactar el análisis.")
+                        st.rerun()
+            with col_rechazar:
+                motivo_rechazar = st.text_input("Motivo de rechazo", key=f"rechazar_{hash_pdf}")
+                if st.button("Rechazar factura", key=f"btn_rechazar_{hash_pdf}"):
+                    if not motivo_rechazar.strip():
+                        st.error("El rechazo necesita una explicación para poder resolverlo.")
+                    else:
+                        decision_factura(
+                            con,
+                            hash_pdf=hash_pdf,
+                            estado="rechazada",
+                            actor=usuario_actual(),
+                            motivo=motivo_rechazar,
+                        )
+                        st.warning("Factura rechazada: no impactará el análisis.")
+                        st.rerun()
+
+    with tab_aprobadas:
+        if not aprobadas:
+            st.info("No hay ninguna factura aprobada todavía.")
+        else:
+            st.caption(
+                "Estas facturas YA impactan Evolución, alertas y Excel. Corregir acá cambia "
+                "esos números para adelante; rechazar las saca del análisis y borra sus casos "
+                "operativos -- el PDF se puede volver a subir después para reprocesarlo."
+            )
+            hash_pdf = _selector(aprobadas, key="selector_aprobadas")
+            datos = _mostrar_detalle(con, hash_pdf)
+            _formulario_correccion(con, hash_pdf, datos)
+
+            st.subheader("Rechazar esta factura")
+            motivo_rechazar = st.text_input(
+                "Motivo de rechazo", key=f"rechazar_aprobada_{hash_pdf}"
+            )
+            if st.button("Rechazar factura aprobada", key=f"btn_rechazar_aprobada_{hash_pdf}"):
+                if not motivo_rechazar.strip():
+                    st.error("El rechazo necesita una explicación para poder resolverlo.")
+                else:
+                    decision_factura(
+                        con,
+                        hash_pdf=hash_pdf,
+                        estado="rechazada",
+                        actor=usuario_actual(),
+                        motivo=motivo_rechazar,
+                    )
+                    st.warning(
+                        "Factura rechazada: ya no impacta el análisis. Se puede volver a "
+                        "subir el mismo PDF más adelante para reprocesarla."
+                    )
+                    st.rerun()
 finally:
     con.close()
