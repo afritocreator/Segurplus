@@ -115,14 +115,13 @@ selectores en el sidebar, métricas + la frase de veredicto, y pestañas (Descom
 
 ## Falta (siguiente trabajo)
 
-- **Auditoría del piloto operativo (A-49 a A-59)**: ver
-  `docs/auditoria-2026-09-piloto.md`. **Tres hallazgos conviene resolverlos ANTES de
-  cargar la primera factura real**: `conectar()` ignora la ruta que recibe si
-  `DATABASE_URL` está en el entorno, así que un `pytest` de rutina puede escribir en la
-  base de producción (A-49, crítico); y con `revision_humana_obligatoria` en `false` (el
-  default) ninguna factura llega a `requiere_revision`, lo que deja sin salida tanto el
-  rechazo y la corrección de cabeceras (A-50) como la re-homologación cuando una factura
-  quedó sin servicio detectado (A-51).
+- **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver
+  `docs/auditoria-2026-09-piloto.md`, con el criterio de cada corrección marcado en el
+  propio documento. Los tres bloqueantes ya no lo son: `conectar()` ignora `DATABASE_URL`
+  cuando recibe una ruta explícita (A-49), y tanto el rechazo/corrección de cabeceras
+  (A-50) como la re-homologación con una factura sin servicio detectado (A-51) tienen
+  salida sin necesitar `requiere_revision`. No queda ningún hallazgo propio de esa
+  auditoría pendiente antes de cargar facturas reales.
 - **Fase 6** — motor por reglas 100% local, solo si hace falta (ver punto de decisión
   pendiente en `docs/PLAN.md`).
 - **Todavía no se cargó ninguna factura real**: el pipeline corre de punta a punta
@@ -143,9 +142,10 @@ selectores en el sidebar, métricas + la frase de veredicto, y pestañas (Descom
   dedicado (`segurplus_app`, permisos acotados a ese schema, `search_path` propio) para
   no interferir con los otros productos que viven en ese mismo proyecto. Verificado en
   el propio deploy: las tablas se crean solas al conectar y la app funciona de punta a
-  punta. El camino `ConexionPostgres` sigue sin tener un test automatizado en CI contra
-  Postgres real (solo el test estático que revisa el SQL en busca de `%` sueltos,
-  `tests/test_conexion_postgres.py`), pero ya está verificado a mano en producción.
+  punta. El camino `ConexionPostgres` ya tiene un test que lo ejercita de verdad
+  (`tests/test_conexion_postgres_real.py`, marcado `red_real`, se salta salvo que exista
+  `TEST_DATABASE_URL` -- ver el README), además del test estático que revisa el SQL en
+  busca de `%` sueltos (`tests/test_conexion_postgres.py`).
 - **Evidencia del PDF no durable entre reinicios** (carpeta local por defecto) y **sin
   backups verificados** del proveedor gratuito elegido -- ver las limitaciones
   conocidas del addendum de ADR-003. Aceptable mientras se prueba, a revisar antes de

@@ -77,7 +77,7 @@ vez de borrar homologaciones en silencio. `quitar_periodo` ya cubre las 14 graf�
 
 ## Crítico
 
-### A-49 — `conectar(ruta)` ignora la ruta si `DATABASE_URL` está seteada: los tests escriben en producción
+### A-49 — `conectar(ruta)` ignora la ruta si `DATABASE_URL` está seteada: los tests escriben en producción (resuelto)
 
 **Dónde**: `core/almacenamiento.py:191-206`.
 
@@ -119,11 +119,21 @@ restringida y exige que los tests nunca toquen la base real; el hook de Claude C
 pre-commit de git implementan esa regla **sobre archivos del repo**, y una variable de
 entorno pasa por fuera de los dos.
 
+**Resuelto** (Bloque A): `conectar()` invierte la precedencia — si `ruta is not None`, usa
+DuckDB con esa ruta e ignora `DATABASE_URL` sin mirarla siquiera; solo cuando `ruta is None`
+se consulta la variable de entorno. Además, `tests/conftest.py` (fixture `autouse` de
+sesión) saca `DATABASE_URL`/`S3_BUCKET`/`EVIDENCIA_DIR` del entorno durante toda la corrida
+de tests — la protección que de verdad importa, porque varios tests de página parchean
+`RUTA_BASE` y llaman `conectar()` sin argumentos, un caso que el fix del parámetro solo no
+cubriría. `scripts/rehomologar.py` pasa `conectar(args.base)` (`None` si no se usó `--base`)
+en vez de forzar siempre una ruta. Verificado: `conectar(tmp_path / "x.duckdb")` devuelve
+DuckDB aun con `DATABASE_URL` seteada.
+
 ---
 
 ## Altos
 
-### A-50 — Con la configuración por defecto, corregir y rechazar facturas es imposible
+### A-50 — Con la configuración por defecto, corregir y rechazar facturas es imposible (resuelto)
 
 **Dónde**: `core/almacenamiento.py:278` y `:339`, contra `core/pipeline.py:168` y
 `data/operacion.yaml`.
@@ -167,7 +177,16 @@ aprobada. La corrección razonable no es volver atrás el default, sino que `dec
 y `registrar_correccion` acepten también `aprobada` como estado de partida (registrando el
 cambio en la auditoría, que es lo que importa).
 
-### A-51 — Una sola factura sin servicio bloquea la re-homologación de toda la base, sin salida
+**Resuelto** (Bloque A): `decision_factura` y `registrar_correccion` aceptan
+`{"requiere_revision", "aprobada"}` como estado de partida (una `rechazada` sigue sin ser
+corregible: no tiene sentido). Al rechazar se borran los casos de esa factura
+(`DELETE FROM casos_alerta WHERE hash_pdf = ?`). Nueva `listar_facturas_aprobadas()`, y
+`apps/segurplus/paginas/revision.py` tiene una pestaña "Ya aprobadas" con el mismo
+formulario de corrección y el mismo botón de rechazo que ya existían para las pendientes.
+Test de punta a punta: rechazar y corregir una aprobada deja el mismo rastro en
+`decisiones_factura`/`correcciones_factura`; corregir una rechazada sigue fallando.
+
+### A-51 — Una sola factura sin servicio bloquea la re-homologación de toda la base, sin salida (resuelto)
 
 **Dónde**: `core/rehomologacion.py:83-86` (la corrección de A-40), encadenado con A-50.
 
@@ -195,11 +214,22 @@ el CLI (`scripts/rehomologar.py:72` devuelve código 2 y no procesa nada).
 cuestión de tiempo, no una hipótesis remota. Y el daño no es proporcional a la falla: una
 factura rota inhabilita el mantenimiento del diccionario entero.
 
+**Resuelto** (Bloque A): el criterio pasó de "abortar el lote" a "omitir la fila y
+reportar" — sigue sin homologar a ciegas (que era lo que A-40 quería evitar), pero por fila.
+`CambioHomologacion` gana `motivo_omision`; `recalcular` ya no lanza `ValueError` para una
+fila sin servicio o con diccionario vacío, emite un cambio omitido (la fila queda sin
+tocar) y sigue con el resto. `scripts/rehomologar.py` y `sin_clasificar.py` informan las
+filas omitidas en vez de cortar con error. De paso se encontró y corrigió un bug latente:
+las dos llamaban `cargar_diccionario(None)` para filas sin servicio, lo que combina TODOS
+los YAML de todos los servicios — reabriendo la competencia entre servicios que A-3 estaba
+diseñado a evitar; ahora se filtran antes de construir el diccionario. Test: una fila sin
+servicio no impide re-homologar las demás, y no se escribe.
+
 ---
 
 ## Medios
 
-### A-52 — 27 sentencias DDL por cada render de página, ahora contra un Postgres remoto
+### A-52 — 27 sentencias DDL por cada render de página, ahora contra un Postgres remoto (resuelto)
 
 **Dónde**: `core/almacenamiento.py:184-206`.
 
@@ -225,7 +255,12 @@ No es un bug de corrección: es un costo que la migración volvió visible y que
 resolver antes de que el uso diario lo haga molesto (correr el DDL una vez por proceso, o
 detrás de una marca de versión de esquema, en vez de por conexión).
 
-### A-53 — La página de Evolución escribe en la base en cada render
+**Resuelto** (Bloque C): el DDL se memoiza por destino (la URL, o la ruta absoluta) en un
+`set` de módulo protegido por un `threading.Lock` (Streamlit corre varios hilos de script).
+`conectar(..., forzar_ddl=False)` permite saltar la memoización en tests. Test: dos
+`conectar()` al mismo destino ejecutan el DDL una sola vez.
+
+### A-53 — La página de Evolución escribe en la base en cada render (resuelto)
 
 **Dónde**: `apps/segurplus/paginas/evolucion.py:245-249`.
 
@@ -247,7 +282,13 @@ Dos consecuencias: el costo de red por interacción (se suma a A-52), y que
 "cuándo alguien miró esta comparación por última vez", que es justo lo contrario de lo que
 un campo de auditoría debería decir.
 
-### A-54 — Las dos páginas nuevas no tienen ni un test
+**Resuelto** (Bloque C): `sincronizar_casos_alertas` lee primero los casos existentes de
+esas claves (un solo `SELECT`) y escribe solo los que faltan o cuyo `severidad`/`mensaje`
+cambió. Se resolvió en Python y no con `ON CONFLICT ... DO UPDATE ... WHERE` a propósito:
+ese `WHERE` no está garantizado igual en DuckDB y en Postgres. Test: llamar dos veces con
+las mismas alertas no cambia `actualizado_en`; cambiar la severidad sí lo actualiza.
+
+### A-54 — Las dos páginas nuevas no tienen ni un test (resuelto)
 
 **Dónde**: `apps/segurplus/paginas/revision.py` y `apps/segurplus/paginas/casos.py`, contra
 `tests/apps/`.
@@ -261,7 +302,12 @@ La auditoría anterior había cerrado exactamente este hueco (A-19: "Evolución 
 0% de cobertura — nunca se ejecutaron en un test"). Las páginas nuevas lo reabren, y el
 botón de aprobación en lote lo agregué yo sin test de página.
 
-### A-55 — La calibración y la re-homologación no filtran por `estado`; el análisis sí
+**Resuelto** (Bloque D): `tests/apps/test_revision_app.py` y `tests/apps/test_casos_app.py`,
+siguiendo el patrón ya establecido para las otras páginas (`AppTest` + `RUTA_BASE`
+parcheada). Cubren render sin excepción, estado vacío, aprobación en lote, rechazo,
+corrección de cabecera (pendiente y ya aprobada), y actualización de un caso.
+
+### A-55 — La calibración y la re-homologación no filtran por `estado`; el análisis sí (resuelto)
 
 **Dónde**: `core/almacenamiento.py` (`conceptos_sin_clasificar`,
 `filas_sin_clasificar_por_periodo`, `importes_por_periodo`, `metricas_por_proveedor`) y
@@ -278,7 +324,13 @@ métricas por proveedor van a contar facturas que no impactan ningún número, y
 serio— `leer_filas_a_rehomologar` va a **reescribir** `concepto_normalizado` de conceptos
 pertenecientes a facturas rechazadas.
 
-### A-56 — Rechazar una factura es un callejón sin salida
+**Resuelto** (Bloque B): se agregó `AND f.estado = 'aprobada'` en `conceptos_sin_clasificar`,
+`filas_sin_clasificar_por_periodo`, `importes_por_periodo`, `leer_filas_a_rehomologar` y en
+las consultas de conceptos de `metricas_por_proveedor`. Para no perder la señal de calidad,
+`metricas_por_proveedor` suma una columna propia `facturas_rechazadas` (y
+`MetricasProveedor` el campo correspondiente), reflejada en la tabla de la página.
+
+### A-56 — Rechazar una factura es un callejón sin salida (resuelto)
 
 **Dónde**: `core/almacenamiento.py`, por ausencia.
 
@@ -294,11 +346,17 @@ Relacionado: `guardar_factura` pisa el estado en cada re-guardado
 (`ON CONFLICT ... DO UPDATE SET ... estado = excluded.estado`, con el default
 `estado="aprobada"`), así que cualquier re-guardado revierte silenciosamente un rechazo.
 
+**Resuelto** (Bloque B, con criterio elegido por el usuario): `factura_ya_procesada` pasa a
+`WHERE hash_pdf = ? AND estado <> 'rechazada'`. Volver a subir el mismo PDF lo reprocesa de
+cero; `guardar_factura` lo pisa con el estado nuevo y `decisiones_factura` conserva el
+rechazo anterior como historia — mismo criterio que la cuarentena ya tiene desde A-17. Test:
+rechazar → `factura_ya_procesada` da `False` → `procesar_pdf` lo vuelve a procesar.
+
 ---
 
 ## Bajos
 
-### A-57 — El adaptador de Postgres no lo ejercita ningún test
+### A-57 — El adaptador de Postgres no lo ejercita ningún test (resuelto)
 
 `psycopg[binary]` está declarado como dependencia obligatoria, pero no está instalado en el
 venv de desarrollo, así que `ConexionPostgres` no se ejecuta nunca en la suite. Lo único que
@@ -309,7 +367,13 @@ ningún SQL del módulo tenga un `%` suelto). Quedan sin ejercitar, entre otros:
 paso de `params=[]` a consultas sin placeholders, y la traducción `?`→`%s`. Todo eso se
 verificó a mano contra el deploy real, no en CI — sirve, pero no protege contra regresiones.
 
-### A-58 — Los roles, o no controlan nada, o bloquean todo
+**Resuelto** (Bloque D): `tests/test_conexion_postgres_real.py`, que se salta salvo que
+exista `TEST_DATABASE_URL` (y `psycopg` sea importable), marcado `red_real` como los tests
+contra Gemini/INDEC. Ejercita `conectar` + DDL + `guardar_factura` + `aplicar_cambios` (el
+`BEGIN`/`COMMIT` sobre una conexión `autocommit=True`) + `conceptos_sin_clasificar`, contra
+un schema descartable. Documentado en el README cómo correrlo.
+
+### A-58 — Los roles, o no controlan nada, o bloquean todo (resuelto)
 
 **Dónde**: `apps/segurplus/autenticacion.py`.
 
@@ -326,7 +390,13 @@ No hay un punto intermedio razonable por defecto: el que enciende OIDC sin leer 
 queda sin acceso a dos páginas, y el que no lo enciende tiene un control de roles que no
 controla nada.
 
-### A-59 — Detalles menores acumulados
+**Resuelto** (Bloque E, con criterio elegido por el usuario: fallar abierto con aviso
+visible, no dejar a nadie afuera de su propia herramienta): si **ningún** `ROLE_*_EMAILS`
+está configurado, `_rol_oidc` devuelve `"administrador"` para todos y `requerir_rol` muestra
+un `st.warning` permanente explicando que los roles no están configurados y qué secret
+configurar para que empiecen a restringir de verdad. Test unitario con y sin secrets.
+
+### A-59 — Detalles menores acumulados (resuelto)
 
 - `motivos_cuarentena_por_proveedor` separa los motivos por `"; "`; un motivo de falla que
   contenga esa secuencia se parte en dos motivos distintos y se cuenta doble.
@@ -338,42 +408,43 @@ controla nada.
   miente sobre lo que contiene, y cualquier join futuro contra `facturas.hash_pdf` va a
   fallar en silencio para esas filas.
 
+**Resuelto** (Bloque E), los cuatro:
+- `pesos_ars` redondea primero y decide el signo sobre el valor ya redondeado.
+- Los motivos se guardan separados por `"\n"` (un motivo real nunca trae salto de línea, a
+  diferencia de `"; "`), aceptando también `"; "` al leer para no perder compatibilidad con
+  lo ya guardado.
+- Se sacó la rama `denominador == 0` de `efecto_dominante`, confirmada inalcanzable.
+- `casos_alerta.hash_pdf` no se renombró (el `_DDL` es aditivo e idempotente, un
+  `RENAME COLUMN` no lo sería) — se documentó en el DDL y en `sincronizar_casos_alertas` que
+  guarda un hash de factura real o un identificador sintético de comparación, según quién
+  llame.
+
 ---
 
 ## Tabla resumen
 
 | # | Severidad | Dónde | Qué |
 |---|---|---|---|
-| A-49 | **Crítico** | `core/almacenamiento.py:191-206` | `conectar()` ignora el path si hay `DATABASE_URL`: un `pytest` con esa variable exportada inserta, actualiza y borra en la base de producción |
-| A-50 | Alto | `core/almacenamiento.py:278,339` + `core/pipeline.py:168` | Con el default (`revision_humana_obligatoria: false`) ninguna factura llega a `requiere_revision`, así que rechazar y corregir cabeceras es imposible desde cualquier pantalla |
-| A-51 | Alto | `core/rehomologacion.py:83-86` | Una sola fila con `servicio IS NULL` aborta la re-homologación de toda la base, y A-50 impide corregirle el servicio |
-| A-52 | Medio | `core/almacenamiento.py:184-206` | 27 sentencias DDL por cada `conectar()`, o sea por cada render de página, ahora contra un Postgres remoto |
-| A-53 | Medio | `apps/segurplus/paginas/evolucion.py:245-249` | La página escribe casos en la base en cada render; `actualizado_en` pasa a medir visitas, no cambios |
-| A-54 | Medio | `tests/apps/` | `revision.py` y `casos.py` — las dos páginas que escriben desde la UI — sin ningún test, reabriendo el hueco de A-19 |
-| A-55 | Medio | `almacenamiento.py`, `rehomologacion.py` | Calibración, métricas y re-homologación no filtran `estado='aprobada'`; el análisis sí — la re-homologación llega a reescribir conceptos de facturas rechazadas |
-| A-56 | Medio | `core/almacenamiento.py` (ausencia) | Una factura rechazada bloquea su hash para siempre: no hay forma de recargar ese PDF; y un re-guardado revierte el rechazo en silencio |
-| A-57 | Bajo | `tests/`, `pyproject.toml` | El camino PostgreSQL no lo ejercita ningún test; solo hay un chequeo estático del SQL |
-| A-58 | Bajo | `apps/segurplus/autenticacion.py` | Los roles son decorativos con contraseña compartida, y con OIDC mal configurado bloquean a todos |
-| A-59 | Bajo | varios | Motivos de cuarentena partidos por `"; "`, `"$-0,00"`, rama muerta en `efecto_dominante`, `casos_alerta.hash_pdf` con un valor que no es un hash |
+| A-49 | **Crítico** | `core/almacenamiento.py:191-206` | `conectar()` ignora el path si hay `DATABASE_URL`: un `pytest` con esa variable exportada inserta, actualiza y borra en la base de producción — **resuelto** |
+| A-50 | Alto | `core/almacenamiento.py:278,339` + `core/pipeline.py:168` | Con el default (`revision_humana_obligatoria: false`) ninguna factura llega a `requiere_revision`, así que rechazar y corregir cabeceras es imposible desde cualquier pantalla — **resuelto** |
+| A-51 | Alto | `core/rehomologacion.py:83-86` | Una sola fila con `servicio IS NULL` aborta la re-homologación de toda la base, y A-50 impide corregirle el servicio — **resuelto** |
+| A-52 | Medio | `core/almacenamiento.py:184-206` | 27 sentencias DDL por cada `conectar()`, o sea por cada render de página, ahora contra un Postgres remoto — **resuelto** |
+| A-53 | Medio | `apps/segurplus/paginas/evolucion.py:245-249` | La página escribe casos en la base en cada render; `actualizado_en` pasa a medir visitas, no cambios — **resuelto** |
+| A-54 | Medio | `tests/apps/` | `revision.py` y `casos.py` — las dos páginas que escriben desde la UI — sin ningún test, reabriendo el hueco de A-19 — **resuelto** |
+| A-55 | Medio | `almacenamiento.py`, `rehomologacion.py` | Calibración, métricas y re-homologación no filtran `estado='aprobada'`; el análisis sí — la re-homologación llega a reescribir conceptos de facturas rechazadas — **resuelto** |
+| A-56 | Medio | `core/almacenamiento.py` (ausencia) | Una factura rechazada bloquea su hash para siempre: no hay forma de recargar ese PDF; y un re-guardado revierte el rechazo en silencio — **resuelto** |
+| A-57 | Bajo | `tests/`, `pyproject.toml` | El camino PostgreSQL no lo ejercita ningún test; solo hay un chequeo estático del SQL — **resuelto** |
+| A-58 | Bajo | `apps/segurplus/autenticacion.py` | Los roles son decorativos con contraseña compartida, y con OIDC mal configurado bloquean a todos — **resuelto** |
+| A-59 | Bajo | varios | Motivos de cuarentena partidos por `"; "`, `"$-0,00"`, rama muerta en `efecto_dominante`, `casos_alerta.hash_pdf` con un valor que no es un hash — **resuelto** |
 
 ---
 
 ## Qué conviene resolver antes de cargar la primera factura real
 
-**Bloqueantes**:
-
-- **A-49**, antes que nada: mientras `conectar()` ignore el path, cualquier `pytest` corrido
-  con `DATABASE_URL` en el entorno puede corromper el registro operativo. Es el único
-  hallazgo que puede destruir datos que no se pueden reconstruir (las decisiones y
-  correcciones no salen de ningún PDF).
-- **A-50 y A-51** juntos: las dos situaciones que habilitan —una factura mal leída y una sin
-  servicio detectado— van a aparecer en la primera tanda real, y hoy ninguna tiene salida.
-
-**Conviene, pero puede esperar a tener facturas cargadas**: A-55 y A-56 (se vuelven visibles
-recién cuando exista la primera factura rechazada), A-54 (cobertura de las pantallas que
-escriben), A-52 y A-53 (rendimiento: molestan, no rompen).
-
-**Puede esperar**: A-57, A-58 y A-59.
+**Los 11 hallazgos de esta auditoría (A-49 a A-59) quedaron resueltos**, en el orden de
+prioridad que este documento planteaba (bloqueantes primero) — ver el criterio de cada uno
+en su sección y en la tabla resumen de arriba. No queda ningún pendiente propio de este
+documento antes de empezar a cargar facturas reales.
 
 **Siguen diferidos de auditorías anteriores**, sin cambios: **A-26** (`_parsear_monto` con
 separadores de miles mezclados) y **A-27** (alerta de período faltante que asume periodicidad
