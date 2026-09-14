@@ -10,7 +10,7 @@ pensaron para poder correr independientemente y componerse en
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
@@ -189,46 +189,57 @@ def _mes_siguiente(fecha: date) -> date:
     return date(fecha.year, fecha.month + 1, 1)
 
 
-def alertas_por_periodo_faltante(periodos: list[date]) -> list[Alerta]:
+def alertas_por_periodo_faltante(
+    periodos: list[tuple[date, date | None]],
+) -> list[Alerta]:
     """Detecta huecos entre períodos consecutivos de un mismo servicio,
     mayores a la tolerancia `dias_tolerancia_periodo` -- la alerta que
     `docs/PLAN.md` prometía y que hasta este fix no existía en el código
     (ver docs/auditoria-2026-09.md, hallazgo A-13): "falta cargar la
     factura de agosto".
 
-    Compara cada período contra el siguiente, ORDENADOS, y calcula cuánto
-    se pasó el período real del período ESPERADO (un mes después del
-    anterior) -- si ese excedente supera la tolerancia, hay un hueco. Con
-    períodos consecutivos normales (jul, ago, sep) el excedente da 0 y no
-    alerta; si falta un mes completo (jul, sep) el excedente es de ~30
-    días, muy por encima de la tolerancia por defecto (10 días).
+    Cada elemento de `periodos` es `(periodo_desde, periodo_hasta)` de una
+    factura -- `periodo_hasta` puede ser `None` si el modelo no lo pudo
+    leer. Compara cada período contra el siguiente, ORDENADOS por
+    `periodo_desde`, y calcula cuánto se pasó el período real del período
+    ESPERADO -- si ese excedente supera la tolerancia, hay un hueco.
 
-    LÍMITE CONOCIDO, sin resolver a propósito (hallazgo del subagente
-    `revisor-financiero`, ver docs/auditoria-2026-09.md hallazgo A-27):
-    esta función asume periodicidad MENSUAL para cualquier servicio. Un
-    servicio con facturación bimestral real (gas residencial, algunos casos
-    de energía en Argentina -- ambos servicios explícitamente contemplados
-    por esta herramienta) va a disparar esta alerta EN TODAS las
-    comparaciones, siempre, aunque nunca falte nada. No se resuelve acá
-    porque hacerlo bien (inferir o parametrizar la cadencia esperada por
-    servicio) necesita ver el patrón real de facturación de un proveedor de
-    verdad -- se calibra en Bloque 9 del plan de correcciones, con
-    facturas reales. Hasta entonces: para un servicio bimestral, esta
-    alerta específica no es confiable y hay que ignorarla a mano."""
+    El fin de cobertura esperado es el `periodo_hasta` que la propia
+    factura ANTERIOR declaró, más un día (docs/auditoria-2026-09-piloto.md,
+    hallazgo B-6, con evidencia real: facturas de gas bimestrales, "Período
+    de Lectura: 01/07/2022- 31/08/2022"). Antes se asumía SIEMPRE
+    periodicidad mensual (`_mes_siguiente`), lo que hacía disparar esta
+    alerta en TODAS las comparaciones de un servicio bimestral, aunque
+    nunca faltara nada -- límite conocido documentado como A-27 desde la
+    primera auditoría, sin resolver hasta tener evidencia real de la
+    cadencia. Usar el `periodo_hasta` de cada factura funciona para
+    CUALQUIER cadencia (mensual, bimestral, lo que declare la factura), sin
+    necesitar inferir un patrón a partir de varios períodos -- sirve
+    incluso con solo dos facturas cargadas. Si `periodo_hasta` no está
+    disponible para la factura anterior, cae al criterio viejo (un mes
+    después de `periodo_desde`) solo para ESA comparación puntual, en vez
+    de perder la alerta por completo."""
     umbral_dias = _leer_umbrales()["dias_tolerancia_periodo"]
-    ordenados = sorted(periodos)
+    ordenados = sorted(periodos, key=lambda p: p[0])
     alertas = []
-    for anterior, siguiente in zip(ordenados, ordenados[1:]):
-        esperado = _mes_siguiente(anterior)
-        exceso_dias = (siguiente - esperado).days
+    for (desde_anterior, hasta_anterior), (desde_siguiente, _hasta_siguiente) in zip(
+        ordenados, ordenados[1:]
+    ):
+        esperado = (
+            hasta_anterior + timedelta(days=1)
+            if hasta_anterior is not None
+            else _mes_siguiente(desde_anterior)
+        )
+        exceso_dias = (desde_siguiente - esperado).days
         if exceso_dias > umbral_dias:
             alertas.append(
                 Alerta(
                     tipo="periodo_faltante",
                     severidad="media",
                     mensaje=(
-                        f"Puede faltar cargar un período entre {anterior} y {siguiente} "
-                        f"(hueco de {(siguiente - anterior).days} días)"
+                        f"Puede faltar cargar un período entre {desde_anterior} y "
+                        f"{desde_siguiente} (hueco de {(desde_siguiente - desde_anterior).days} "
+                        "días)"
                     ),
                 )
             )

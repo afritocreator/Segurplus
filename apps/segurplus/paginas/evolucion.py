@@ -87,14 +87,13 @@ if not servicios:
 with st.sidebar:
     servicio = st.selectbox("Servicio", servicios)
 
-periodos = [
-    r[0]
-    for r in con.execute(
-        "SELECT DISTINCT periodo_desde FROM facturas "
-        "WHERE servicio = ? AND periodo_desde IS NOT NULL AND estado = 'aprobada' ORDER BY 1",
-        [servicio],
-    ).fetchall()
-]
+filas_periodos = con.execute(
+    "SELECT periodo_desde, max(periodo_hasta) FROM facturas "
+    "WHERE servicio = ? AND periodo_desde IS NOT NULL AND estado = 'aprobada' "
+    "GROUP BY periodo_desde ORDER BY 1",
+    [servicio],
+).fetchall()
+periodos = [fila[0] for fila in filas_periodos]
 
 if len(periodos) < 2:
     st.info(f"Hay menos de dos períodos cargados para {servicio}. Cargá al menos dos meses.")
@@ -102,7 +101,13 @@ if len(periodos) < 2:
     st.stop()
 
 try:
-    fechas_periodos = [date.fromisoformat(p) for p in periodos]
+    # docs/auditoria-2026-09-piloto.md, hallazgo B-6: se manda también
+    # periodo_hasta -- alertas_por_periodo_faltante lo usa para no asumir
+    # periodicidad mensual en un servicio bimestral (gas).
+    fechas_periodos = [
+        (date.fromisoformat(desde), date.fromisoformat(hasta) if hasta else None)
+        for desde, hasta in filas_periodos
+    ]
 except ValueError:
     fechas_periodos = []
     st.caption(

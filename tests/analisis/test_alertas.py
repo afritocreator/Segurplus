@@ -163,16 +163,21 @@ def test_generar_alertas_excluye_salto_de_cantidad_sintetica():
 
 
 # --- A-13: alerta de período faltante -- umbral real: dias_tolerancia_periodo=10 ---
+#
+# `periodo_hasta=None` en todos estos tests a propósito: ejercitan el
+# criterio VIEJO (fallback a "un mes después"), que sigue vigente cuando la
+# factura no trae periodo_hasta. Los tests con periodo_hasta real están más
+# abajo (docs/auditoria-2026-09-piloto.md, hallazgo B-6).
 
 
 def test_periodos_consecutivos_no_alertan():
-    periodos = [date(2026, 7, 1), date(2026, 8, 1), date(2026, 9, 1)]
+    periodos = [(date(2026, 7, 1), None), (date(2026, 8, 1), None), (date(2026, 9, 1), None)]
     assert alertas_por_periodo_faltante(periodos) == []
 
 
 def test_mes_completo_faltante_alerta():
     # jul -> sep, sin ago: esperado ago-01, real sep-01 -> exceso 31 días > 10.
-    periodos = [date(2026, 7, 1), date(2026, 9, 1)]
+    periodos = [(date(2026, 7, 1), None), (date(2026, 9, 1), None)]
     alertas = alertas_por_periodo_faltante(periodos)
     assert len(alertas) == 1
     assert alertas[0].tipo == "periodo_faltante"
@@ -182,25 +187,63 @@ def test_mes_completo_faltante_alerta():
 
 def test_factura_unos_dias_tarde_dentro_de_tolerancia_no_alerta():
     # ago-08 en vez de ago-01: exceso de 7 días, por debajo de la tolerancia (10).
-    periodos = [date(2026, 7, 1), date(2026, 8, 8)]
+    periodos = [(date(2026, 7, 1), None), (date(2026, 8, 8), None)]
     assert alertas_por_periodo_faltante(periodos) == []
 
 
 def test_factura_bastante_tarde_fuera_de_tolerancia_alerta():
     # ago-15: exceso de 14 días, por encima de la tolerancia (10).
-    periodos = [date(2026, 7, 1), date(2026, 8, 15)]
+    periodos = [(date(2026, 7, 1), None), (date(2026, 8, 15), None)]
     alertas = alertas_por_periodo_faltante(periodos)
     assert len(alertas) == 1
 
 
 def test_no_alerta_con_un_solo_periodo():
-    assert alertas_por_periodo_faltante([date(2026, 7, 1)]) == []
+    assert alertas_por_periodo_faltante([(date(2026, 7, 1), None)]) == []
 
 
 def test_periodos_desordenados_se_ordenan_solos():
-    periodos = [date(2026, 9, 1), date(2026, 7, 1)]  # sep antes que jul, a propósito
+    # sep antes que jul, a propósito -- se ordenan por periodo_desde.
+    periodos = [(date(2026, 9, 1), None), (date(2026, 7, 1), None)]
     alertas = alertas_por_periodo_faltante(periodos)
     assert len(alertas) == 1  # detecta el hueco de agosto igual
+
+
+# --- B-6: usar periodo_hasta evita el falso positivo en servicio bimestral,
+# --- con evidencia real (facturas de gas, Camuzzi) ------------------------
+
+
+def test_servicio_bimestral_con_periodo_hasta_no_alerta_nunca():
+    """Caso real: gas factura cada dos meses, con periodo_hasta declarado
+    ("Período de Lectura: 01/07/2022- 31/08/2022"). Antes de usar
+    periodo_hasta, esto alertaba SIEMPRE (asumía cadencia mensual) aunque
+    nunca faltara nada -- A-27, ahora resuelto con evidencia real."""
+    periodos = [
+        (date(2026, 7, 1), date(2026, 8, 31)),
+        (date(2026, 9, 1), date(2026, 10, 31)),
+        (date(2026, 11, 1), date(2026, 12, 31)),
+    ]
+    assert alertas_por_periodo_faltante(periodos) == []
+
+
+def test_servicio_bimestral_con_hueco_real_si_alerta():
+    # Falta el bimestre sep-oct: de jul-ago se salta directo a nov-dic.
+    periodos = [
+        (date(2026, 7, 1), date(2026, 8, 31)),
+        (date(2026, 11, 1), date(2026, 12, 31)),
+    ]
+    alertas = alertas_por_periodo_faltante(periodos)
+    assert len(alertas) == 1
+    assert alertas[0].tipo == "periodo_faltante"
+
+
+def test_periodo_hasta_ausente_en_una_factura_cae_al_criterio_viejo():
+    # La factura de julio no trae periodo_hasta (el modelo no lo pudo leer)
+    # -- esta comparación puntual usa el fallback de "un mes después", el
+    # resto de la lista no se ve afectado.
+    periodos = [(date(2026, 7, 1), None), (date(2026, 9, 1), date(2026, 9, 30))]
+    alertas = alertas_por_periodo_faltante(periodos)
+    assert len(alertas) == 1  # jul -> sep sin agosto: sigue detectando el hueco
 
 
 # --- ordenar_por_severidad: orden determinístico (Bloque 8) --------------
