@@ -38,6 +38,20 @@ pytest -q
 ruff check .
 ```
 
+La suite normal nunca toca un Postgres real -- corre entera contra DuckDB local
+(`tests/conftest.py` saca `DATABASE_URL` del entorno para toda la corrida, así que ni
+una `DATABASE_URL` exportada en tu shell puede desviar un test a la base de producción,
+ver `docs/auditoria-2026-09-piloto.md`, A-49). El camino PostgreSQL
+(`core.almacenamiento.ConexionPostgres`) tiene un test aparte, opcional, que sí pega
+contra un Postgres real -- para correrlo, armá una base o un schema descartable
+(ver "Crear la base Postgres gratis" más abajo) y:
+
+```bash
+TEST_DATABASE_URL="postgresql://..." pytest tests/test_conexion_postgres_real.py -v -m red_real
+```
+
+Sin `TEST_DATABASE_URL` configurada (o sin `psycopg` instalado), se skipea solo.
+
 ## Correr el tablero localmente
 
 ```bash
