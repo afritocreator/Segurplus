@@ -17,6 +17,7 @@ al pedirle al modelo un `responseJsonSchema`, y la validación ARITMÉTICA
 
 from __future__ import annotations
 
+import calendar
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -202,7 +203,7 @@ _PATRON_MES_ANIO = re.compile(r"^(\d{1,2})/(\d{4})$")
 _PATRON_ANIO_MES = re.compile(r"^(\d{4})-(\d{1,2})$")
 
 
-def _normalizar_fecha(valor: object) -> str | None:
+def _normalizar_fecha(valor: object, *, fin_de_mes: bool = False) -> str | None:
     """Normaliza una fecha devuelta por el modelo a ISO `YYYY-MM-DD`, o
     `None` si no se puede interpretar (docs/auditoria-2026-09.md, hallazgo
     A-11).
@@ -211,17 +212,29 @@ def _normalizar_fecha(valor: object) -> str | None:
     que ve impreso en la factura -- en Argentina, típicamente `DD/MM/YYYY`
     o `DD-MM-YYYY` (supuesto explícito: SIEMPRE día/mes/año, nunca
     mes/día/año). También acepta `MM/YYYY` y `YYYY-MM` -- solo mes y año,
-    sin día (docs/auditoria-2026-09-piloto.md, hallazgo B-1): se normaliza
-    al PRIMER día de ese mes, una simplificación deliberada (no se intenta
-    adivinar si el dato real era otro día del mes) que alcanza para que la
-    factura entre al análisis por período en vez de quedar invisible. Sin
-    este normalizador, un valor sin interpretar llega intacto hasta
-    `evolucion.py`, que hace `date.fromisoformat(...)` y lanza
-    `ValueError` -- capturado ahí por un `except` genérico que muestra un
-    mensaje de error que no dice que el problema es el formato de la fecha
-    (ver A-12). Mejor evitarlo en el origen: si no se puede interpretar,
-    `None` (que el resto del código ya maneja como "dato no disponible")
-    en vez de un string inválido."""
+    sin día (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1): se
+    normaliza al primer o al último día de ese mes según `fin_de_mes`, una
+    simplificación deliberada (no se intenta adivinar si el dato real era
+    otro día del mes) que alcanza para que la factura entre al análisis por
+    período en vez de quedar invisible. Sin este normalizador, un valor sin
+    interpretar llega intacto hasta `evolucion.py`, que hace
+    `date.fromisoformat(...)` y lanza `ValueError` -- capturado ahí por un
+    `except` genérico que muestra un mensaje de error que no dice que el
+    problema es el formato de la fecha (ver A-12). Mejor evitarlo en el
+    origen: si no se puede interpretar, `None` (que el resto del código ya
+    maneja como "dato no disponible") en vez de un string inválido.
+
+    `fin_de_mes`: solo afecta a las dos ramas MM/AAAA y AAAA-MM (una fecha
+    completa nunca se toca). `factura_desde_json` lo pasa en `True` SOLO
+    para `periodo_hasta` (docs/auditoria-2026-09-facturas-reales.md,
+    hallazgo C-1): "Período: 07/2022" cubre julio ENTERO, así que su fin de
+    cobertura semánticamente correcto es el último día de julio, no el
+    primero. Normalizar `periodo_hasta` al primer día (como se hacía antes,
+    igual que `periodo_desde`) dejaba `desde == hasta`, y
+    `alertas_por_periodo_faltante` -- que calcula el próximo período
+    esperado como `hasta + 1 día` -- terminaba esperando el día 2 del MISMO
+    mes: una alerta de "puede faltar un período" en cada par de meses
+    consecutivos, aunque no faltara nada."""
     if not isinstance(valor, str) or not valor:
         return None
     if _PATRON_FECHA_ISO.match(valor):
@@ -241,18 +254,22 @@ def _normalizar_fecha(valor: object) -> str | None:
     coincidencia = _PATRON_MES_ANIO.match(valor)
     if coincidencia:
         mes, anio = (int(x) for x in coincidencia.groups())
-        try:
-            return date(anio, mes, 1).isoformat()
-        except ValueError:
-            return None
+        return _fecha_mes_anio(anio, mes, fin_de_mes=fin_de_mes)
     coincidencia = _PATRON_ANIO_MES.match(valor)
     if coincidencia:
         anio, mes = (int(x) for x in coincidencia.groups())
-        try:
-            return date(anio, mes, 1).isoformat()
-        except ValueError:
-            return None
+        return _fecha_mes_anio(anio, mes, fin_de_mes=fin_de_mes)
     return None
+
+
+def _fecha_mes_anio(anio: int, mes: int, *, fin_de_mes: bool) -> str | None:
+    try:
+        if fin_de_mes:
+            ultimo_dia = calendar.monthrange(anio, mes)[1]
+            return date(anio, mes, ultimo_dia).isoformat()
+        return date(anio, mes, 1).isoformat()
+    except ValueError:
+        return None
 
 
 def factura_desde_json(
@@ -287,7 +304,7 @@ def factura_desde_json(
         cuit=datos.get("cuit"),
         servicio=datos.get("servicio"),
         periodo_desde=_normalizar_fecha(datos.get("periodo_desde")),
-        periodo_hasta=_normalizar_fecha(datos.get("periodo_hasta")),
+        periodo_hasta=_normalizar_fecha(datos.get("periodo_hasta"), fin_de_mes=True),
         fecha_emision=_normalizar_fecha(datos.get("fecha_emision")),
         fecha_vencimiento=_normalizar_fecha(datos.get("fecha_vencimiento")),
         numero_comprobante=datos.get("numero_comprobante"),

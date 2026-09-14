@@ -128,14 +128,15 @@ def test_factura_sin_periodo_no_queda_aprobada_ni_dice_guardada(tmp_path, monkey
 
 
 def test_pipeline_de_punta_a_punta_con_fixture_de_gas_periodo_mes_anio(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, hallazgos B-1 y B-6, de punta a
-    punta contra `docs/fixtures/sintetico/gas_2026-07.pdf` -- reproduce la
-    FORMA real que rompía (período impreso solo "MM/AAAA", bimestral,
-    detalle de cálculo pegado a la descripción), sin ser ninguna factura
-    real (CLAUDE.md: nunca facturas reales en tests). `factura_desde_json`
-    recibe el dict tal como lo devolvería el modelo -- con "periodo_desde":
-    "07/2026" SIN convertir -- para ejercitar la normalización real de
-    `_normalizar_fecha`, no un valor ya normalizado a mano."""
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgos B-1, B-6 y C-1,
+    de punta a punta contra `docs/fixtures/sintetico/gas_2026-07.pdf` --
+    reproduce la FORMA real que rompía (período impreso solo "MM/AAAA",
+    bimestral, detalle de cálculo pegado a la descripción), sin ser ninguna
+    factura real (CLAUDE.md: nunca facturas reales en tests).
+    `factura_desde_json` recibe el dict tal como lo devolvería el modelo --
+    con "periodo_desde": "07/2026" SIN convertir -- para ejercitar la
+    normalización real de `_normalizar_fecha`, no un valor ya normalizado a
+    mano."""
     from core.extraccion.esquema import factura_desde_json
 
     datos_como_los_devolveria_gemini = {
@@ -173,13 +174,16 @@ def test_pipeline_de_punta_a_punta_con_fixture_de_gas_periodo_mes_anio(tmp_path,
 
     # Antes de B-1, "07/2026" quedaba sin interpretar (periodo_desde=None):
     # la factura validaba bien y quedaba "aprobada" e invisible. Ahora se
-    # normaliza al primer día del mes y queda realmente disponible.
+    # normaliza: periodo_desde al PRIMER día del mes de inicio (2026-07-01),
+    # periodo_hasta al ÚLTIMO día del mes de cierre (2026-08-31, hallazgo
+    # C-1) -- si los dos fueran el primer día, alertas_por_periodo_faltante
+    # esperaría el próximo bimestre al día siguiente de 2026-07-01.
     assert resultado.estado == "guardada"
     fila = con.execute(
         "SELECT periodo_desde, periodo_hasta, estado FROM facturas WHERE hash_pdf = ?",
         [resultado.hash_pdf],
     ).fetchone()
-    assert fila == ("2026-07-01", "2026-08-01", "aprobada")
+    assert fila == ("2026-07-01", "2026-08-31", "aprobada")
     con.close()
 
 

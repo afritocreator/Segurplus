@@ -511,13 +511,17 @@ def registrar_correccion(
     A-56), dejando valor anterior y evidencia.
 
     Los cuatro campos de fecha se normalizan con la misma
-    `_normalizar_fecha` que usa la extracción (docs/auditoria-2026-09-piloto.md,
-    hallazgo B-1): si alguien corrige `periodo_desde` escribiendo "07/2022"
-    a mano (el mismo formato que trae la factura real), antes quedaba
-    guardado tal cual -- un string que `date.fromisoformat` no puede leer
-    más adelante (A-11/A-12), reintroduciendo el mismo bug que esta función
-    existe para arreglar. Si lo que se escribió no se puede interpretar,
-    se rechaza con un error claro en vez de guardar un valor inválido."""
+    `_normalizar_fecha` que usa la extracción (docs/auditoria-2026-09-
+    facturas-reales.md, hallazgo B-1): si alguien corrige `periodo_desde`
+    escribiendo "07/2022" a mano (el mismo formato que trae la factura
+    real), antes quedaba guardado tal cual -- un string que
+    `date.fromisoformat` no puede leer más adelante (A-11/A-12),
+    reintroduciendo el mismo bug que esta función existe para arreglar. Si
+    lo que se escribió no se puede interpretar, se rechaza con un error
+    claro en vez de guardar un valor inválido. `periodo_hasta` se normaliza
+    a FIN de mes cuando solo trae mes/año, igual que hace la extracción
+    (hallazgo C-1) -- si no, corregir a mano reintroduce el mismo
+    `desde == hasta` que rompía la alerta de período faltante."""
     permitidos = {
         "emisor",
         "cuit",
@@ -533,7 +537,7 @@ def registrar_correccion(
     if campo not in permitidos:
         raise ValueError(f"Campo no editable en revisión: {campo}")
     if campo in campos_fecha and valor_nuevo:
-        normalizado = _normalizar_fecha(valor_nuevo)
+        normalizado = _normalizar_fecha(valor_nuevo, fin_de_mes=(campo == "periodo_hasta"))
         if normalizado is None:
             raise ValueError(
                 f"No se pudo interpretar {valor_nuevo!r} como fecha -- probá "

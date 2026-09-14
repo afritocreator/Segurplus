@@ -16,7 +16,7 @@ from core.analisis.alertas import (
     ordenar_por_severidad,
 )
 from core.analisis.variacion import descomponer_variacion
-from core.extraccion.esquema import Concepto, FacturaExtraida, Recargo
+from core.extraccion.esquema import Concepto, FacturaExtraida, Recargo, factura_desde_json
 
 
 def _factura(conceptos=None, recargos=None) -> FacturaExtraida:
@@ -209,8 +209,52 @@ def test_periodos_desordenados_se_ordenan_solos():
     assert len(alertas) == 1  # detecta el hueco de agosto igual
 
 
-# --- B-6: usar periodo_hasta evita el falso positivo en servicio bimestral,
-# --- con evidencia real (facturas de gas, Camuzzi) ------------------------
+def _periodo(desde: str, hasta: str | None) -> tuple[date, date | None]:
+    """Arma un `(periodo_desde, periodo_hasta)` pasando por
+    `factura_desde_json`, es decir, con los MISMOS valores que el pipeline
+    realmente produce -- no fechas elegidas a mano (docs/auditoria-2026-09-
+    facturas-reales.md: la lección de C-1 es que un test con
+    `date(2026, 8, 31)` escrito a mano no agarró la regresión porque el
+    pipeline, para un período "MM/AAAA", nunca produce ese valor)."""
+    datos = {"conceptos": [], "moneda": "ARS", "periodo_desde": desde, "periodo_hasta": hasta}
+    factura = factura_desde_json(datos)
+    desde_date = date.fromisoformat(factura.periodo_desde)
+    hasta_date = date.fromisoformat(factura.periodo_hasta) if factura.periodo_hasta else None
+    return desde_date, hasta_date
+
+
+# --- B-6 / C-1: usar periodo_hasta evita el falso positivo en servicio
+# --- bimestral, con evidencia real (facturas de gas, Camuzzi) -- y C-1
+# --- corrige que la misma alerta rompía el caso MENSUAL con período
+# --- impreso como "MM/AAAA" (facturas de luz reales) --------------------
+
+
+def test_luz_mensual_con_periodo_mm_anio_no_alerta_nunca():
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-1: caso real,
+    dos facturas de luz de la Usina Popular de Tandil solo imprimen
+    "Período: 07/2022" / "Período: 08/2022" -- ANTES del fix, normalizar
+    `periodo_hasta` al primer día del mes dejaba `desde == hasta`, y esta
+    función esperaba el próximo período al día SIGUIENTE del primero de
+    julio -- una alerta falsa en CADA par de meses consecutivos."""
+    periodos = [_periodo("07/2022", "07/2022"), _periodo("08/2022", "08/2022")]
+    assert alertas_por_periodo_faltante(periodos) == []
+
+
+def test_luz_mensual_con_periodo_mm_anio_tres_meses_consecutivos_no_alerta():
+    periodos = [
+        _periodo("07/2022", "07/2022"),
+        _periodo("08/2022", "08/2022"),
+        _periodo("09/2022", "09/2022"),
+    ]
+    assert alertas_por_periodo_faltante(periodos) == []
+
+
+def test_gas_bimestral_con_periodo_mm_anio_no_alerta_nunca():
+    """Mismo caso que arriba pero bimestral: julio-agosto y septiembre-
+    octubre, cada factura declarando solo el MES DE CIERRE como
+    "MM/AAAA"."""
+    periodos = [_periodo("07/2022", "08/2022"), _periodo("09/2022", "10/2022")]
+    assert alertas_por_periodo_faltante(periodos) == []
 
 
 def test_servicio_bimestral_con_periodo_hasta_no_alerta_nunca():

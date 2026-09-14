@@ -42,12 +42,14 @@ def test_fecha_dia_mes_anio_con_guiones_se_normaliza():
 
 
 def test_mes_anio_se_normaliza_al_primer_dia_del_mes():
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-1: caso real -- una
-    factura de luz de la Usina Popular de Tandil solo imprime
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1: caso real --
+    una factura de luz de la Usina Popular de Tandil solo imprime
     "Período: 07/2022", sin día. Antes de esta corrección, `_normalizar_fecha`
     devolvía `None`, la factura quedaba `periodo_desde=None`, VALIDABA BIEN
     y se guardaba -- pero todas las consultas del análisis filtran
-    `periodo_desde IS NOT NULL`, así que quedaba invisible sin ningún aviso."""
+    `periodo_desde IS NOT NULL`, así que quedaba invisible sin ningún aviso.
+    Sin `fin_de_mes` (el default), sigue yendo al PRIMER día -- lo que usa
+    `periodo_desde`."""
     assert _normalizar_fecha("07/2022") == "2022-07-01"
 
 
@@ -55,8 +57,22 @@ def test_anio_guion_mes_se_normaliza_al_primer_dia_del_mes():
     assert _normalizar_fecha("2022-07") == "2022-07-01"
 
 
+def test_mes_anio_con_fin_de_mes_se_normaliza_al_ultimo_dia_del_mes():
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-1: julio tiene
+    31 días -- `periodo_hasta` con `fin_de_mes=True` tiene que cubrir el
+    mes ENTERO, no su primer día (si no, `alertas_por_periodo_faltante`
+    espera el próximo período al día siguiente del primero de julio)."""
+    assert _normalizar_fecha("07/2022", fin_de_mes=True) == "2022-07-31"
+
+
+def test_anio_guion_mes_con_fin_de_mes_se_normaliza_al_ultimo_dia_del_mes():
+    # Febrero de 2024 es bisiesto -- 29 días, no 28.
+    assert _normalizar_fecha("2024-02", fin_de_mes=True) == "2024-02-29"
+
+
 def test_mes_anio_con_mes_invalido_devuelve_none():
     assert _normalizar_fecha("13/2022") is None
+    assert _normalizar_fecha("13/2022", fin_de_mes=True) is None
 
 
 def test_none_devuelve_none():
@@ -81,3 +97,17 @@ def test_factura_desde_json_deja_none_una_fecha_no_interpretable():
     datos = _datos_minimos(fecha_emision="fecha ilegible")
     factura = factura_desde_json(datos)
     assert factura.fecha_emision is None
+
+
+def test_factura_desde_json_periodo_hasta_mes_anio_va_a_fin_de_mes():
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-1: la factura
+    real de luz (Usina Popular de Tandil) solo imprime "Período: 07/2022".
+    `periodo_desde` va al primer día (1/7), `periodo_hasta` al ÚLTIMO
+    (31/7) -- si los dos fueran el primer día, quedarían iguales y
+    `alertas_por_periodo_faltante` esperaría el próximo período al día
+    siguiente del primero de julio, disparando una alerta falsa con
+    cualquier factura consecutiva normal."""
+    datos = _datos_minimos(periodo_desde="07/2022", periodo_hasta="07/2022")
+    factura = factura_desde_json(datos)
+    assert factura.periodo_desde == "2022-07-01"
+    assert factura.periodo_hasta == "2022-07-31"

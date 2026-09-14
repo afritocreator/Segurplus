@@ -9,6 +9,7 @@ pensaron para poder correr independientemente y componerse en
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -189,6 +190,13 @@ def _mes_siguiente(fecha: date) -> date:
     return date(fecha.year, fecha.month + 1, 1)
 
 
+def _fin_de_mes(fecha: date) -> date:
+    """Último día del mes de `fecha` -- ver el comentario de tolerancia
+    sobre datos ya guardados en `alertas_por_periodo_faltante` (hallazgo
+    C-1)."""
+    return date(fecha.year, fecha.month, calendar.monthrange(fecha.year, fecha.month)[1])
+
+
 def alertas_por_periodo_faltante(
     periodos: list[tuple[date, date | None]],
 ) -> list[Alerta]:
@@ -205,26 +213,41 @@ def alertas_por_periodo_faltante(
     ESPERADO -- si ese excedente supera la tolerancia, hay un hueco.
 
     El fin de cobertura esperado es el `periodo_hasta` que la propia
-    factura ANTERIOR declaró, más un día (docs/auditoria-2026-09-piloto.md,
-    hallazgo B-6, con evidencia real: facturas de gas bimestrales, "Período
-    de Lectura: 01/07/2022- 31/08/2022"). Antes se asumía SIEMPRE
-    periodicidad mensual (`_mes_siguiente`), lo que hacía disparar esta
-    alerta en TODAS las comparaciones de un servicio bimestral, aunque
-    nunca faltara nada -- límite conocido documentado como A-27 desde la
-    primera auditoría, sin resolver hasta tener evidencia real de la
-    cadencia. Usar el `periodo_hasta` de cada factura funciona para
-    CUALQUIER cadencia (mensual, bimestral, lo que declare la factura), sin
-    necesitar inferir un patrón a partir de varios períodos -- sirve
-    incluso con solo dos facturas cargadas. Si `periodo_hasta` no está
-    disponible para la factura anterior, cae al criterio viejo (un mes
+    factura ANTERIOR declaró, más un día (docs/auditoria-2026-09-facturas-
+    reales.md, hallazgo B-6, con evidencia real: facturas de gas
+    bimestrales, "Período de Lectura: 01/07/2022- 31/08/2022"). Antes se
+    asumía SIEMPRE periodicidad mensual (`_mes_siguiente`), lo que hacía
+    disparar esta alerta en TODAS las comparaciones de un servicio
+    bimestral, aunque nunca faltara nada -- límite conocido documentado
+    como A-27 desde la primera auditoría, sin resolver hasta tener
+    evidencia real de la cadencia. Usar el `periodo_hasta` de cada factura
+    funciona para CUALQUIER cadencia (mensual, bimestral, lo que declare la
+    factura), sin necesitar inferir un patrón a partir de varios períodos
+    -- sirve incluso con solo dos facturas cargadas. Si `periodo_hasta` no
+    está disponible para la factura anterior, cae al criterio viejo (un mes
     después de `periodo_desde`) solo para ESA comparación puntual, en vez
-    de perder la alerta por completo."""
+    de perder la alerta por completo.
+
+    Tolerancia sobre datos YA GUARDADOS (hallazgo C-1): si `hasta_anterior`
+    cae justo en el DÍA 1 de un mes, es casi con certeza el artefacto de
+    una normalización vieja de "Período: MM/AAAA" al primer día del mes en
+    vez de al último (un cierre real de facturación rara vez cae un día
+    1). Se lo reinterpreta acá como fin de ESE mismo mes antes de sumar el
+    día esperado -- si no, `desde == hasta` y el período esperado pasa a
+    ser el día 2 del MISMO mes, disparando una alerta falsa en cada par de
+    meses consecutivos. `factura_desde_json` ya normaliza `periodo_hasta`
+    al último día del mes desde este mismo hallazgo, así que esto solo
+    protege facturas guardadas ANTES del fix (o corregidas a mano con una
+    versión vieja del código) -- no hace falta re-cargar nada para que la
+    alerta vuelva a comportarse bien."""
     umbral_dias = _leer_umbrales()["dias_tolerancia_periodo"]
     ordenados = sorted(periodos, key=lambda p: p[0])
     alertas = []
     for (desde_anterior, hasta_anterior), (desde_siguiente, _hasta_siguiente) in zip(
         ordenados, ordenados[1:]
     ):
+        if hasta_anterior is not None and hasta_anterior.day == 1:
+            hasta_anterior = _fin_de_mes(hasta_anterior)
         esperado = (
             hasta_anterior + timedelta(days=1)
             if hasta_anterior is not None
