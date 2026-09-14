@@ -22,16 +22,18 @@ from core.almacenamiento import (
     guardar_en_cuarentena,
     guardar_factura,
     llamadas_ultima_hora,
+    proxima_ventana_libre,
+    registrar_intento_gemini,
     sincronizar_casos_de_factura,
 )
 from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
 from core.evidencia import guardar_pdf
-from core.extraccion.gemini import MAX_LLAMADAS_POR_HORA, ExtraccionError, extraer_con_gemini
+from core.extraccion.gemini import ExtraccionError, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
 from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto, total_impreso
-from core.operacion import revision_humana_obligatoria
+from core.operacion import max_llamadas_gemini_por_hora, revision_humana_obligatoria
 
 
 @dataclass
@@ -85,28 +87,48 @@ def procesar_pdf(
     if factura_ya_procesada(con, documento.hash_sha256):
         return ResultadoPipeline(ruta, documento.hash_sha256, estado="ya_procesada")
 
-    if llamadas_ultima_hora(con) >= MAX_LLAMADAS_POR_HORA:
-        # docs/auditoria-2026-09.md, hallazgo A-7: MAX_LLAMADAS_POR_HORA
-        # estaba declarada en core/extraccion/gemini.py y nunca se hacía
-        # cumplir -- nada frenaba un loop o un mal uso del tablero de agotar
-        # la cuota gratuita de Gemini.
+    tope = max_llamadas_gemini_por_hora()
+    if llamadas_ultima_hora(con) >= tope:
+        # docs/auditoria-2026-09.md, hallazgo A-7 -- y docs/auditoria-2026-09-
+        # piloto.md, B-4: el tope ahora se hace cumplir contra llamadas
+        # REALES (tabla intentos_gemini), no contra un proxy que subestimaba
+        # el uso real cuando la extracción fallaba. El mensaje dice A QUÉ
+        # HORA reintentar, no solo que se alcanzó el tope.
+        destrabe = proxima_ventana_libre(con)
+        detalle = f"Se alcanzó el tope de {tope} llamadas a Gemini por hora"
+        detalle += (
+            f" -- probá de nuevo después de las {destrabe.strftime('%H:%M')}."
+            if destrabe is not None
+            else " -- probá de nuevo más tarde."
+        )
         return ResultadoPipeline(
-            ruta,
-            documento.hash_sha256,
-            estado="error_extraccion",
-            detalle=(
-                f"Se alcanzó el tope de {MAX_LLAMADAS_POR_HORA} llamadas a Gemini "
-                "por hora -- probá de nuevo más tarde."
-            ),
+            ruta, documento.hash_sha256, estado="error_extraccion", detalle=detalle
         )
 
     contenido_pdf = ruta.read_bytes()
     try:
         factura = extraer_con_gemini(contenido_pdf, api_key=api_key)
     except ExtraccionError as exc:
+        # docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes esto no
+        # dejaba NINGÚN rastro en la base -- se perdía al recargar la
+        # página, y el usuario no tenía forma de contar qué pasó.
+        registrar_intento_gemini(
+            con,
+            hash_pdf=documento.hash_sha256,
+            ruta_pdf=str(ruta),
+            exito=False,
+            mensaje=str(exc),
+        )
         return ResultadoPipeline(
             ruta, documento.hash_sha256, estado="error_extraccion", detalle=str(exc)
         )
+    registrar_intento_gemini(
+        con,
+        hash_pdf=documento.hash_sha256,
+        ruta_pdf=str(ruta),
+        exito=True,
+        respuesta_cruda=factura.respuesta_extraida,
+    )
 
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)

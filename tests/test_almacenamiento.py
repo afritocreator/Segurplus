@@ -15,14 +15,17 @@ from core.almacenamiento import (
     guardar_alertas,
     guardar_en_cuarentena,
     guardar_factura,
+    intentos_gemini_fallidos_recientes,
     listar_casos_alerta,
     listar_facturas_aprobadas,
     listar_facturas_pendientes,
     llamadas_ultima_hora,
     metricas_por_proveedor,
     motivos_cuarentena_por_proveedor,
+    proxima_ventana_libre,
     recargos_del_periodo,
     registrar_correccion,
+    registrar_intento_gemini,
     resumen_financiero_factura,
     sincronizar_casos_alertas,
 )
@@ -196,17 +199,64 @@ def test_guardar_y_leer_alertas_del_periodo(tmp_path):
 # --- A-7: tope de llamadas por hora --------------------------------------
 
 
-def test_llamadas_ultima_hora_cuenta_facturas_y_cuarentena(tmp_path):
+def test_llamadas_ultima_hora_cuenta_intentos_reales_no_facturas_guardadas(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-4: antes contaba filas
+    de `facturas` + `cuarentena` -- un PROXY. Una extracción que fallaba
+    (`ExtraccionError`) no dejaba fila en ninguna de las dos, así que no
+    contaba, aunque sí gastó una llamada real a la API. Ahora cuenta la
+    tabla `intentos_gemini`, que se escribe en CADA llamada real, salga
+    bien o mal -- ver `core/pipeline.py`."""
     con = conectar(tmp_path / "test.duckdb")
     assert llamadas_ultima_hora(con) == 0
 
-    guardar_factura(con, _factura(hash_pdf="a1"))
+    registrar_intento_gemini(con, hash_pdf="a1", ruta_pdf="a1.pdf", exito=True)
     assert llamadas_ultima_hora(con) == 1
 
-    rota = _factura(hash_pdf="b2")
-    resultado = validar_factura(rota)  # subtotal/total consistentes -> válida
-    guardar_en_cuarentena(con, hash_pdf="c3", ruta_pdf="/tmp/c3.pdf", resultado=resultado)
+    # Un intento FALLIDO (nunca llegó a escribir en `facturas` ni en
+    # `cuarentena`) también cuenta -- es justo el caso que el esquema viejo
+    # se perdía.
+    registrar_intento_gemini(
+        con, hash_pdf="b2", ruta_pdf="b2.pdf", exito=False, mensaje="503 del lado de Gemini"
+    )
     assert llamadas_ultima_hora(con) == 2
+
+    # Guardar una factura o mandarla a cuarentena, sin pasar por
+    # registrar_intento_gemini (ej. los tests que arman el escenario a
+    # mano), NO debe inflar el contador -- ya no es lo que se cuenta.
+    guardar_factura(con, _factura(hash_pdf="c3"))
+    assert llamadas_ultima_hora(con) == 2
+    con.close()
+
+
+def test_proxima_ventana_libre_es_la_llamada_mas_vieja_mas_una_hora(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    assert proxima_ventana_libre(con) is None  # sin llamadas, no hay ventana que esperar
+
+    registrar_intento_gemini(con, hash_pdf="a1", ruta_pdf="a1.pdf", exito=True)
+    fila = con.execute("SELECT creado_en FROM intentos_gemini WHERE hash_pdf = 'a1'").fetchone()
+    from datetime import timedelta
+
+    assert proxima_ventana_libre(con) == fila[0] + timedelta(hours=1)
+    con.close()
+
+
+def test_intentos_gemini_fallidos_recientes_solo_trae_los_fallidos(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    registrar_intento_gemini(con, hash_pdf="ok", ruta_pdf="ok.pdf", exito=True)
+    registrar_intento_gemini(
+        con,
+        hash_pdf="mal",
+        ruta_pdf="mal.pdf",
+        exito=False,
+        mensaje="La respuesta de Gemini no es JSON válido",
+        respuesta_cruda="{esto no es json",
+    )
+    fallidos = intentos_gemini_fallidos_recientes(con)
+    assert len(fallidos) == 1
+    ruta_pdf, mensaje, respuesta_cruda, _creado_en = fallidos[0]
+    assert ruta_pdf == "mal.pdf"
+    assert "JSON" in mensaje
+    assert respuesta_cruda == "{esto no es json"
     con.close()
 
 

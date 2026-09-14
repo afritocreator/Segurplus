@@ -12,3 +12,13 @@
 # apagar este interruptor. Se prevé encenderlo cuando haya más de una
 # persona cargando facturas sin supervisión cruzada.
 revision_humana_obligatoria: false
+
+# Tope de llamadas a Gemini por hora (docs/auditoria-2026-09-piloto.md,
+# hallazgo A-7 / B-4) -- antes era una constante en
+# core/extraccion/gemini.py, movida acá porque CLAUDE.md prohíbe
+# hardcodear parámetros operativos. Se hace cumplir contando llamadas
+# REALES (tabla intentos_gemini, ver core/almacenamiento.py), no un proxy
+# de qué se terminó guardando. El tier gratuito de Gemini da margen de
+# sobra para un equipo chico -- este número es un freno propio contra un
+# loop o un mal uso del tablero, no el límite real de la API.
+max_llamadas_gemini_por_hora: 30

@@ -26,7 +26,7 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,26 @@ CREATE TABLE IF NOT EXISTS casos_alerta (
     creado_en TIMESTAMP DEFAULT now(),
     actualizado_en TIMESTAMP DEFAULT now()
 );
+-- Un registro por cada llamada REAL a Gemini (docs/auditoria-2026-09-piloto.md,
+-- hallazgos B-4 y B-5), haya salido bien o mal. Antes, un fallo de
+-- extracción (ExtraccionError) no dejaba NINGÚN rastro en la base -- ni
+-- contaba para el tope de llamadas por hora (que solo miraba `facturas` +
+-- `cuarentena`, y esas dos tablas nunca reciben una fila si la extracción
+-- misma falló) ni quedaba disponible para diagnosticar qué pasó después
+-- de recargar la página. Esta tabla resuelve las dos cosas a la vez: es la
+-- fuente real de `llamadas_ultima_hora` (para que el tope proteja contra
+-- agotar la cuota real de Gemini, no solo la que el pipeline decidió
+-- guardar) y el historial que lee "Cargar facturas" para mostrar el
+-- detalle de un intento fallido.
+CREATE TABLE IF NOT EXISTS intentos_gemini (
+    id VARCHAR,
+    hash_pdf VARCHAR,
+    ruta_pdf VARCHAR,
+    exito BOOLEAN,
+    mensaje VARCHAR,
+    respuesta_cruda VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
 """
 
 ESTADOS_FACTURA = frozenset(
@@ -264,21 +284,88 @@ def conectar(
     return con
 
 
+def registrar_intento_gemini(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    hash_pdf: str,
+    ruta_pdf: str,
+    exito: bool,
+    mensaje: str = "",
+    respuesta_cruda: str | None = None,
+) -> None:
+    """Registra UNA llamada real a Gemini, haya salido bien o mal (docs/
+    auditoria-2026-09-piloto.md, hallazgos B-4 y B-5) -- llamar una sola
+    vez por cada llamada real a `core.extraccion.gemini.extraer_con_gemini`,
+    nunca por PDF que ni siquiera llegó a esa llamada (ej. uno que ya
+    estaba procesado, o sin texto extraíble). Es la fuente de
+    `llamadas_ultima_hora` y de lo que `apps/segurplus/paginas/cargar.py`
+    puede mostrar para diagnosticar un fallo que ya no está en pantalla
+    porque se recargó la página."""
+    con.execute(
+        """INSERT INTO intentos_gemini (id, hash_pdf, ruta_pdf, exito, mensaje, respuesta_cruda)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        [
+            _id_auditoria(hash_pdf, "intento_gemini"),
+            hash_pdf,
+            ruta_pdf,
+            exito,
+            mensaje,
+            respuesta_cruda,
+        ],
+    )
+
+
 def llamadas_ultima_hora(con: duckdb.DuckDBPyConnection) -> int:
-    """Cuenta cuántos PDFs se procesaron (guardados o mandados a cuarentena)
-    en la última hora -- proxy de cuántas llamadas a Gemini se hicieron, para
-    hacer cumplir `core.extraccion.gemini.MAX_LLAMADAS_POR_HORA` (docs/
+    """Cuenta cuántas llamadas REALES a Gemini se hicieron en la última hora
+    (tabla `intentos_gemini`, ver `registrar_intento_gemini`), para hacer
+    cumplir `core.operacion.max_llamadas_gemini_por_hora` (docs/
     auditoria-2026-09.md, hallazgo A-7: la constante estaba declarada y
-    nunca se usaba). No cuenta una llamada que falló ANTES de persistir nada
-    (ej. `ExtraccionError` de la propia API) -- subestima un poco el conteo
-    real, pero alcanza como freno simple contra un loop o un mal uso del
-    tablero, no pretende ser un contador exacto de facturación de la API."""
+    nunca se usaba).
+
+    Antes (docs/auditoria-2026-09-piloto.md, hallazgo B-4) esto contaba
+    filas de `facturas` + `cuarentena` -- un PROXY, no las llamadas reales:
+    una extracción que fallaba (`ExtraccionError`, ej. un 429/503 real de
+    Gemini) no dejaba fila en ninguna de las dos tablas, así que NO
+    contaba, aunque sí había gastado cuota real de la API. Reintentar un
+    lote con varias facturas que fallan la extracción podía agotar la
+    cuota real de Gemini sin que este freno se activara nunca -- el freno
+    protegía contra un número que no era el que importaba."""
     fila = con.execute(
-        """SELECT
-             (SELECT count(*) FROM facturas WHERE creado_en > now() - INTERVAL '1 hour') +
-             (SELECT count(*) FROM cuarentena WHERE creado_en > now() - INTERVAL '1 hour')"""
+        "SELECT count(*) FROM intentos_gemini WHERE creado_en > now() - INTERVAL '1 hour'"
     ).fetchone()
     return fila[0]
+
+
+def proxima_ventana_libre(con: duckdb.DuckDBPyConnection) -> datetime | None:
+    """Cuándo la llamada más vieja de la última hora sale de la ventana y el
+    tope vuelve a tener margen -- para poder decirle al usuario A QUÉ HORA
+    reintentar, no solo que "se alcanzó el tope" (docs/auditoria-2026-09-
+    piloto.md, hallazgo B-4). `None` si no hay ninguna llamada en la última
+    hora (no debería pasar si el tope ya se alcanzó, pero es un valor
+    seguro para ese caso)."""
+    fila = con.execute(
+        "SELECT min(creado_en) FROM intentos_gemini WHERE creado_en > now() - INTERVAL '1 hour'"
+    ).fetchone()
+    if fila is None or fila[0] is None:
+        return None
+    return fila[0] + timedelta(hours=1)
+
+
+def intentos_gemini_fallidos_recientes(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, *, limite: int = 20
+) -> list[tuple[str, str, str | None, datetime]]:
+    """Últimos intentos de extracción que fallaron, más nuevo primero --
+    `(ruta_pdf, mensaje, respuesta_cruda, creado_en)` -- para que
+    `apps/segurplus/paginas/cargar.py` pueda mostrar qué pasó con una
+    factura que no entró, incluso después de recargar la página (docs/
+    auditoria-2026-09-piloto.md, hallazgo B-5: antes el único rastro de un
+    error era el mensaje en pantalla en el momento, que se perdía al
+    navegar a otra pantalla)."""
+    return con.execute(
+        """SELECT ruta_pdf, mensaje, respuesta_cruda, creado_en FROM intentos_gemini
+           WHERE NOT exito ORDER BY creado_en DESC LIMIT ?""",
+        [limite],
+    ).fetchall()
 
 
 def factura_ya_procesada(con: duckdb.DuckDBPyConnection, hash_pdf: str) -> bool:

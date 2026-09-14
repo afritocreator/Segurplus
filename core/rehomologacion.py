@@ -7,8 +7,8 @@ de mirar la pantalla de "Conceptos sin clasificar") solo cambia cómo
 homologa una factura NUEVA que se procese después -- las que ya están en
 `data/reales/facturas.duckdb` quedan con el `concepto_normalizado` viejo.
 Sin este módulo, cada ajuste del diccionario obligaría a re-extraer con
-Gemini (gastando la cuota de `MAX_LLAMADAS_POR_HORA`,
-`core/extraccion/gemini.py`) solo para que la homologación se vuelva a
+Gemini (gastando la cuota de `max_llamadas_gemini_por_hora`,
+`data/operacion.yaml`) solo para que la homologación se vuelva a
 correr -- un desperdicio, porque el texto de la descripción ya está
 guardado y no cambió. Este módulo NUNCA importa `core.extraccion.gemini`
 ni nada que llame a la red -- ver `tests/test_rehomologacion.py`.

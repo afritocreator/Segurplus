@@ -74,13 +74,34 @@ facturas reales, siempre va a faltar algún alias. El circuito para completarlo:
 3. Agregá el alias que falte a `data/conceptos/<servicio>.yaml`.
 4. Volvé a "Sin clasificar" y apretá **"Re-homologar ahora"** -- recalcula la homologación
    de TODO lo ya guardado con el diccionario nuevo, sin volver a llamar a Gemini ni gastar
-   la cuota de `MAX_LLAMADAS_POR_HORA`. Lo mismo se puede hacer desde la terminal con
-   `python scripts/rehomologar.py --aplicar` (por defecto corre en modo dry-run, sin
-   escribir nada -- ver `python scripts/rehomologar.py --help`).
+   la cuota de `max_llamadas_gemini_por_hora` (`data/operacion.yaml`). Lo mismo se puede
+   hacer desde la terminal con `python scripts/rehomologar.py --aplicar` (por defecto
+   corre en modo dry-run, sin escribir nada -- ver `python scripts/rehomologar.py --help`).
 5. Repetir con cada proveedor nuevo. Después de tocar `data/conceptos/*.yaml`, correr
    `pytest tests/analisis/test_homologacion.py` -- hay un test que fija el score exacto de
    un caso límite conocido (A-3, `docs/auditoria-2026-09.md`) y avisa si un alias nuevo le
    robó el match a otro concepto.
+
+## Diagnosticar una factura que no entra
+
+Cuando una factura da error, va a cuarentena, o simplemente no aparece donde se esperaba:
+
+1. La página **Cargar facturas** tiene un expander "Últimos intentos de extracción
+   fallidos" con el historial persistido (tabla `intentos_gemini`) -- sigue disponible
+   después de recargar la página o de haber cerrado la sesión donde se subió, a diferencia
+   del resumen de la corrida, que se pierde al navegar.
+2. Para ver exactamente qué le contestó Gemini a una factura puntual, sin tocar la base:
+
+   ```bash
+   export GEMINI_API_KEY=...          # la misma que está cargada en Streamlit Cloud
+   python scripts/probar_extraccion.py ruta/a/factura.pdf
+   ```
+
+   Muestra el JSON crudo que devolvió el modelo, la conversión al esquema canónico, la
+   doble lectura del total (`core/ingesta/pdf_texto.py`) y el resultado de cada control
+   aritmético -- de solo lectura, no escribe nada en `data/reales/facturas.duckdb`.
+3. Si el problema es que un concepto no homologa como debería, seguir el circuito de
+   calibración de arriba ("Sin clasificar").
 
 ## Publicar en Streamlit Community Cloud (gratis, accesible desde cualquier compu)
 

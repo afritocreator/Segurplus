@@ -352,9 +352,11 @@ def test_pdf_corrupto_no_tumba_el_procesamiento(tmp_path, monkeypatch):
 
 
 def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
-    # docs/auditoria-2026-09.md, hallazgo A-7: MAX_LLAMADAS_POR_HORA estaba
-    # declarada y nunca se usaba.
-    monkeypatch.setattr(pipeline_mod, "MAX_LLAMADAS_POR_HORA", 0)
+    # docs/auditoria-2026-09.md, hallazgo A-7: el tope estaba declarado y
+    # nunca se usaba. docs/auditoria-2026-09-piloto.md, B-4: ahora vive en
+    # data/operacion.yaml (core.operacion.max_llamadas_gemini_por_hora),
+    # no hardcodeado.
+    monkeypatch.setattr(pipeline_mod, "max_llamadas_gemini_por_hora", lambda: 0)
     llamado = False
 
     def _no_deberia_llamarse(*a, **k):
@@ -370,6 +372,66 @@ def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
     assert resultado.estado == "error_extraccion"
     assert "tope" in resultado.detalle
     assert not llamado  # ni siquiera se intentó llamar a Gemini
+    con.close()
+
+
+def test_tope_de_llamadas_dice_a_que_hora_reintentar(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, B-4: el mensaje dice cuándo
+    reintentar, no solo que se alcanzó el tope."""
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+    # Agota el tope real (1) con una llamada real, sin pasar por el pipeline
+    # -- para no depender de dos PDFs de fixtures distintos.
+    from core.almacenamiento import registrar_intento_gemini
+
+    registrar_intento_gemini(con, hash_pdf="otro", ruta_pdf="otro.pdf", exito=True)
+    monkeypatch.setattr(pipeline_mod, "max_llamadas_gemini_por_hora", lambda: 1)
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "error_extraccion"
+    assert "tope" in resultado.detalle
+    assert "después de las" in resultado.detalle
+    con.close()
+
+
+def test_intento_fallido_de_extraccion_queda_registrado(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes un fallo de
+    extracción no dejaba NINGÚN rastro en la base -- se perdía al recargar
+    la página."""
+    from core.extraccion.gemini import ExtraccionError
+
+    def _falla(*a, **k):
+        raise ExtraccionError("Error llamando a Gemini: 503 Service Unavailable")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _falla)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "error_extraccion"
+    from core.almacenamiento import intentos_gemini_fallidos_recientes
+
+    fallidos = intentos_gemini_fallidos_recientes(con)
+    assert len(fallidos) == 1
+    ruta_pdf, mensaje, respuesta_cruda, _creado_en = fallidos[0]
+    assert "503" in mensaje
+    con.close()
+
+
+def test_intento_exitoso_tambien_se_registra_y_cuenta_para_el_tope(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    from core.almacenamiento import llamadas_ultima_hora
+
+    assert llamadas_ultima_hora(con) == 1
     con.close()
 
 

@@ -23,7 +23,7 @@ DICCIONARIO = {
 
 def test_nunca_importa_gemini_ni_nada_que_salga_a_la_red():
     # Este módulo re-homologa lo que YA está guardado -- no puede consumir
-    # la cuota de MAX_LLAMADAS_POR_HORA (core/extraccion/gemini.py) ni
+    # la cuota de max_llamadas_gemini_por_hora (data/operacion.yaml) ni
     # pegarle a la red por ningún motivo. Chequeo sobre los IMPORTS reales
     # del módulo (con ast, no un grep sobre el texto -- el docstring
     # menciona "Gemini" en prosa, eso no cuenta).

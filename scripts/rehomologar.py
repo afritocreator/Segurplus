@@ -11,7 +11,7 @@ Uso:
 
 Por defecto es DRY-RUN: muestra qué cambiaría, no escribe nada. Solo con
 `--aplicar` hace el UPDATE en la base. Nunca llama a Gemini ni consume la
-cuota de `MAX_LLAMADAS_POR_HORA` (core/extraccion/gemini.py) -- este
+cuota de `max_llamadas_gemini_por_hora` (data/operacion.yaml) -- este
 script no importa ese módulo ni nada que salga a la red.
 
 Flujo típico de calibración: cargar facturas -> mirar la pantalla "Sin

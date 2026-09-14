@@ -12,10 +12,14 @@ que costaron caro ahí y se copian tal cual:
   revisar la documentación vigente de Gemini, no confiar en esta constante
   a ciegas si pasó mucho tiempo.
 - **Tope de llamadas por hora**: sin esto, un bucle (o un mal uso del
-  tablero) podría agotar la cuota gratuita sin ningún freno. Acá se
-  implementa como un contador simple sobre el propio DuckDB de facturas
-  (ver `core/almacenamiento.py`), no una tabla aparte como en Kleric-
-  (que usaba Supabase) -- incluye el criterio, no la infraestructura.
+  tablero) podría agotar la cuota gratuita sin ningún freno. El número vive
+  en `data/operacion.yaml` (`core.operacion.max_llamadas_gemini_por_hora`,
+  CLAUDE.md: nunca hardcodeado), y se hace cumplir contando llamadas REALES
+  en su propia tabla (`intentos_gemini`, ver `core/almacenamiento.py` y
+  `core/pipeline.py`) -- SÍ una tabla aparte, a diferencia de lo que decía
+  antes acá: un conteo sobre `facturas`/`cuarentena` subestimaba el uso
+  real, porque una llamada que fallaba (`ExtraccionError`) no dejaba fila
+  en ninguna de las dos (docs/auditoria-2026-09-piloto.md, hallazgo B-4).
 
 Esta llamada NUNCA es la última palabra sobre un número: todo lo que
 devuelve pasa por `core/extraccion/validacion.py` antes de entrar al
@@ -32,7 +36,6 @@ from core.extraccion.esquema import FacturaExtraida, esquema_json_para_modelo, f
 MODELO = "gemini-3.6-flash"  # fijo, no "latest" -- ver docstring del módulo
 VERSION_PROMPT = "2026-09-operacion-1"
 VERSION_ESQUEMA = "2026-09-operacion-1"
-MAX_LLAMADAS_POR_HORA = 30
 
 PROMPT_EXTRACCION = """\
 Sos un asistente que lee facturas de proveedores de servicios (telefonía, energía, \

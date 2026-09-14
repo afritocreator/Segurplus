@@ -13,7 +13,7 @@ from pathlib import Path
 import streamlit as st
 
 from apps.segurplus.secretos import leer_secret
-from core.almacenamiento import conectar
+from core.almacenamiento import conectar, intentos_gemini_fallidos_recientes
 from core.evidencia import evidencia_durable_configurada, persistencia_durable_configurada
 from core.pipeline import ResultadoPipeline, procesar_pdf
 
@@ -118,3 +118,26 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
         st.warning(f"{len(errores)} factura(s) no se pudieron leer:")
         for r in errores:
             st.write(f"- **{r.ruta.name}**: {r.detalle}")
+
+# docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes, el único rastro de
+# un fallo de extracción era el mensaje de la corrida actual -- se perdía
+# apenas se navegaba a otra pantalla o se recargaba. Este historial vive en
+# la base (tabla `intentos_gemini`, ver `core/pipeline.py`), así que sigue
+# disponible después. Fuera del `if archivos and st.button(...)` a
+# propósito: tiene que verse aunque no se haya subido nada en esta visita.
+with st.expander("Últimos intentos de extracción fallidos"):
+    st.caption(
+        "Si una factura no entra y no queda claro por qué, "
+        "`scripts/probar_extraccion.py` corre la misma extracción mostrando "
+        "el JSON crudo que devolvió Gemini, sin tocar la base (ver README)."
+    )
+    con_diag = conectar()
+    fallidos = intentos_gemini_fallidos_recientes(con_diag)
+    con_diag.close()
+    if not fallidos:
+        st.write("Ninguno registrado.")
+    else:
+        for ruta_pdf, mensaje, respuesta_cruda, creado_en in fallidos:
+            st.write(f"**{ruta_pdf}** ({creado_en:%Y-%m-%d %H:%M}): {mensaje}")
+            if respuesta_cruda:
+                st.code(respuesta_cruda, language="json")
