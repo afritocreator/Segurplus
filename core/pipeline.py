@@ -38,7 +38,13 @@ from core.operacion import revision_humana_obligatoria
 class ResultadoPipeline:
     ruta: Path
     hash_pdf: str
-    estado: str  # "ya_procesada" | "cuarentena" | "guardada" | "error_extraccion"
+    # "ya_procesada" | "cuarentena" | "guardada" | "necesita_datos" | "error_extraccion"
+    # -- "necesita_datos" (docs/auditoria-2026-09-piloto.md, hallazgo B-1): la
+    # factura se guardó y validó aritméticamente, pero le falta `periodo_desde`
+    # o `servicio`, los dos campos que el análisis usa para filtrar -- sin
+    # completarlos queda invisible en todo el tablero. Deliberadamente
+    # DISTINTO de "guardada": la UI no debe mostrarlo como éxito.
+    estado: str
     detalle: str = ""
 
 
@@ -152,12 +158,30 @@ def procesar_pdf(
         if resultado_homologacion.concepto:
             conceptos_normalizados[i] = resultado_homologacion.concepto
 
+    # docs/auditoria-2026-09-piloto.md, hallazgo B-1: una factura sin
+    # `periodo_desde` o sin `servicio` valida bien aritméticamente y antes
+    # quedaba "aprobada" (con el default) o "requiere_revision" -- pero
+    # TODAS las consultas del análisis (totales por período, calibración,
+    # re-homologación) filtran por esos dos campos, así que quedaba
+    # invisible en todo el tablero sin un solo aviso: la UI decía en verde
+    # "guardada y validada" y no había forma de encontrarla ni siquiera en
+    # "Sin clasificar" (que también filtra por período). Si falta
+    # cualquiera de los dos, la factura NUNCA queda aprobada directo
+    # -- pase lo que pase con `revision_humana_obligatoria` -- para que el
+    # usuario la vea y la complete desde "Revisar facturas" (`registrar_correccion`
+    # ya acepta corregir `periodo_desde` y `servicio` de una pendiente).
+    datos_faltantes = []
+    if factura.periodo_desde is None:
+        datos_faltantes.append("periodo_desde")
+    if factura.servicio is None:
+        datos_faltantes.append("servicio")
+
     # Si `data/operacion.yaml::revision_humana_obligatoria` está en true, no
     # alcanza para impactar el análisis sin que alguien la apruebe -- ver
     # apps/segurplus/paginas/revision.py. Si está en false (el default de
     # este piloto), queda aprobada directo; la auditoría de quién cargó qué
     # se escribe igual en los dos casos (ver guardar_factura).
-    factura_queda_aprobada = not revision_humana_obligatoria()
+    factura_queda_aprobada = not datos_faltantes and not revision_humana_obligatoria()
     guardar_factura(
         con,
         factura,
@@ -180,4 +204,14 @@ def procesar_pdf(
         # ítem duplicado de una factura aprobada directo no se convertían
         # nunca en un caso operativo.
         sincronizar_casos_de_factura(con, factura.hash_pdf)
+    if datos_faltantes:
+        return ResultadoPipeline(
+            ruta,
+            factura.hash_pdf,
+            estado="necesita_datos",
+            detalle=(
+                f"Se guardó pero falta completar: {', '.join(datos_faltantes)} -- "
+                'corregilo en "Revisar facturas" para que entre al análisis.'
+            ),
+        )
     return ResultadoPipeline(ruta, factura.hash_pdf, estado="guardada")

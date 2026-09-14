@@ -461,6 +461,54 @@ def test_correccion_de_cabecera_conserva_valor_anterior(tmp_path):
     con.close()
 
 
+def test_correccion_de_fecha_normaliza_formato_mes_anio(tmp_path):
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-1: corregir a mano
+    escribiendo el mismo formato que trae la factura real ("07/2022", sin
+    día) tiene que quedar normalizado a ISO como cualquier otra fecha --
+    si no, se reintroduce A-11/A-12 por otra vía."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    registrar_correccion(
+        con,
+        hash_pdf=factura.hash_pdf,
+        campo="periodo_desde",
+        valor_nuevo="07/2022",
+        motivo="La factura solo trae mes y año.",
+        actor="revisor@empresa.test",
+    )
+    assert (
+        con.execute(
+            "SELECT periodo_desde FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == "2022-07-01"
+    )
+    con.close()
+
+
+def test_correccion_de_fecha_no_interpretable_se_rechaza(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, estado="requiere_revision")
+    with pytest.raises(ValueError, match="No se pudo interpretar"):
+        registrar_correccion(
+            con,
+            hash_pdf=factura.hash_pdf,
+            campo="periodo_desde",
+            valor_nuevo="mediados de julio",
+            motivo="prueba",
+            actor="revisor@empresa.test",
+        )
+    # No se escribió nada -- el valor original sigue intacto.
+    assert (
+        con.execute(
+            "SELECT periodo_desde FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+        ).fetchone()[0]
+        == factura.periodo_desde
+    )
+    con.close()
+
+
 def test_alerta_aprobada_crea_caso_deduplicado_y_asignable(tmp_path):
     from core.analisis.alertas import Alerta
 

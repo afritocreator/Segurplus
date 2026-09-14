@@ -191,6 +191,15 @@ def esquema_json_para_modelo() -> dict:
 
 _PATRON_FECHA_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PATRON_FECHA_ARGENTINA = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+_PATRON_FECHA_ARGENTINA_GUION = re.compile(r"^(\d{1,2})-(\d{1,2})-(\d{4})$")
+# Solo mes/año -- lo único que imprimen muchas facturas de servicios
+# argentinas ("Período: 07/2022"), sin día (docs/auditoria-2026-09-piloto.md,
+# hallazgo B-1: dos facturas reales de luz de la Usina Popular de Tandil
+# solo traen esto, así que `periodo_desde` quedaba en `None` -- una factura
+# que VALIDA BIEN, se guarda, y desaparece de todo el análisis porque las
+# consultas filtran `periodo_desde IS NOT NULL`, sin ningún aviso).
+_PATRON_MES_ANIO = re.compile(r"^(\d{1,2})/(\d{4})$")
+_PATRON_ANIO_MES = re.compile(r"^(\d{4})-(\d{1,2})$")
 
 
 def _normalizar_fecha(valor: object) -> str | None:
@@ -200,13 +209,19 @@ def _normalizar_fecha(valor: object) -> str | None:
 
     El prompt de extracción pide ISO, pero un LLM puede devolver el formato
     que ve impreso en la factura -- en Argentina, típicamente `DD/MM/YYYY`
-    (supuesto explícito: SIEMPRE día/mes/año, nunca mes/día/año). Sin este
-    normalizador, un valor así llega intacto hasta `evolucion.py`, que hace
-    `date.fromisoformat(...)` y lanza `ValueError` -- capturado ahí por un
-    `except` genérico que muestra un mensaje de error que no dice que el
-    problema es el formato de la fecha (ver A-12). Mejor evitarlo en el
-    origen: si no se puede interpretar, `None` (que el resto del código ya
-    maneja como "dato no disponible") en vez de un string inválido."""
+    o `DD-MM-YYYY` (supuesto explícito: SIEMPRE día/mes/año, nunca
+    mes/día/año). También acepta `MM/YYYY` y `YYYY-MM` -- solo mes y año,
+    sin día (docs/auditoria-2026-09-piloto.md, hallazgo B-1): se normaliza
+    al PRIMER día de ese mes, una simplificación deliberada (no se intenta
+    adivinar si el dato real era otro día del mes) que alcanza para que la
+    factura entre al análisis por período en vez de quedar invisible. Sin
+    este normalizador, un valor sin interpretar llega intacto hasta
+    `evolucion.py`, que hace `date.fromisoformat(...)` y lanza
+    `ValueError` -- capturado ahí por un `except` genérico que muestra un
+    mensaje de error que no dice que el problema es el formato de la fecha
+    (ver A-12). Mejor evitarlo en el origen: si no se puede interpretar,
+    `None` (que el resto del código ya maneja como "dato no disponible")
+    en vez de un string inválido."""
     if not isinstance(valor, str) or not valor:
         return None
     if _PATRON_FECHA_ISO.match(valor):
@@ -215,11 +230,26 @@ def _normalizar_fecha(valor: object) -> str | None:
             return valor
         except ValueError:
             return None
-    coincidencia = _PATRON_FECHA_ARGENTINA.match(valor)
+    for patron in (_PATRON_FECHA_ARGENTINA, _PATRON_FECHA_ARGENTINA_GUION):
+        coincidencia = patron.match(valor)
+        if coincidencia:
+            dia, mes, anio = (int(x) for x in coincidencia.groups())
+            try:
+                return date(anio, mes, dia).isoformat()
+            except ValueError:
+                return None
+    coincidencia = _PATRON_MES_ANIO.match(valor)
     if coincidencia:
-        dia, mes, anio = (int(x) for x in coincidencia.groups())
+        mes, anio = (int(x) for x in coincidencia.groups())
         try:
-            return date(anio, mes, dia).isoformat()
+            return date(anio, mes, 1).isoformat()
+        except ValueError:
+            return None
+    coincidencia = _PATRON_ANIO_MES.match(valor)
+    if coincidencia:
+        anio, mes = (int(x) for x in coincidencia.groups())
+        try:
+            return date(anio, mes, 1).isoformat()
         except ValueError:
             return None
     return None

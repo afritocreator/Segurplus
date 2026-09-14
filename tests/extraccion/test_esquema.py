@@ -37,6 +37,28 @@ def test_fecha_sin_ningun_formato_reconocible_devuelve_none():
     assert _normalizar_fecha("hace un mes") is None
 
 
+def test_fecha_dia_mes_anio_con_guiones_se_normaliza():
+    assert _normalizar_fecha("05-07-2026") == "2026-07-05"
+
+
+def test_mes_anio_se_normaliza_al_primer_dia_del_mes():
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-1: caso real -- una
+    factura de luz de la Usina Popular de Tandil solo imprime
+    "Período: 07/2022", sin día. Antes de esta corrección, `_normalizar_fecha`
+    devolvía `None`, la factura quedaba `periodo_desde=None`, VALIDABA BIEN
+    y se guardaba -- pero todas las consultas del análisis filtran
+    `periodo_desde IS NOT NULL`, así que quedaba invisible sin ningún aviso."""
+    assert _normalizar_fecha("07/2022") == "2022-07-01"
+
+
+def test_anio_guion_mes_se_normaliza_al_primer_dia_del_mes():
+    assert _normalizar_fecha("2022-07") == "2022-07-01"
+
+
+def test_mes_anio_con_mes_invalido_devuelve_none():
+    assert _normalizar_fecha("13/2022") is None
+
+
 def test_none_devuelve_none():
     assert _normalizar_fecha(None) is None
 

@@ -4,6 +4,7 @@ la red -- lo que Gemini devolvería ya se conoce de memoria, porque las
 fixtures se generaron con esos valores exactos, ver
 docs/fixtures/generar_fixtures.py)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,46 @@ def test_factura_con_revision_obligatoria_queda_pendiente(tmp_path, monkeypatch)
         "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
     assert fila_estado == ("requiere_revision",)
+    con.close()
+
+
+def test_factura_sin_periodo_no_queda_aprobada_ni_dice_guardada(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, hallazgo B-1, reproducido con
+    facturas reales de la Usina Popular de Tandil: el modelo puede leer
+    perfectamente el período impreso en la factura y aun así no lograr
+    devolverlo en un formato que `_normalizar_fecha` interprete (antes de
+    esta corrección, "07/2022" -- mes/año, sin día -- ya se arreglaba en
+    `_normalizar_fecha`, pero acá se simula el caso general: CUALQUIER
+    motivo por el que `periodo_desde` llegue en `None`). Con el pipeline
+    viejo, esa factura validaba bien, quedaba `aprobada` (el default) y la
+    UI decía "guardada y validada" -- pero `totales_por_periodo` y el resto
+    del análisis filtran `periodo_desde IS NOT NULL`, así que desaparecía
+    sin ningún aviso. Ahora nunca queda aprobada sin período, sea cual sea
+    `revision_humana_obligatoria`, y el estado que ve la UI lo dice."""
+    factura_sin_periodo = replace(_factura_telefonia_julio(), periodo_desde=None)
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_sin_periodo)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "necesita_datos"
+    assert "periodo_desde" in resultado.detalle
+    fila_estado = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    assert fila_estado == ("requiere_revision",)
+    con.close()
+
+
+def test_factura_sin_servicio_no_queda_aprobada(tmp_path, monkeypatch):
+    factura_sin_servicio = replace(_factura_telefonia_julio(), servicio=None)
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_sin_servicio)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "necesita_datos"
+    assert "servicio" in resultado.detalle
     con.close()
 
 

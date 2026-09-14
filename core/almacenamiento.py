@@ -33,7 +33,7 @@ from typing import Any
 import duckdb
 
 from core.analisis.alertas import Alerta
-from core.extraccion.esquema import FacturaExtraida
+from core.extraccion.esquema import FacturaExtraida, _normalizar_fecha
 from core.extraccion.validacion import ResultadoValidacion
 
 RUTA_BASE = Path(__file__).resolve().parent.parent / "data" / "reales" / "facturas.duckdb"
@@ -421,7 +421,16 @@ def registrar_correccion(
     """Corrige una cabecera de una factura pendiente o ya aprobada (ver
     `decision_factura` y A-50 -- una `rechazada` no es corregible: si el
     dato estaba mal y se quiere reintentar, se vuelve a subir el PDF, ver
-    A-56), dejando valor anterior y evidencia."""
+    A-56), dejando valor anterior y evidencia.
+
+    Los cuatro campos de fecha se normalizan con la misma
+    `_normalizar_fecha` que usa la extracción (docs/auditoria-2026-09-piloto.md,
+    hallazgo B-1): si alguien corrige `periodo_desde` escribiendo "07/2022"
+    a mano (el mismo formato que trae la factura real), antes quedaba
+    guardado tal cual -- un string que `date.fromisoformat` no puede leer
+    más adelante (A-11/A-12), reintroduciendo el mismo bug que esta función
+    existe para arreglar. Si lo que se escribió no se puede interpretar,
+    se rechaza con un error claro en vez de guardar un valor inválido."""
     permitidos = {
         "emisor",
         "cuit",
@@ -433,8 +442,17 @@ def registrar_correccion(
         "numero_comprobante",
         "moneda",
     }
+    campos_fecha = {"periodo_desde", "periodo_hasta", "fecha_emision", "fecha_vencimiento"}
     if campo not in permitidos:
         raise ValueError(f"Campo no editable en revisión: {campo}")
+    if campo in campos_fecha and valor_nuevo:
+        normalizado = _normalizar_fecha(valor_nuevo)
+        if normalizado is None:
+            raise ValueError(
+                f"No se pudo interpretar {valor_nuevo!r} como fecha -- probá "
+                "AAAA-MM-DD, DD/MM/AAAA o MM/AAAA si solo tenés mes y año."
+            )
+        valor_nuevo = normalizado
     fila = con.execute(
         f"SELECT {campo}, estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]
     ).fetchone()
