@@ -17,7 +17,7 @@ Qué hace, en orden, mostrando cada paso:
 4. Corre la validación aritmética y muestra el resultado de cada control.
 
 Llama a `extraer_con_gemini` en vez de reimplementar la llamada a la API acá
-a propósito (docs/auditoria-2026-09-piloto.md, hallazgo B-3): antes este
+a propósito (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3): antes este
 script armaba su propio `cliente.models.generate_content(...)`, duplicando
 la lógica de `core/extraccion/gemini.py` -- cuando esa función empezó a
 mandarle también el texto extraído del PDF, este script se quedó atrás,

@@ -43,7 +43,7 @@ class ResultadoPipeline:
     ruta: Path
     hash_pdf: str
     # "ya_procesada" | "cuarentena" | "guardada" | "necesita_datos" | "error_extraccion"
-    # -- "necesita_datos" (docs/auditoria-2026-09-piloto.md, hallazgo B-1): la
+    # -- "necesita_datos" (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1): la
     # factura se guardó y validó aritméticamente, pero le falta `periodo_desde`
     # o `servicio`, los dos campos que el análisis usa para filtrar -- sin
     # completarlos queda invisible en todo el tablero. Deliberadamente
@@ -115,7 +115,7 @@ def procesar_pdf(
 
     contenido_pdf = ruta.read_bytes()
     try:
-        # docs/auditoria-2026-09-piloto.md, hallazgo B-3: se le pasa también
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: se le pasa también
         # el texto que `extraer_texto` ya sacó del mismo PDF -- una segunda
         # vista, además del PDF nativo, para las facturas con layout a dos
         # columnas o líneas de impuesto con dos montos.
@@ -202,7 +202,7 @@ def procesar_pdf(
         if resultado_homologacion.concepto:
             conceptos_normalizados[i] = resultado_homologacion.concepto
 
-    # docs/auditoria-2026-09-piloto.md, hallazgo B-1: una factura sin
+    # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1: una factura sin
     # `periodo_desde` o sin `servicio` valida bien aritméticamente y antes
     # quedaba "aprobada" (con el default) o "requiere_revision" -- pero
     # TODAS las consultas del análisis (totales por período, calibración,

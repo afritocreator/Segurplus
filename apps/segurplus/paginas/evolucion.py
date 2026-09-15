@@ -101,7 +101,7 @@ if len(periodos) < 2:
     st.stop()
 
 try:
-    # docs/auditoria-2026-09-piloto.md, hallazgo B-6: se manda también
+    # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-6: se manda también
     # periodo_hasta -- alertas_por_periodo_faltante lo usa para no asumir
     # periodicidad mensual en un servicio bimestral (gas).
     fechas_periodos = [

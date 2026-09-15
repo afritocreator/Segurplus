@@ -500,3 +500,34 @@ próximo que numere medidores entre paréntesis), C-7, C-8, C-16.
 —hace falta `GEMINI_API_KEY` y correr `scripts/probar_extraccion.py` sobre las facturas de
 luz y gas—, y **A-26** (`_parsear_monto` con separadores de miles mezclados) sigue diferido,
 sin facturas reales que lo ejerciten todavía.
+
+---
+
+## Estado al cierre del plan de corrección (septiembre 2026)
+
+Los 16 hallazgos de esta auditoría se corrigieron en 7 commits, uno por bloque, cada uno
+con tests nuevos y `pytest` + `ruff check .` verdes antes de pushear:
+
+| # | Estado | Commit | Cómo se resolvió |
+|---|---|---|---|
+| C-1 | **Resuelto** | `dd19af5` | `_normalizar_fecha(fin_de_mes=True)` para `periodo_hasta` en `MM/AAAA`/`AAAA-MM`; `alertas_por_periodo_faltante` tolera datos ya guardados con la normalización vieja (reinterpreta `hasta_anterior` en día 1 como fin de mes) |
+| C-2 | **Resuelto** | `c769786` | `factura_desde_json` se llama dentro de un `try` que envuelve `KeyError`/`TypeError`/`ValueError` en `ExtraccionError`, con `respuesta_cruda` adjunta |
+| C-3 | **Resuelto** | `6504725` | `registrar_correccion` valida `servicio` contra `SERVICIOS_CONOCIDOS`; `revision.py` usa un `st.selectbox` acotado en vez de texto libre |
+| C-4 | **Resuelto** | `6504725` | `_formulario_correccion` atrapa `ValueError` y muestra `st.error()` en vez de dejar pasar el traceback |
+| C-5 | **Resuelto** | `d441416` | `_PATRON_DETALLE_NUMERICO` exige una operación entre dos números (o un porcentaje suelto); un número solo sin operador ya no se saca |
+| C-6 | **Resuelto** | `6504725` | El mensaje de `necesita_datos` dice "corregilo Y APROBALO", no solo "corregilo" |
+| C-7 | **Resuelto** | `d441416` | El expander siempre presente pasa a un `st.checkbox` sin marcar por default -- cero conexiones a la base sin marcarlo |
+| C-8 | **Resuelto** | `b1cb9f0` | `proxima_ventana_libre` devuelve un `timedelta`; el pipeline lo suma a `datetime.now(ZoneInfo(zona_horaria()))`, nueva función de `core/operacion.py` |
+| C-9 | **Resuelto** | `e63116c` | Índice sobre `intentos_gemini.creado_en` + purga por retención (`dias_retencion_intentos_gemini`, 30 días) |
+| C-10 | **Resuelto** | `e63116c` | Un intento exitoso ya no manda `respuesta_cruda` -- esa cadena ya vive en `facturas.respuesta_extraida` |
+| C-11 | **Resuelto** | `b1cb9f0` | `proxima_ventana_libre` recibe el `tope` y mira la llamada en la posición `cantidad - tope`, no siempre la más vieja |
+| C-12 | **Resuelto (documentación)** | `e63116c` | README explica que tocar la LÓGICA de homologación, no solo el diccionario, también exige re-homologar |
+| C-13 | **Resuelto** | `82d88eb` | `canvas.Canvas(..., invariant=1)` en `generar_fixtures.py` -- verificado que dos corridas seguidas dan los mismos hashes |
+| C-14 | **No corregido, a propósito** | -- | Es un problema de CLASIFICACIÓN del modelo (un recargo/impuesto que debería ir a `factura.recargos`/`factura.impuestos`, no a `conceptos`), no del diccionario de homologación -- agregar una entrada al diccionario para absorberlo mejor escondería el síntoma en vez de arreglar la causa. Depende de cómo se comporte el prompt (B-3) contra facturas reales |
+| C-15 | **Resuelto** | `82d88eb` | `generar_factura_pdf` recibe `alicuota_iva`; la fixture de gas pasa a 27% (luz y gas reales, no 21%) -- totales esperados recalculados a mano en los tests |
+| C-16 | **Resuelto** | `82d88eb` | Las 35 referencias a `auditoria-2026-09-piloto.md, hallazgo B-N` se redirigieron a este archivo; las que citan un `A-N` real de `piloto.md` no se tocaron |
+
+**B-3 sigue sin verificarse contra la API real** -- no cambió en este plan, sigue haciendo
+falta `GEMINI_API_KEY` y correr `scripts/probar_extraccion.py` sobre facturas reales de luz
+y gas (que ahora, gracias a C-2, va a mostrar el JSON crudo aunque la conversión falle).
+**A-26** sigue diferido, sin cambios.

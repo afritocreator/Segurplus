@@ -188,7 +188,7 @@ def test_homologar_concepto_ignora_el_periodo_de_la_descripcion():
 
 
 # --- quitar_detalle_numerico: el detalle de cálculo pegado a la descripción
-# (caso real Usina Popular de Tandil), docs/auditoria-2026-09-piloto.md, B-2 ---
+# (caso real Usina Popular de Tandil), docs/auditoria-2026-09-facturas-reales.md, B-2 ---
 
 
 def test_quitar_detalle_numerico_saca_parentesis_con_division_y_multiplicacion():
@@ -246,7 +246,7 @@ def test_par_real_cargo_fijo_da_similitud_uno_pese_al_detalle_distinto():
 
 
 def test_homologar_concepto_ignora_el_detalle_numerico_de_la_descripcion():
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-2, reproducido con
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-2, reproducido con
     facturas reales de luz: "cargo fijo" es un alias EXACTO de
     data/conceptos/comunes.yaml, pero con el detalle de cálculo pegado el
     score caía a 0,545 -- bajo el umbral (0,60) -- y encima cambiaba todos

@@ -64,7 +64,7 @@ def test_conceptos_sin_homologar_estables_entre_periodos_con_periodo_en_la_descr
 
 
 def test_conceptos_sin_homologar_estables_entre_periodos_con_detalle_numerico():
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-2, caso real (Usina
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-2, caso real (Usina
     Popular y Municipal de Tandil): el mismo concepto sin homologar, con
     el detalle de cálculo pegado a la descripción y DISTINTO cada mes --
     tiene que dar la MISMA clave en los dos, igual que el caso del período

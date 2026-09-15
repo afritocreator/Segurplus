@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS casos_alerta (
     creado_en TIMESTAMP DEFAULT now(),
     actualizado_en TIMESTAMP DEFAULT now()
 );
--- Un registro por cada llamada REAL a Gemini (docs/auditoria-2026-09-piloto.md,
+-- Un registro por cada llamada REAL a Gemini (docs/auditoria-2026-09-facturas-reales.md,
 -- hallazgos B-4 y B-5), haya salido bien o mal. Antes, un fallo de
 -- extracción (ExtraccionError) no dejaba NINGÚN rastro en la base -- ni
 -- contaba para el tope de llamadas por hora (que solo miraba `facturas` +
@@ -340,7 +340,7 @@ def llamadas_ultima_hora(con: duckdb.DuckDBPyConnection) -> int:
     auditoria-2026-09.md, hallazgo A-7: la constante estaba declarada y
     nunca se usaba).
 
-    Antes (docs/auditoria-2026-09-piloto.md, hallazgo B-4) esto contaba
+    Antes (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-4) esto contaba
     filas de `facturas` + `cuarentena` -- un PROXY, no las llamadas reales:
     una extracción que fallaba (`ExtraccionError`, ej. un 429/503 real de
     Gemini) no dejaba fila en ninguna de las dos tablas, así que NO
@@ -406,7 +406,7 @@ def intentos_gemini_fallidos_recientes(
     `(ruta_pdf, mensaje, respuesta_cruda, creado_en)` -- para que
     `apps/segurplus/paginas/cargar.py` pueda mostrar qué pasó con una
     factura que no entró, incluso después de recargar la página (docs/
-    auditoria-2026-09-piloto.md, hallazgo B-5: antes el único rastro de un
+    auditoria-2026-09-facturas-reales.md, hallazgo B-5: antes el único rastro de un
     error era el mensaje en pantalla en el momento, que se perdía al
     navegar a otra pantalla)."""
     return con.execute(

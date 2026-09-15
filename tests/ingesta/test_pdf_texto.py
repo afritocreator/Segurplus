@@ -41,13 +41,15 @@ def test_total_impreso_sin_coincidencia_devuelve_none():
 
 
 def test_total_impreso_de_factura_de_gas_con_periodo_mes_anio():
-    """docs/auditoria-2026-09-piloto.md, B-1/B-6: fixture que reproduce la
-    forma real que rompía (período "MM/AAAA" sin día, bimestral) -- la
-    doble lectura del total no depende de eso, sigue leyendo bien."""
+    """docs/auditoria-2026-09-facturas-reales.md, B-1/B-6: fixture que
+    reproduce la forma real que rompía (período "MM/AAAA" sin día,
+    bimestral) -- la doble lectura del total no depende de eso, sigue
+    leyendo bien."""
     doc = extraer_texto(FIXTURES / "gas_2026-07.pdf")
     assert "Período facturado: 07/2026" in doc.texto
-    # subtotal 5.352,00 + IVA 21% (1.123,92) = 6.475,92
-    assert total_impreso(doc.texto) == pytest.approx(6475.92)
+    # subtotal 5.352,00 + IVA 27% (1.445,04) = 6.797,04 -- gas real lleva
+    # 27%, no el 21% genérico de las otras fixtures (hallazgo C-15).
+    assert total_impreso(doc.texto) == pytest.approx(6797.04)
 
 
 def test_hash_es_estable_y_determinista():

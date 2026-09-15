@@ -130,7 +130,7 @@ def test_de_punta_a_punta_concepto_sin_homologar_con_periodo_en_la_descripcion()
 
 
 def test_de_punta_a_punta_concepto_sin_homologar_con_detalle_numerico_en_la_descripcion():
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-2 -- mismo bug que el
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-2 -- mismo bug que el
     de arriba (A-28), otro patrón: caso real, Usina Popular y Municipal de
     Tandil factura "Cargo Fijo" con el detalle de cálculo pegado, DISTINTO
     cada mes ("(414,4500 / 30.5 x 8)" en julio, "(455,8900 / 30.5 x 21)"

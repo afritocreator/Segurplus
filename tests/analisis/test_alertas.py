@@ -167,7 +167,7 @@ def test_generar_alertas_excluye_salto_de_cantidad_sintetica():
 # `periodo_hasta=None` en todos estos tests a propósito: ejercitan el
 # criterio VIEJO (fallback a "un mes después"), que sigue vigente cuando la
 # factura no trae periodo_hasta. Los tests con periodo_hasta real están más
-# abajo (docs/auditoria-2026-09-piloto.md, hallazgo B-6).
+# abajo (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-6).
 
 
 def test_periodos_consecutivos_no_alertan():

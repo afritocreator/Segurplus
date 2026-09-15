@@ -153,6 +153,57 @@ Las cuatro facturas reales que sirvieron para encontrar esto NO se commitearon
 "MM/AAAA" sin día, bimestral, detalle numérico pegado a la descripción -- para dejar
 cobertura de regresión real sin depender de ningún dato de un proveedor o cliente.
 
+## Auditoría de las correcciones B-1 a B-6 (C-1 a C-16) — los 16 resueltos o documentados
+
+Después de cerrar B-1 a B-6, se auditó ese mismo trabajo (sin corregir nada en el
+momento, ver `docs/auditoria-2026-09-facturas-reales.md`) y salieron **16 hallazgos
+nuevos, dos de ellos regresiones del propio trabajo**: **C-1**, la normalización de
+`periodo_hasta` al primer día del mes (B-1) contradecía la alerta de período que usa
+`periodo_hasta + 1 día` (B-6) -- rompía el caso mensual con período `MM/AAAA` (falso
+"falta un período" en CADA par de meses consecutivos), justo el caso de las facturas de
+luz. Y **C-2**, un JSON válido pero incompleto (a un concepto le falta una clave)
+escapaba como `KeyError` sin envolver, anulando el conteo del tope (B-4) y el registro de
+diagnóstico (B-5) para esa clase de fallo.
+
+Los 16 se corrigieron en un plan de 7 bloques, cada uno con su propio commit, tests y
+`pytest`/`ruff` verdes:
+
+- **C-1** — `_normalizar_fecha` normaliza `periodo_hasta` al ÚLTIMO día del mes cuando
+  el dato es solo `MM/AAAA`/`AAAA-MM` (`periodo_desde` sigue yendo al primero);
+  `alertas_por_periodo_faltante` además tolera datos YA guardados con la normalización
+  vieja (reinterpreta un `periodo_hasta` en día 1 como fin de ese mes).
+- **C-2** — `factura_desde_json` se llama dentro de un `try` que envuelve
+  `KeyError`/`TypeError`/`ValueError` en `ExtraccionError`, con el JSON crudo adjunto
+  (`respuesta_cruda`) para que B-4 y B-5 vuelvan a cubrir este caso.
+- **C-3, C-4, C-6** — el circuito "factura en `necesita_datos` → corregir a mano":
+  `registrar_correccion` valida `servicio` contra `SERVICIOS_CONOCIDOS`, la corrección de
+  `servicio` en el tablero pasa a `st.selectbox`, el `ValueError` de una fecha mal escrita
+  se atrapa en vez de tirar traceback, y el mensaje de `necesita_datos` aclara que además
+  de corregir hay que aprobar.
+- **C-5** — `quitar_detalle_numerico` deja de sacar cualquier paréntesis sin letras: ahora
+  exige una operación entre dos números, así que "Medidor (8399554)" o "Cargo (1)" quedan
+  intactos.
+- **C-7** — el expander de diagnóstico de "Cargar facturas" pasa a `st.checkbox` sin
+  marcar por default: sin marcarlo, cero conexiones a la base.
+- **C-8, C-11** — `proxima_ventana_libre` devuelve un `timedelta` (no la hora del
+  servidor) y recibe el `tope` para mirar la llamada que efectivamente hace falta que
+  salga de la ventana; el pipeline muestra la hora en la zona horaria del equipo
+  (`core.operacion.zona_horaria`, `America/Argentina/Buenos_Aires`).
+- **C-9, C-10** — índice + purga por retención (30 días) en `intentos_gemini`; un intento
+  exitoso ya no duplica `respuesta_extraida` en esa tabla.
+- **C-12, C-16** — documentación: re-homologar hace falta también al tocar la lógica
+  (no solo el diccionario); las 35 citas a `auditoria-2026-09-piloto.md, hallazgo B-N`
+  se redirigieron a este documento, que es donde efectivamente viven.
+- **C-13, C-15** — fixtures: `invariant=1` para que regenerarlas no cambie los bytes de
+  las demás sin motivo; la fixture de gas pasa a IVA 27% (real para luz y gas).
+- **C-14 — no corregido, a propósito**: `Recargo energia`/`Impuesto energia electrica`
+  homologando a `consumo_energia` es un problema de que el MODELO los clasificó como
+  concepto en vez de recargo/impuesto, no del diccionario -- absorberlo mejor en el
+  diccionario escondería el síntoma. Depende de cómo se comporte el prompt (B-3).
+
+Ver el estado final de cada hallazgo, con el commit que lo resolvió, en la sección de
+cierre de `docs/auditoria-2026-09-facturas-reales.md`.
+
 ## Tablero rediseñado
 
 Tema institucional (`.streamlit/config.toml`, paleta navy/dorado de la consultora),

@@ -19,7 +19,7 @@ que costaron caro ahí y se copian tal cual:
   `core/pipeline.py`) -- SÍ una tabla aparte, a diferencia de lo que decía
   antes acá: un conteo sobre `facturas`/`cuarentena` subestimaba el uso
   real, porque una llamada que fallaba (`ExtraccionError`) no dejaba fila
-  en ninguna de las dos (docs/auditoria-2026-09-piloto.md, hallazgo B-4).
+  en ninguna de las dos (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-4).
 
 Esta llamada NUNCA es la última palabra sobre un número: todo lo que
 devuelve pasa por `core/extraccion/validacion.py` antes de entrar al
@@ -34,7 +34,7 @@ import os
 from core.extraccion.esquema import FacturaExtraida, esquema_json_para_modelo, factura_desde_json
 
 MODELO = "gemini-3.6-flash"  # fijo, no "latest" -- ver docstring del módulo
-# docs/auditoria-2026-09-piloto.md, hallazgo B-3: el prompt sumó dos reglas
+# docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: el prompt sumó dos reglas
 # (base imponible vs. importe en una línea de impuesto, y no mezclar
 # columnas) y ahora también recibe el texto plano del PDF -- subir la
 # versión documenta que una extracción vieja se hizo con reglas distintas.
@@ -104,7 +104,7 @@ def extraer_con_gemini(
     `texto_extraido`: el texto plano que `core/ingesta/pdf_texto.py::extraer_texto`
     ya sacó del mismo PDF con `pdfplumber`, si se tiene a mano -- se lo pasa
     al modelo como contenido ADICIONAL, no en reemplazo del PDF nativo
-    (docs/auditoria-2026-09-piloto.md, hallazgo B-3): en una factura de
+    (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3): en una factura de
     diseño a dos columnas, `pdfplumber` puede entregar el texto entrelazado
     de un modo distinto a como el modelo lee el layout visual del PDF, así
     que darle las dos vistas le da más para contrastar. `core/pipeline.py`

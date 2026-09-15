@@ -100,7 +100,7 @@ def test_factura_con_revision_obligatoria_queda_pendiente(tmp_path, monkeypatch)
 
 
 def test_factura_sin_periodo_no_queda_aprobada_ni_dice_guardada(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-1, reproducido con
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1, reproducido con
     facturas reales de la Usina Popular de Tandil: el modelo puede leer
     perfectamente el período impreso en la factura y aun así no lograr
     devolverlo en un formato que `_normalizar_fecha` interprete (antes de
@@ -167,9 +167,12 @@ def test_pipeline_de_punta_a_punta_con_fixture_de_gas_periodo_mes_anio(tmp_path,
                 "importe": 5152.0,
             },
         ],
-        "impuestos": [{"nombre": "IVA 21%", "importe": 1123.92}],
+        # IVA 27% (docs/auditoria-2026-09-facturas-reales.md, hallazgo C-15:
+        # gas real lleva 27%, no el 21% genérico de las otras fixtures) --
+        # 5.352,00 * 0,27 = 1.445,04.
+        "impuestos": [{"nombre": "IVA 27%", "importe": 1445.04}],
         "subtotal": 5352.0,
-        "total": 6475.92,
+        "total": 6797.04,
     }
     factura = factura_desde_json(datos_como_los_devolveria_gemini)
     monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
@@ -418,7 +421,7 @@ def test_pdf_corrupto_no_tumba_el_procesamiento(tmp_path, monkeypatch):
 
 def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
     # docs/auditoria-2026-09.md, hallazgo A-7: el tope estaba declarado y
-    # nunca se usaba. docs/auditoria-2026-09-piloto.md, B-4: ahora vive en
+    # nunca se usaba. docs/auditoria-2026-09-facturas-reales.md, B-4: ahora vive en
     # data/operacion.yaml (core.operacion.max_llamadas_gemini_por_hora),
     # no hardcodeado.
     monkeypatch.setattr(pipeline_mod, "max_llamadas_gemini_por_hora", lambda: 0)
@@ -441,7 +444,7 @@ def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
 
 
 def test_tope_de_llamadas_dice_a_que_hora_reintentar(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, B-4: el mensaje dice cuándo
+    """docs/auditoria-2026-09-facturas-reales.md, B-4: el mensaje dice cuándo
     reintentar, no solo que se alcanzó el tope."""
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
@@ -463,7 +466,7 @@ def test_tope_de_llamadas_dice_a_que_hora_reintentar(tmp_path, monkeypatch):
 
 
 def test_intento_fallido_de_extraccion_queda_registrado(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-5: antes un fallo de
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5: antes un fallo de
     extracción no dejaba NINGÚN rastro en la base -- se perdía al recargar
     la página."""
     from core.extraccion.gemini import ExtraccionError

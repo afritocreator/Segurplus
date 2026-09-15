@@ -17,7 +17,7 @@ Además genera UNA factura rota a propósito (el importe de una línea no
 coincide con cantidad × precio) para probar que el pipeline la manda a
 cuarentena en vez de aceptarla.
 
-Y una de GAS (docs/auditoria-2026-09-piloto.md, hallazgos B-1/B-2/B-6,
+Y una de GAS (docs/auditoria-2026-09-facturas-reales.md, hallazgos B-1/B-2/B-6,
 encontrados con facturas reales -- no commiteadas, ver CLAUDE.md -- de la
 Usina Popular de Tandil y Camuzzi): período impreso solo como "MM/AAAA"
 (sin día, la forma real que rompía `_normalizar_fecha`), bimestral (para
@@ -58,11 +58,25 @@ def generar_factura_pdf(
     items: list[tuple[str, float, str, float, float]],  # (desc, cant, unidad, precio, importe)
     recargo: tuple[str, float] | None = None,
     total_impreso_incorrecto: float | None = None,
+    alicuota_iva: float = 0.21,
 ) -> dict:
     """Dibuja el PDF y devuelve un dict con los totales calculados a mano,
     para que el test los use como referencia (`emisor`, `subtotal`, `iva`,
-    `total`)."""
-    c = canvas.Canvas(str(ruta), pagesize=A4)
+    `total`).
+
+    `alicuota_iva`: 21% por default (el genérico de estas fixtures desde
+    siempre); luz y gas reales en Argentina llevan 27%, no 21% -- pasar
+    0.27 para una fixture que busca ser representativa de una factura de
+    esos dos servicios (docs/auditoria-2026-09-facturas-reales.md,
+    hallazgo C-15).
+
+    `invariant=1` en el Canvas (hallazgo C-13): ReportLab por default
+    embebe la fecha/hora de creación en los bytes del PDF -- regenerar UNA
+    fixture cambiaba los bytes de las OTRAS cinco sin ningún cambio
+    funcional, puro ruido en el diff de la próxima revisión. `invariant=1`
+    usa metadatos fijos en su lugar, así que el mismo contenido produce
+    siempre los mismos bytes."""
+    c = canvas.Canvas(str(ruta), pagesize=A4, invariant=1)
     width, height = A4
 
     c.setFont("Helvetica-Bold", 16)
@@ -95,7 +109,7 @@ def generar_factura_pdf(
         c.drawRightString(188 * mm, y, _money(importe))
         y -= 6 * mm
 
-    iva = round(subtotal * 0.21, 2)
+    iva = round(subtotal * alicuota_iva, 2)
     total = subtotal + iva
 
     if recargo:
@@ -111,7 +125,7 @@ def generar_factura_pdf(
     c.drawString(130 * mm, y, "Subtotal:")
     c.drawRightString(188 * mm, y, _money(subtotal))
     y -= 6 * mm
-    c.drawString(130 * mm, y, "IVA 21%:")
+    c.drawString(130 * mm, y, f"IVA {alicuota_iva:.0%}:")
     c.drawRightString(188 * mm, y, _money(iva))
     y -= 7 * mm
     c.setFont("Helvetica-Bold", 10)
@@ -192,6 +206,9 @@ def generar_todas() -> None:
             ("Cargo Fijo (100,00 / 30 x 60)", 1, "", 200.0, 200.0),
             ("Consumo de Gas", 805, "m3", 6.4, 5152.0),
         ],
+        # Gas real lleva 27% de IVA, no el 21% genérico de esta fixture --
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-15.
+        alicuota_iva=0.27,
     )
 
     # --- Factura rota a propósito: 5 * 100 != 800 (debería ser 500) ---

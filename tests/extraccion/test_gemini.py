@@ -15,7 +15,7 @@ def test_sin_api_key_lanza_extraccion_error(monkeypatch):
 
 
 # --- B-3: el prompt explica la línea de impuesto con dos montos y avisa
-# --- sobre layouts a dos columnas (docs/auditoria-2026-09-piloto.md) -------
+# --- sobre layouts a dos columnas (docs/auditoria-2026-09-facturas-reales.md) -------
 
 
 def test_prompt_explica_base_imponible_vs_importe_del_impuesto():
@@ -68,7 +68,7 @@ def test_sin_texto_extraido_manda_solo_prompt_y_pdf(monkeypatch):
 
 
 def test_con_texto_extraido_lo_manda_como_contenido_adicional(monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-3: además del PDF
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: además del PDF
     nativo, se le pasa el texto plano que `pdfplumber` ya sacó -- una
     segunda vista para facturas con layout a dos columnas."""
     _parchear_cliente_fake(monkeypatch)

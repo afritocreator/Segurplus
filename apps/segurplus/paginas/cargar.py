@@ -79,7 +79,7 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
     con.close()
 
     guardadas = [r for r in resultados if r.estado == "guardada"]
-    # docs/auditoria-2026-09-piloto.md, hallazgo B-1: NO se cuenta junto con
+    # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1: NO se cuenta junto con
     # "guardadas" a propósito -- son facturas que se guardaron pero sin
     # `periodo_desde` o `servicio`, así que hoy son invisibles para el
     # análisis. Mostrarlas como éxito sería repetir el mismo engaño que

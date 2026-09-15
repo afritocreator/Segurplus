@@ -200,7 +200,7 @@ def test_guardar_y_leer_alertas_del_periodo(tmp_path):
 
 
 def test_llamadas_ultima_hora_cuenta_intentos_reales_no_facturas_guardadas(tmp_path):
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-4: antes contaba filas
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-4: antes contaba filas
     de `facturas` + `cuarentena` -- un PROXY. Una extracción que fallaba
     (`ExtraccionError`) no dejaba fila en ninguna de las dos, así que no
     contaba, aunque sí gastó una llamada real a la API. Ahora cuenta la
@@ -575,7 +575,7 @@ def test_correccion_de_cabecera_conserva_valor_anterior(tmp_path):
 
 
 def test_correccion_de_fecha_normaliza_formato_mes_anio(tmp_path):
-    """docs/auditoria-2026-09-piloto.md, hallazgo B-1: corregir a mano
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1: corregir a mano
     escribiendo el mismo formato que trae la factura real ("07/2022", sin
     día) tiene que quedar normalizado a ISO como cualquier otra fecha --
     si no, se reintroduce A-11/A-12 por otra vía."""
