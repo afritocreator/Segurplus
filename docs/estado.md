@@ -258,6 +258,39 @@ corrige a mano, con el PDF a la vista, en vez de perderse. **No resuelve** que G
 lea mejor una factura de Movistar de entrada -- eso necesita una factura real para
 diagnosticar y sigue dependiendo de B-3 (nunca verificado contra la API real).
 
+## Vocabulario claro en el tablero
+
+Segunda parte del pedido de arriba ("la interpretación de los datos es confusa"): la
+causa de fondo era que identificadores internos del sistema se mostraban tal cual al
+usuario, en varios lugares a la vez -- los 7 tipos de alerta (`salto_de_cantidad`,
+`precio_sobre_ipc`, ...), los 9 `concepto_normalizado` homologados (`abono_movil`,
+`consumo_energia`, ...) y los 4 estados de un caso (`en_analisis`, ...), tanto en el
+tablero como en el Excel exportado al cliente.
+
+- **`core/analisis/alertas.py::etiqueta_tipo`** y **`apps/segurplus/paginas/casos.py`
+  ::ETIQUETAS_ESTADO_CASO** traducen los slugs de sistema a texto humano, sin tocar la
+  clave real (`Alerta.tipo`, `ESTADOS_CASO`).
+- **`data/etiquetas_conceptos.yaml`** (nuevo, leído por
+  `core.analisis.agregacion.etiqueta_legible`) traduce los 9 conceptos homologados --
+  antes, `etiqueta_legible` solo capitalizaba texto SIN homologar y dejaba los
+  homologados (ej. `abono_movil`) crudos. A propósito FUERA de `data/conceptos/`: ese
+  directorio lo combina entero `core.analisis.diccionario.cargar_diccionario(None)`
+  como `{concepto: [alias]}`, y este archivo es `{concepto: "texto"}` -- adentro,
+  corrompía el diccionario real agregando cada carácter del texto como alias (bug
+  real, encontrado al escribir el test de esta función).
+- **`apps/segurplus/paginas/evolucion.py`**: tabs "Descomposición"/"Composición
+  total" → "Precio vs. cantidad"/"Todos los conceptos"; leyenda "Efecto
+  cantidad/precio/cruzado" → "Por cantidad"/"Por precio"/"Efecto combinado" (ahora en
+  `core.analisis.variacion`, para que el gráfico, la tabla Detalle y el Excel digan
+  siempre lo mismo); `help=` corto en "Variación real"/"Inflación del período".
+- **`core/reportes/excel.py`**: mismas traducciones en el reporte que llega al
+  cliente -- no tenía sentido resolverlo solo en el tablero.
+- **Bug encontrado de paso**: `core.almacenamiento.metricas_por_proveedor` contaba
+  "Facturas cargadas" con un `count(*)` sin filtrar `estado`, así que desde que existe
+  el borrador (arriba) incluía facturas todavía sin confirmar. Fix: excluye
+  `estado = 'borrador'`. "En cuarentena" quedó relabeleado como "(histórico)" en
+  `sin_clasificar.py` y el Excel -- ya no recibe filas nuevas desde el plan anterior.
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver

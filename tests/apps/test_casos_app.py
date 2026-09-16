@@ -63,8 +63,8 @@ def test_pagina_muestra_el_caso(base_con_un_caso):
     assert not at.exception
     filas = at.dataframe[0].value
     assert len(filas) == 1
-    assert filas.iloc[0]["Tipo"] == "item_duplicado"
-    assert filas.iloc[0]["Estado"] == "abierto"
+    assert filas.iloc[0]["Tipo"] == "Ítem duplicado"
+    assert filas.iloc[0]["Estado"] == "Abierto"
 
 
 def test_actualizar_caso_persiste_estado_responsable_y_vencimiento(base_con_un_caso):

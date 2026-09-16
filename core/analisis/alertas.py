@@ -31,6 +31,25 @@ class Alerta:
     concepto: str | None = None
 
 
+ETIQUETAS_TIPO: dict[str, str] = {
+    "recargo": "Recargo",
+    "concepto_nuevo": "Concepto nuevo",
+    "concepto_desaparecido": "Concepto que dejó de facturarse",
+    "salto_de_cantidad": "Salto brusco de cantidad",
+    "precio_sobre_ipc": "Precio por encima de la inflación",
+    "item_duplicado": "Ítem duplicado",
+    "periodo_faltante": "Puede faltar un período",
+}
+
+
+def etiqueta_tipo(tipo: str) -> str:
+    """SOLO para mostrar (tablero, Excel) -- `Alerta.tipo` es la clave real
+    y no cambia. Si aparece un tipo nuevo sin traducir todavía, devuelve el
+    slug tal cual en vez de romper -- nunca debe tumbar el tablero por
+    faltar una entrada acá."""
+    return ETIQUETAS_TIPO.get(tipo, tipo)
+
+
 def _leer_umbrales() -> dict:
     """Sin cache y sin lectura a nivel de módulo, a propósito -- un YAML
     corrupto no debe tumbar el import ni la app Streamlit (mismo patrón que

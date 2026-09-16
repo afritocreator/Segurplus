@@ -35,6 +35,14 @@ import yaml
 
 RUTA_ALERTAS = Path(__file__).resolve().parents[2] / "data" / "alertas.yaml"
 
+# Texto humano para efecto_cantidad/efecto_precio/efecto_cruzado -- SOLO para
+# mostrar (tablero, Excel); los nombres de campo del dataclass, en cambio, son
+# la clave real y no cambian. Un solo lugar para que el gráfico, la tabla
+# "Detalle" y el Excel exportado digan siempre lo mismo.
+ETIQUETA_EFECTO_CANTIDAD = "Por cantidad"
+ETIQUETA_EFECTO_PRECIO = "Por precio"
+ETIQUETA_EFECTO_CRUZADO = "Efecto combinado"
+
 
 @dataclass
 class DescomposicionVariacion:

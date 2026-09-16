@@ -5,6 +5,7 @@ salto_de_cantidad_ratio=0.30)."""
 from datetime import date
 
 from core.analisis.alertas import (
+    ETIQUETAS_TIPO,
     Alerta,
     alertas_por_concepto_nuevo_o_desaparecido,
     alertas_por_item_duplicado,
@@ -12,6 +13,7 @@ from core.analisis.alertas import (
     alertas_por_precio_sobre_ipc,
     alertas_por_recargos,
     alertas_por_salto_de_cantidad,
+    etiqueta_tipo,
     generar_alertas,
     ordenar_por_severidad,
 )
@@ -310,3 +312,25 @@ def test_ordenar_por_severidad_es_estable_dentro_de_la_misma_severidad():
 
 def test_ordenar_por_severidad_lista_vacia():
     assert ordenar_por_severidad([]) == []
+
+
+# --- Vocabulario claro: etiqueta_tipo -------------------------------------
+
+
+def test_etiqueta_tipo_traduce_los_siete_tipos_conocidos():
+    assert set(ETIQUETAS_TIPO) == {
+        "recargo",
+        "concepto_nuevo",
+        "concepto_desaparecido",
+        "salto_de_cantidad",
+        "precio_sobre_ipc",
+        "item_duplicado",
+        "periodo_faltante",
+    }
+    for tipo, etiqueta in ETIQUETAS_TIPO.items():
+        assert etiqueta_tipo(tipo) == etiqueta
+        assert "_" not in etiqueta
+
+
+def test_etiqueta_tipo_devuelve_el_slug_si_es_desconocido():
+    assert etiqueta_tipo("tipo_nuevo_sin_traducir") == "tipo_nuevo_sin_traducir"

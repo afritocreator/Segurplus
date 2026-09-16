@@ -2,12 +2,15 @@
 ponderado de precio unitario al agregar dos facturas del mismo servicio."""
 
 import pytest
+import yaml
 
 from core.analisis.agregacion import (
+    RUTA_ETIQUETAS_CONCEPTO,
     FilaConcepto,
     agregar_conceptos,
     conceptos_con_cantidad_neta_cero,
     conceptos_con_cantidad_neta_negativa,
+    etiqueta_legible,
 )
 
 
@@ -220,3 +223,37 @@ def test_cantidad_neta_negativa_se_detecta():
 def test_cantidad_neta_negativa_vacio_si_no_hay_anomalias():
     filas = [FilaConcepto("abono_movil", "Abono", cantidad=4, importe=10000.0)]
     assert conceptos_con_cantidad_neta_negativa(filas) == []
+
+
+# --- Vocabulario claro: etiqueta_legible traduce conceptos homologados -----
+
+
+def test_etiqueta_legible_traduce_concepto_homologado():
+    assert etiqueta_legible("abono_movil") == "Abono móvil"
+
+
+def test_etiqueta_legible_sigue_capitalizando_lo_sin_homologar():
+    assert etiqueta_legible("(sin_homologar) cargo raro") == "(sin_homologar) Cargo raro"
+
+
+def test_etiqueta_legible_devuelve_el_slug_si_no_esta_mapeado():
+    assert etiqueta_legible("concepto_que_no_existe_todavia") == "concepto_que_no_existe_todavia"
+
+
+def test_etiqueta_legible_no_rompe_si_el_yaml_no_existe(monkeypatch, tmp_path):
+    import core.analisis.agregacion as agregacion_mod
+
+    monkeypatch.setattr(agregacion_mod, "RUTA_ETIQUETAS_CONCEPTO", tmp_path / "no_existe.yaml")
+    assert etiqueta_legible("abono_movil") == "abono_movil"
+
+
+def test_etiquetas_concepto_cubre_todos_los_slugs_reales():
+    """Tripwire: si se agrega un concepto_normalizado nuevo en
+    data/conceptos/*.yaml y se olvida su etiqueta acá, este test avisa
+    (en vez de que el slug crudo se cuele silenciosamente al tablero)."""
+    from core.analisis.diccionario import cargar_diccionario
+
+    slugs_reales = set(cargar_diccionario())
+    etiquetas = yaml.safe_load(RUTA_ETIQUETAS_CONCEPTO.read_text(encoding="utf-8"))
+    faltantes = slugs_reales - set(etiquetas)
+    assert not faltantes, f"Faltan etiquetas para: {faltantes}"

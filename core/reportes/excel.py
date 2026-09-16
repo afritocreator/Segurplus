@@ -18,8 +18,13 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from core.analisis.agregacion import etiqueta_legible
-from core.analisis.alertas import Alerta
-from core.analisis.variacion import DescomposicionVariacion
+from core.analisis.alertas import Alerta, etiqueta_tipo
+from core.analisis.variacion import (
+    ETIQUETA_EFECTO_CANTIDAD,
+    ETIQUETA_EFECTO_CRUZADO,
+    ETIQUETA_EFECTO_PRECIO,
+    DescomposicionVariacion,
+)
 
 _TITULO_FONT = Font(bold=True, size=14, color="14324D")
 _ENCABEZADO_FONT = Font(bold=True, color="FFFFFF")
@@ -36,8 +41,8 @@ def _encabezado(ws: Worksheet, fila: int, columnas: list[str]) -> None:
 
 
 def _hoja_descomposicion(wb: Workbook, descomposiciones: list[DescomposicionVariacion]) -> None:
-    ws = wb.create_sheet("Descomposición")
-    ws.cell(row=1, column=1, value="Descomposición precio × cantidad").font = _TITULO_FONT
+    ws = wb.create_sheet("Precio vs. cantidad")
+    ws.cell(row=1, column=1, value="Precio vs. cantidad, por concepto").font = _TITULO_FONT
 
     columnas = [
         "Concepto",
@@ -45,9 +50,9 @@ def _hoja_descomposicion(wb: Workbook, descomposiciones: list[DescomposicionVari
         "Precio (base)",
         "Cantidad (comparado)",
         "Precio (comparado)",
-        "Efecto cantidad",
-        "Efecto precio",
-        "Efecto cruzado",
+        ETIQUETA_EFECTO_CANTIDAD,
+        ETIQUETA_EFECTO_PRECIO,
+        ETIQUETA_EFECTO_CRUZADO,
         "Variación total",
     ]
     _encabezado(ws, 3, columnas)
@@ -84,7 +89,7 @@ def _hoja_alertas(wb: Workbook, alertas: list[Alerta]) -> None:
     fila = 4
     for a in alertas:
         ws.cell(row=fila, column=1, value=a.severidad.upper())
-        ws.cell(row=fila, column=2, value=a.tipo)
+        ws.cell(row=fila, column=2, value=etiqueta_tipo(a.tipo))
         ws.cell(row=fila, column=3, value=a.concepto or "")
         celda_mensaje = ws.cell(row=fila, column=4, value=a.mensaje)
         if a.severidad == "alta":
@@ -102,9 +107,11 @@ def _hoja_alertas(wb: Workbook, alertas: list[Alerta]) -> None:
 
 def _hoja_cuarentena(wb: Workbook, cuarentena: list[tuple[str, str]]) -> None:
     """`cuarentena`: lista de (ruta_pdf, motivos)."""
-    ws = wb.create_sheet("Cuarentena")
+    ws = wb.create_sheet("Cuarentena (histórico)")
     ws.cell(
-        row=1, column=1, value="Facturas en cuarentena (no entraron al análisis)"
+        row=1,
+        column=1,
+        value="En cuarentena (histórico) -- ya no recibe cargas nuevas, ver 'Confirmar carga'",
     ).font = _TITULO_FONT
     _encabezado(ws, 3, ["Archivo", "Motivo"])
 
@@ -155,7 +162,7 @@ def generar_reporte_excel(
         ("Variación total", total_1 - total_0, _MONEDA),
         ("Cantidad de conceptos", len(descomposiciones), None),
         ("Cantidad de alertas", len(alertas), None),
-        ("Facturas en cuarentena", len(cuarentena), None),
+        ("En cuarentena (histórico)", len(cuarentena), None),
     ]
     fila = 3
     for etiqueta, valor, formato in filas_resumen:

@@ -963,18 +963,23 @@ def metricas_por_proveedor(
     Las columnas de CONCEPTOS (totales, sin homologar, importe) solo miran
     facturas `aprobada` (docs/auditoria-2026-09-piloto.md, A-55) -- antes
     de esta corrección contaban también conceptos de facturas rechazadas,
-    que el resto del análisis ya ignora. `facturas_cargadas` y
-    `facturas_en_cuarentena` siguen contando TODO lo que se cargó/cuarentenó
-    alguna vez (es la métrica de volumen, no de calibración); para no
-    perder la señal de calidad al filtrar los conceptos, se agrega
-    `facturas_rechazadas` aparte.
+    que el resto del análisis ya ignora. `facturas_cargadas` cuenta todo lo
+    que se cargó alguna vez, EXCLUYENDO `borrador` (un borrador todavía no
+    fue confirmado por el usuario -- ver `core.pipeline.confirmar_factura`
+    -- así que no es todavía una "factura cargada" para esta métrica de
+    calidad de lectura); `facturas_en_cuarentena` sigue contando el
+    histórico, pero desde el plan de "Confirmar carga" ya no recibe filas
+    nuevas (ver `docs/estado.md`). Para no perder la señal de calidad al
+    filtrar los conceptos, se agrega `facturas_rechazadas` aparte.
 
     Cinco consultas simples combinadas en Python en vez de un único JOIN
     con FULL OUTER: mezclar `facturas` y `cuarentena` (que no comparten
     columnas de conceptos) en un solo JOIN sería más difícil de leer que
     combinar los conteos ya agregados."""
     facturas_por_emisor = dict(
-        con.execute("SELECT emisor, count(*) FROM facturas GROUP BY emisor").fetchall()
+        con.execute(
+            "SELECT emisor, count(*) FROM facturas WHERE estado != 'borrador' GROUP BY emisor"
+        ).fetchall()
     )
     cuarentena_por_emisor = dict(
         con.execute("SELECT emisor, count(*) FROM cuarentena GROUP BY emisor").fetchall()

@@ -54,6 +54,11 @@ try:
         "¿La herramienta está leyendo bien a ESTE proveedor? Ordenado por tasa de "
         "cuarentena descendente -- el que más falla, primero."
     )
+    st.caption(
+        '"En cuarentena (histórico)" ya no recibe cargas nuevas -- desde el circuito de '
+        '"Confirmar carga", una factura que no cierra queda como borrador editable, no '
+        "en cuarentena. Se mantiene el dato viejo como trazabilidad."
+    )
     metricas = metricas_por_proveedor(metricas_por_proveedor_db(con))
     if not metricas:
         st.info("Todavía no se cargó ninguna factura.")
@@ -63,9 +68,9 @@ try:
                 {
                     "Proveedor": m.emisor,
                     "Facturas cargadas": m.facturas_cargadas,
-                    "Facturas en cuarentena": m.facturas_en_cuarentena,
+                    "En cuarentena (histórico)": m.facturas_en_cuarentena,
                     "Facturas rechazadas": m.facturas_rechazadas,
-                    "Tasa de cuarentena": (
+                    "Tasa de cuarentena (histórico)": (
                         f"{m.tasa_cuarentena:.0%}" if m.tasa_cuarentena is not None else "—"
                     ),
                     "Conceptos sin homologar": m.conceptos_sin_homologar,
@@ -80,7 +85,7 @@ try:
         )
         motivos = motivos_cuarentena_por_proveedor(con)
         if motivos:
-            with st.expander("Por qué fue a cuarentena cada proveedor"):
+            with st.expander("Por qué fue a cuarentena cada proveedor (histórico)"):
                 st.dataframe(
                     [
                         {"Proveedor": emisor, "Motivo": motivo, "Veces": veces}
@@ -178,6 +183,11 @@ try:
         st.code("concepto_nuevo:\n" + "\n".join(f"  - {a}" for a in aliases), language="yaml")
 
     st.subheader("Distribución de scores medidos")
+    st.caption(
+        "El score mide qué tan parecida es la descripción de la factura a un alias ya "
+        f"conocido (1.0 = idéntico). Por debajo del umbral ({umbral:.2f}) el concepto no "
+        "se homologa solo y aparece en la tabla de arriba para revisar a mano."
+    )
     fig = go.Figure()
     fig.add_histogram(x=con_score, name="Score")
     fig.add_vline(

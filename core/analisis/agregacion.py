@@ -9,10 +9,32 @@ puede testear sin base de datos real.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
 
 from core.analisis.homologacion import quitar_detalle_numerico, quitar_periodo
 
 PREFIJO_SIN_HOMOLOGAR = "(sin_homologar) "
+
+RUTA_ETIQUETAS_CONCEPTO = Path(__file__).resolve().parents[2] / "data" / "etiquetas_conceptos.yaml"
+# A propósito FUERA de data/conceptos/ -- core.analisis.diccionario.cargar_diccionario(None)
+# combina TODOS los *.yaml de esa carpeta como {concepto: [alias]}; si este
+# archivo (que es {concepto: "texto"}, no una lista) viviera ahí adentro,
+# _combinar() haría `.extend("Consumo de agua")` y corrompería el diccionario
+# real agregando cada CARÁCTER como si fuera un alias (bug encontrado al
+# escribir el test de esta función -- ver tests/analisis/test_diccionario.py).
+
+
+def _leer_etiquetas_concepto() -> dict[str, str]:
+    """Sin cache y sin lectura a nivel de módulo, a propósito -- mismo patrón
+    que `core.analisis.alertas._leer_umbrales`: un YAML corrupto o faltante
+    no debe tumbar el import ni la app Streamlit."""
+    try:
+        datos = yaml.safe_load(RUTA_ETIQUETAS_CONCEPTO.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    return datos if isinstance(datos, dict) else {}
 
 
 @dataclass
@@ -90,7 +112,7 @@ def etiqueta_legible(etiqueta: str) -> str:
     if etiqueta.startswith(PREFIJO_SIN_HOMOLOGAR):
         resto = etiqueta[len(PREFIJO_SIN_HOMOLOGAR) :]
         return PREFIJO_SIN_HOMOLOGAR + (resto[:1].upper() + resto[1:] if resto else resto)
-    return etiqueta
+    return _leer_etiquetas_concepto().get(etiqueta, etiqueta)
 
 
 def _acumular(filas: list[FilaConcepto]) -> dict[tuple[str, str | None], list[float]]:

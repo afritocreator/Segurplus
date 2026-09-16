@@ -6,6 +6,14 @@ import streamlit as st
 
 from apps.segurplus.autenticacion import requerir_rol
 from core.almacenamiento import actualizar_caso_alerta, conectar, listar_casos_alerta
+from core.analisis.alertas import etiqueta_tipo
+
+ETIQUETAS_ESTADO_CASO: dict[str, str] = {
+    "abierto": "Abierto",
+    "en_analisis": "En análisis",
+    "resuelto": "Resuelto",
+    "descartado": "Descartado",
+}
 
 st.title("📌 Casos de alertas")
 st.caption("Asigná, documentá y cerrá cada alerta relevante sin perder su evidencia.")
@@ -26,11 +34,11 @@ try:
     filas = [
         {
             "Clave": clave,
-            "Tipo": tipo,
+            "Tipo": etiqueta_tipo(tipo),
             "Severidad": severidad,
             "Mensaje": mensaje,
             "Concepto": concepto or "—",
-            "Estado": estado,
+            "Estado": ETIQUETAS_ESTADO_CASO.get(estado, estado),
             "Responsable": responsable or "—",
             "Vencimiento": vencimiento or "—",
             "Evidencia": evidencia or "—",
@@ -48,15 +56,19 @@ try:
         ) in casos
     ]
     st.dataframe(filas, width="stretch", hide_index=True)
-    por_clave = {f"{tipo} · {mensaje[:70]}": clave for clave, tipo, _sev, mensaje, *_ in casos}
+    por_clave = {
+        f"{etiqueta_tipo(tipo)} · {mensaje[:70]}": clave for clave, tipo, _sev, mensaje, *_ in casos
+    }
     seleccion = st.selectbox("Caso a actualizar", list(por_clave))
     clave = por_clave[seleccion]
     actual = next(caso for caso in casos if caso[0] == clave)
     with st.form(f"caso_{clave}"):
+        estados_caso = list(ETIQUETAS_ESTADO_CASO)
         estado = st.selectbox(
             "Estado",
-            ["abierto", "en_analisis", "resuelto", "descartado"],
-            index=["abierto", "en_analisis", "resuelto", "descartado"].index(actual[5]),
+            estados_caso,
+            index=estados_caso.index(actual[5]),
+            format_func=lambda e: ETIQUETAS_ESTADO_CASO[e],
         )
         responsable = st.text_input("Responsable", value=actual[6] or "")
         vencimiento = st.text_input("Vencimiento (YYYY-MM-DD)", value=actual[7] or "")

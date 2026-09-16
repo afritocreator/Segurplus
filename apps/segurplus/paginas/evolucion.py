@@ -39,12 +39,16 @@ from core.analisis.agregacion import (
 )
 from core.analisis.alertas import (
     alertas_por_periodo_faltante,
+    etiqueta_tipo,
     generar_alertas,
     ordenar_por_severidad,
 )
 from core.analisis.real import inflacion_del_periodo, variacion_real
 from core.analisis.serie import serie_nominal_y_real
 from core.analisis.variacion import (
+    ETIQUETA_EFECTO_CANTIDAD,
+    ETIQUETA_EFECTO_CRUZADO,
+    ETIQUETA_EFECTO_PRECIO,
     descomponer_conceptos,
     efecto_dominante,
     top_conceptos_por_variacion,
@@ -263,8 +267,18 @@ with st.container(border=True):
         delta=f"{pesos_ars(total_1 - total_0, signo=True)} (variación nominal)",
     )
     if vr is not None:
-        col_c.metric("Variación real (descontado el IPC)", f"{vr.variacion_real_pct:+.1%}")
-    col_d.metric("Inflación del período", f"{ipc_periodo_pct:+.1%}")
+        col_c.metric(
+            "Variación real (descontado el IPC)",
+            f"{vr.variacion_real_pct:+.1%}",
+            help="Cuánto cambió el gasto una vez descontada la inflación del período -- "
+            "si el precio subió en línea con la inflación, la variación real es 0%.",
+        )
+    col_d.metric(
+        "Inflación del período",
+        f"{ipc_periodo_pct:+.1%}",
+        help="La variación nominal (arriba) es el cambio en pesos corrientes, sin "
+        "descontar esta inflación.",
+    )
 
     # Frase de veredicto: la respuesta literal a la pregunta que motivó el
     # proyecto ("¿aumentó por cantidad o por precio?"), hoy solo deducible
@@ -291,10 +305,15 @@ with st.container(border=True):
         st.caption("No hubo variación nominal entre los períodos seleccionados.")
 
 tab_descomposicion, tab_composicion, tab_serie, tab_alertas, tab_detalle = st.tabs(
-    ["Descomposición", "Composición total", "Serie histórica", "Alertas", "Detalle"]
+    ["Precio vs. cantidad", "Todos los conceptos", "Serie histórica", "Alertas", "Detalle"]
 )
 
 with tab_descomposicion:
+    st.caption(
+        "Qué explica el cambio del gasto en cada concepto: ¿subió el precio, subió el "
+        "consumo, o los dos a la vez? El **efecto combinado** es la parte que no se puede "
+        "atribuir a uno solo -- precio y cantidad cambiaron juntos."
+    )
     principales = top_conceptos_por_variacion(descomposiciones, TOP_N_CONCEPTOS)
     if len(principales) < len(descomposiciones):
         st.caption(
@@ -304,11 +323,15 @@ with tab_descomposicion:
     fig = go.Figure()
     conceptos_orden = [etiqueta_legible(d.concepto) for d in principales]
     fig.add_bar(
-        name="Efecto cantidad", x=conceptos_orden, y=[d.efecto_cantidad for d in principales]
+        name=ETIQUETA_EFECTO_CANTIDAD, x=conceptos_orden, y=[d.efecto_cantidad for d in principales]
     )
-    fig.add_bar(name="Efecto precio", x=conceptos_orden, y=[d.efecto_precio for d in principales])
-    fig.add_bar(name="Efecto cruzado", x=conceptos_orden, y=[d.efecto_cruzado for d in principales])
-    fig.update_layout(barmode="relative", title="Descomposición de la variación por concepto")
+    fig.add_bar(
+        name=ETIQUETA_EFECTO_PRECIO, x=conceptos_orden, y=[d.efecto_precio for d in principales]
+    )
+    fig.add_bar(
+        name=ETIQUETA_EFECTO_CRUZADO, x=conceptos_orden, y=[d.efecto_cruzado for d in principales]
+    )
+    fig.update_layout(barmode="relative", title="Precio vs. cantidad, por concepto")
     aplicar_estilo(fig)
     st.plotly_chart(fig, width="stretch")
 
@@ -385,7 +408,7 @@ with tab_alertas:
             f"⚪ {conteo['baja']} baja(s)"
         )
         for a in ordenadas:
-            texto = f"**{a.tipo}**: {a.mensaje}"
+            texto = f"**{etiqueta_tipo(a.tipo)}**: {a.mensaje}"
             if a.severidad == "alta":
                 st.error(texto, icon="🔴")
             elif a.severidad == "media":
@@ -404,8 +427,8 @@ with tab_detalle:
                 "Precio (base)": d.precio_0,
                 "Cantidad (comparado)": d.cantidad_1,
                 "Precio (comparado)": d.precio_1,
-                "Efecto cantidad": d.efecto_cantidad,
-                "Efecto precio": d.efecto_precio,
+                ETIQUETA_EFECTO_CANTIDAD: d.efecto_cantidad,
+                ETIQUETA_EFECTO_PRECIO: d.efecto_precio,
                 "Variación total": d.variacion_total,
             }
             for d in descomposiciones

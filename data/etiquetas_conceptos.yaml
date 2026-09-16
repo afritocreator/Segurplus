@@ -1,0 +1,17 @@
+# Texto humano para cada concepto_normalizado -- SOLO para mostrar (tablero,
+# Excel), nunca como clave de agrupamiento ni de unión (esa sigue siendo el
+# slug de data/conceptos/*.yaml). Ver core.analisis.agregacion.etiqueta_legible.
+#
+# Cómo agregar uno nuevo: cuando agregues un concepto_normalizado nuevo en
+# data/conceptos/*.yaml, agregá acá su etiqueta -- test tripwire en
+# tests/analisis/test_agregacion.py que avisa si falta.
+
+consumo_agua: Consumo de agua
+alquiler: Alquiler
+cargo_fijo: Cargo fijo
+consumo_energia: Consumo de energía
+consumo_gas: Consumo de gas
+premio_seguro: Prima de seguro
+servicio_telefonia: Servicio de telefonía
+abono_movil: Abono móvil
+consumo_datos: Consumo de datos

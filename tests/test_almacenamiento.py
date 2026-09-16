@@ -953,6 +953,22 @@ def test_metricas_por_proveedor_cuenta_rechazadas_y_no_sus_conceptos(tmp_path):
     con.close()
 
 
+def test_metricas_por_proveedor_no_cuenta_borradores_como_cargadas(tmp_path):
+    """Un borrador todavía no fue confirmado por el usuario (ver
+    core.pipeline.confirmar_factura) -- "Facturas cargadas" en la pantalla
+    "Conceptos sin clasificar" no debe contarlo como si ya hubiera entrado
+    al circuito."""
+    con = conectar(tmp_path / "test.duckdb")
+    aprobada = _factura("aprobada")
+    guardar_factura(con, aprobada, estado="aprobada")
+    borrador = _factura("un_borrador")
+    guardar_factura(con, borrador, estado="borrador")
+
+    filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
+    assert filas["Movistar"][1] == 1  # facturas_cargadas: solo la aprobada
+    con.close()
+
+
 def test_motivos_cuarentena_por_proveedor_desglosa_cada_motivo(tmp_path):
     con = conectar(tmp_path / "test.duckdb")
     factura = _factura("rota_dos_motivos")

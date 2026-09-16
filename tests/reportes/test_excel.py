@@ -32,7 +32,7 @@ def test_genera_excel_con_hojas_y_totales_correctos():
 
     assert resultado is buffer
     wb = load_workbook(buffer)
-    assert wb.sheetnames == ["Resumen", "Descomposición", "Alertas", "Cuarentena"]
+    assert wb.sheetnames == ["Resumen", "Precio vs. cantidad", "Alertas", "Cuarentena (histórico)"]
 
     ws_resumen = wb["Resumen"]
     # total_0 = 4*2500 = 10000, total_1 = 6*2800 = 16800, variación = 6800
@@ -43,16 +43,18 @@ def test_genera_excel_con_hojas_y_totales_correctos():
     assert ws_resumen.cell(row=7, column=2).value == 1  # 1 alerta
     assert ws_resumen.cell(row=8, column=2).value == 1  # 1 en cuarentena
 
-    ws_desc = wb["Descomposición"]
-    assert ws_desc.cell(row=4, column=1).value == "abono_movil"
+    ws_desc = wb["Precio vs. cantidad"]
+    # "abono_movil" es un slug ya homologado -- etiqueta_legible lo traduce
+    # (data/conceptos/etiquetas.yaml), nunca queda crudo en un reporte al cliente.
+    assert ws_desc.cell(row=4, column=1).value == "Abono móvil"
     assert ws_desc.cell(row=4, column=6).value == 5000.0  # efecto cantidad, calculado a mano
     assert ws_desc.cell(row=4, column=7).value == 1200.0  # efecto precio
     assert ws_desc.cell(row=4, column=9).value == 6800.0  # variación total
 
     ws_alertas = wb["Alertas"]
-    assert ws_alertas.cell(row=4, column=2).value == "salto_de_cantidad"
+    assert ws_alertas.cell(row=4, column=2).value == "Salto brusco de cantidad"
 
-    ws_cuarentena = wb["Cuarentena"]
+    ws_cuarentena = wb["Cuarentena (histórico)"]
     assert ws_cuarentena.cell(row=4, column=1).value == "factura_rota.pdf"
 
 
@@ -69,7 +71,9 @@ def test_sin_alertas_ni_cuarentena_dice_explicitamente_que_no_hay():
     )
     wb = load_workbook(buffer)
     assert "Sin alertas" in wb["Alertas"].cell(row=4, column=1).value
-    assert "No hay facturas en cuarentena" in wb["Cuarentena"].cell(row=4, column=1).value
+    assert (
+        "No hay facturas en cuarentena" in wb["Cuarentena (histórico)"].cell(row=4, column=1).value
+    )
 
 
 def test_escribe_a_ruta_de_archivo(tmp_path):
