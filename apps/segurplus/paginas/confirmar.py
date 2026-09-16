@@ -18,7 +18,13 @@ import pandas as pd
 import streamlit as st
 
 from apps.segurplus.autenticacion import requerir_rol, usuario_actual
-from core.almacenamiento import conectar, descartar_borrador, leer_borrador, listar_borradores
+from core.almacenamiento import (
+    conectar,
+    descartar_borrador,
+    guardar_factura,
+    leer_borrador,
+    listar_borradores,
+)
 from core.analisis.diccionario import cargar_diccionario
 from core.evidencia import leer_pdf
 from core.extraccion.esquema import (
@@ -353,7 +359,7 @@ try:
                 razones.extend(resultado.motivos_de_falla())
             st.warning("No se puede confirmar todavía -- " + "; ".join(razones) + ".")
 
-        col_confirmar, col_descartar = st.columns(2)
+        col_confirmar, col_guardar, col_descartar = st.columns(3)
         with col_confirmar:
             confirmar_clic = st.button(
                 "Confirmar factura",
@@ -378,6 +384,25 @@ try:
                     '"Revisar facturas" antes de impactar (data/operacion.yaml).'
                 )
             st.rerun()
+
+        with col_guardar:
+            # D-10: mitigación acotada a la pérdida de trabajo a mitad de
+            # corregir -- todo el estado del formulario vive en
+            # st.session_state, así que cerrar la pestaña o que la app se
+            # duerma (Streamlit Community Cloud, por inactividad) perdía
+            # lo tipeado. No pasa por confirmar_factura ni su validación:
+            # es explícitamente "dejalo a medio corregir, seguís después".
+            if st.button("Guardar cambios sin confirmar", key=f"guardar_borrador_{hash_pdf}"):
+                guardar_factura(
+                    con,
+                    factura_editada,
+                    estado="borrador",
+                    texto_extraido=datos["texto_extraido"],
+                    motivo_carga=datos["motivo_carga"],
+                    actor=usuario_actual(),
+                )
+                st.success("Cambios guardados -- sigue como borrador.")
+                st.rerun()
 
         with col_descartar:
             with st.popover("Descartar borrador"):

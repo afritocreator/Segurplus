@@ -211,6 +211,35 @@ def test_descartar_borrador_lo_saca_de_la_lista(tmp_path, monkeypatch):
     assert fila is None
 
 
+def test_guardar_sin_confirmar_mantiene_el_estado_borrador(tmp_path, monkeypatch):
+    """D-10: mitigación acotada a la pérdida de trabajo a mitad de
+    corregir -- guarda lo que hay en el formulario sin pasar por
+    confirmar_factura, la factura sigue en 'borrador' y sigue apareciendo
+    acá para retomarla después."""
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(
+        con,
+        _factura(),
+        estado="borrador",
+        texto_extraido="TOTAL A PAGAR $ 12.100,00",
+        motivo_carga="No se pudo leer con Gemini: timeout",
+    )
+    con.close()
+
+    at = _app()
+    at.run()
+    at.get_by_key("guardar_borrador_b1").click().run()
+
+    assert not at.exception
+    con = conectar(tmp_path / "test.duckdb")
+    fila = con.execute(
+        "SELECT estado, texto_extraido, motivo_carga FROM facturas WHERE hash_pdf = 'b1'"
+    ).fetchone()
+    con.close()
+    assert fila == ("borrador", "TOTAL A PAGAR $ 12.100,00", "No se pudo leer con Gemini: timeout")
+
+
 def test_confirmar_una_factura_que_cierra_la_saca_de_borradores(tmp_path, monkeypatch):
     monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
     con = conectar(tmp_path / "test.duckdb")
