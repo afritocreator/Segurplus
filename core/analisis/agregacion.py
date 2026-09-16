@@ -26,15 +26,33 @@ RUTA_ETIQUETAS_CONCEPTO = Path(__file__).resolve().parents[2] / "data" / "etique
 # escribir el test de esta función -- ver tests/analisis/test_diccionario.py).
 
 
+_cache_etiquetas: tuple[float, dict[str, str]] | None = None
+
+
 def _leer_etiquetas_concepto() -> dict[str, str]:
-    """Sin cache y sin lectura a nivel de módulo, a propósito -- mismo patrón
-    que `core.analisis.alertas._leer_umbrales`: un YAML corrupto o faltante
-    no debe tumbar el import ni la app Streamlit."""
+    """Sin lectura a nivel de módulo, a propósito -- mismo patrón que
+    `core.analisis.alertas._leer_umbrales`: un YAML corrupto o faltante no
+    debe tumbar el import ni la app Streamlit.
+
+    SÍ cachea (docs/auditoria-2026-09-confirmacion.md, D-16): esta función
+    se llama una vez por concepto en el gráfico, la tabla Detalle y el
+    Excel -- sin cache, abrir y parsear el mismo YAML de 9 líneas en cada
+    llamada medía ~576 µs cada una. La invalidación es por `mtime` del
+    archivo, no por tiempo: si el archivo no cambió, no se vuelve a leer;
+    si cambió (se editó `data/etiquetas_conceptos.yaml`), se relee en la
+    próxima llamada -- nunca sirve una copia vieja a propósito."""
+    global _cache_etiquetas
     try:
-        datos = yaml.safe_load(RUTA_ETIQUETAS_CONCEPTO.read_text(encoding="utf-8"))
+        mtime = RUTA_ETIQUETAS_CONCEPTO.stat().st_mtime
     except OSError:
         return {}
-    return datos if isinstance(datos, dict) else {}
+    if _cache_etiquetas is None or _cache_etiquetas[0] != mtime:
+        try:
+            datos = yaml.safe_load(RUTA_ETIQUETAS_CONCEPTO.read_text(encoding="utf-8"))
+        except OSError:
+            return {}
+        _cache_etiquetas = (mtime, datos if isinstance(datos, dict) else {})
+    return _cache_etiquetas[1]
 
 
 @dataclass
@@ -108,10 +126,21 @@ def etiqueta_legible(etiqueta: str) -> str:
     descripción cruda vista" -- si lo fuera, dos períodos del mismo concepto
     sin homologar volverían a mostrar (y a agruparse detrás de una capa
     "bonita") como dos cosas distintas, reintroduciendo el mismo bug que
-    `_clave` soluciona."""
+    `_clave` soluciona.
+
+    docs/auditoria-2026-09-confirmacion.md, D-2: cuando el concepto tiene
+    unidad, `_etiqueta` le agrega el sufijo `" [unidad]"` -- la clave real
+    de un consumo de energía en kWh es `"consumo_energia [kwh]"`, no
+    `"consumo_energia"`. Antes se buscaba la etiqueta ENTERA en el YAML
+    (nunca matcheaba) y el caso más común -- cualquier consumo medido,
+    justo lo que motivó este proyecto -- seguía mostrando el slug crudo.
+    El sufijo se separa antes de buscar y se reatacha tal cual."""
     if etiqueta.startswith(PREFIJO_SIN_HOMOLOGAR):
         resto = etiqueta[len(PREFIJO_SIN_HOMOLOGAR) :]
         return PREFIJO_SIN_HOMOLOGAR + (resto[:1].upper() + resto[1:] if resto else resto)
+    if etiqueta.endswith("]") and " [" in etiqueta:
+        concepto, _, resto_unidad = etiqueta.rpartition(" [")
+        return f"{_leer_etiquetas_concepto().get(concepto, concepto)} [{resto_unidad}"
     return _leer_etiquetas_concepto().get(etiqueta, etiqueta)
 
 

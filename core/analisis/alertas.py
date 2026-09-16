@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from core.analisis.agregacion import etiqueta_legible
 from core.analisis.variacion import DescomposicionVariacion
 from core.extraccion.esquema import FacturaExtraida
 from core.formato import pesos_ars
@@ -87,7 +88,9 @@ def alertas_por_concepto_nuevo_o_desaparecido(
                 Alerta(
                     tipo="concepto_nuevo",
                     severidad="media",
-                    mensaje=f'Concepto nuevo: "{d.concepto}" ({pesos_ars(d.total_1)})',
+                    mensaje=(
+                        f'Concepto nuevo: "{etiqueta_legible(d.concepto)}" ({pesos_ars(d.total_1)})'
+                    ),
                     concepto=d.concepto,
                 )
             )
@@ -96,7 +99,7 @@ def alertas_por_concepto_nuevo_o_desaparecido(
                 Alerta(
                     tipo="concepto_desaparecido",
                     severidad="baja",
-                    mensaje=f'Concepto que dejó de facturarse: "{d.concepto}"',
+                    mensaje=f'Concepto que dejó de facturarse: "{etiqueta_legible(d.concepto)}"',
                     concepto=d.concepto,
                 )
             )
@@ -134,8 +137,8 @@ def alertas_por_salto_de_cantidad(
                     tipo="salto_de_cantidad",
                     severidad="media",
                     mensaje=(
-                        f'"{d.concepto}": cantidad pasó de {d.cantidad_0:g} a {d.cantidad_1:g} '
-                        f"({variacion_cantidad:+.0%})"
+                        f'"{etiqueta_legible(d.concepto)}": cantidad pasó de {d.cantidad_0:g} a '
+                        f"{d.cantidad_1:g} ({variacion_cantidad:+.0%})"
                     ),
                     concepto=d.concepto,
                 )
@@ -174,8 +177,9 @@ def alertas_por_precio_sobre_ipc(
                     tipo="precio_sobre_ipc",
                     severidad="alta",
                     mensaje=(
-                        f'"{d.concepto}": precio unitario subió {variacion_precio_pct:.1%}, '
-                        f"{exceso_pp:.1f} puntos reales por encima de la inflación del período"
+                        f'"{etiqueta_legible(d.concepto)}": precio unitario subió '
+                        f"{variacion_precio_pct:.1%}, {exceso_pp:.1f} puntos reales por "
+                        "encima de la inflación del período"
                     ),
                     concepto=d.concepto,
                 )

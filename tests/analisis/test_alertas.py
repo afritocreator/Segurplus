@@ -334,3 +334,49 @@ def test_etiqueta_tipo_traduce_los_siete_tipos_conocidos():
 
 def test_etiqueta_tipo_devuelve_el_slug_si_es_desconocido():
     assert etiqueta_tipo("tipo_nuevo_sin_traducir") == "tipo_nuevo_sin_traducir"
+
+
+# --- D-13: el nombre del concepto, traducido DENTRO del mensaje -----------
+
+
+def test_salto_de_cantidad_traduce_el_concepto_en_el_mensaje():
+    d = descomponer_variacion(
+        "abono_movil", cantidad_0=4, precio_0=2500, cantidad_1=6, precio_1=2500
+    )
+    mensaje = alertas_por_salto_de_cantidad([d])[0].mensaje
+    assert "Abono móvil" in mensaje
+    assert "abono_movil" not in mensaje
+
+
+def test_concepto_nuevo_traduce_el_concepto_en_el_mensaje():
+    d = descomponer_variacion(
+        "consumo_datos", cantidad_0=0, precio_0=50, cantidad_1=10, precio_1=50
+    )
+    mensaje = alertas_por_concepto_nuevo_o_desaparecido([d])[0].mensaje
+    assert "Consumo de datos" in mensaje
+
+
+def test_concepto_desaparecido_traduce_el_concepto_en_el_mensaje():
+    d = descomponer_variacion(
+        "servicio_telefonia", cantidad_0=1, precio_0=5000, cantidad_1=0, precio_1=5000
+    )
+    mensaje = alertas_por_concepto_nuevo_o_desaparecido([d])[0].mensaje
+    assert "Servicio de telefonía" in mensaje
+
+
+def test_precio_sobre_ipc_traduce_el_concepto_en_el_mensaje():
+    d = descomponer_variacion(
+        "premio_seguro", cantidad_0=1, precio_0=100, cantidad_1=1, precio_1=120
+    )
+    mensaje = alertas_por_precio_sobre_ipc([d], ipc_periodo_pct=0.10)[0].mensaje
+    assert "Prima de seguro" in mensaje
+
+
+def test_alerta_con_concepto_desconocido_no_rompe_el_mensaje():
+    """etiqueta_legible cae al slug crudo si no está en el YAML -- no debe
+    tirar una excepción y tumbar el cálculo de alertas."""
+    d = descomponer_variacion(
+        "concepto_no_mapeado", cantidad_0=4, precio_0=2500, cantidad_1=6, precio_1=2500
+    )
+    mensaje = alertas_por_salto_de_cantidad([d])[0].mensaje
+    assert "concepto_no_mapeado" in mensaje

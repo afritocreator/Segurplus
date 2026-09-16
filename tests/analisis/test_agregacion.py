@@ -257,3 +257,46 @@ def test_etiquetas_concepto_cubre_todos_los_slugs_reales():
     etiquetas = yaml.safe_load(RUTA_ETIQUETAS_CONCEPTO.read_text(encoding="utf-8"))
     faltantes = slugs_reales - set(etiquetas)
     assert not faltantes, f"Faltan etiquetas para: {faltantes}"
+
+
+def test_etiqueta_legible_traduce_concepto_con_unidad():
+    """docs/auditoria-2026-09-confirmacion.md, D-2: la clave real de un
+    consumo medido lleva el sufijo " [unidad]" (`_etiqueta`) -- antes se
+    buscaba la etiqueta ENTERA en el YAML, nunca matcheaba, y el caso más
+    común (cualquier consumo con unidad: energía, gas, datos) seguía
+    mostrando el slug crudo."""
+    assert etiqueta_legible("consumo_energia [kwh]") == "Consumo de energía [kwh]"
+    assert etiqueta_legible("consumo_datos [gb]") == "Consumo de datos [gb]"
+
+
+def test_etiqueta_legible_con_unidad_y_slug_desconocido_no_rompe():
+    assert etiqueta_legible("concepto_nuevo [gb]") == "concepto_nuevo [gb]"
+
+
+def test_etiqueta_legible_sin_homologar_con_unidad_sigue_capitalizando():
+    assert (
+        etiqueta_legible("(sin_homologar) cargo raro [kwh]") == "(sin_homologar) Cargo raro [kwh]"
+    )
+
+
+def test_etiqueta_legible_cachea_y_se_invalida_por_mtime(tmp_path, monkeypatch):
+    """D-16: sin cache, esta función abre y parsea el YAML en cada llamada
+    (una por fila del gráfico/tabla/Excel) -- se cachea por `mtime` del
+    archivo, así que un cambio real en el YAML se ve en la próxima llamada,
+    pero un YAML sin tocar no se relee."""
+    import time
+
+    import core.analisis.agregacion as agregacion_mod
+
+    ruta = tmp_path / "etiquetas.yaml"
+    ruta.write_text("abono_movil: Abono móvil\n", encoding="utf-8")
+    monkeypatch.setattr(agregacion_mod, "RUTA_ETIQUETAS_CONCEPTO", ruta)
+    monkeypatch.setattr(agregacion_mod, "_cache_etiquetas", None)
+
+    assert etiqueta_legible("abono_movil") == "Abono móvil"
+
+    # mtime tiene resolución de hasta 1s en algunos sistemas de archivos.
+    time.sleep(1.01)
+    ruta.write_text("abono_movil: Abono móvil (renombrado)\n", encoding="utf-8")
+
+    assert etiqueta_legible("abono_movil") == "Abono móvil (renombrado)"
