@@ -88,6 +88,12 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
     borradores = [r for r in resultados if r.estado == "borrador"]
     repetidas = [r for r in resultados if r.estado == "ya_procesada"]
     errores = [r for r in resultados if r.estado == "error_extraccion"]
+    # docs/auditoria-2026-09-confirmacion.md, D-8: un borrador CON detalle
+    # es uno que procesar_pdf no pudo leer del todo (Gemini falló, o no se
+    # pudo guardar el PDF como evidencia) -- sigue siendo confirmable, pero
+    # antes se anunciaba solo en verde junto con los que salieron limpios,
+    # sin decir que vino vacío.
+    borradores_con_problema = [r for r in borradores if r.detalle]
 
     col_b, col_r, col_e = st.columns(3)
     col_b.metric("Listas para confirmar", len(borradores))
@@ -107,6 +113,13 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
             # st.navigation (streamlit_app.py) -- no pasa en producción,
             # pero sí al testear esta página standalone con AppTest.
             st.caption('Andá a "Confirmar carga" para revisarlas.')
+    if borradores_con_problema:
+        st.warning(
+            f"{len(borradores_con_problema)} factura(s) tuvieron un problema al cargar "
+            '(quedaron como borrador, revisalas en "Confirmar carga"):'
+        )
+        for r in borradores_con_problema:
+            st.write(f"- **{r.ruta.name}**: {r.detalle}")
     if repetidas:
         st.info(f"{len(repetidas)} factura(s) ya estaban procesadas (se ignoraron).")
     if errores:

@@ -382,8 +382,9 @@ try:
         with col_descartar:
             with st.popover("Descartar borrador"):
                 st.caption(
-                    "Borra este borrador por completo -- se puede volver a subir el mismo "
-                    "PDF después para reprocesarlo."
+                    "Borra este borrador por completo. Si Gemini no pudo leerla bien, "
+                    "esta es la forma de que la vuelva a intentar: después de descartar, "
+                    'subí el mismo PDF de nuevo en "Cargar facturas".'
                 )
                 if st.button("Sí, descartar", key=f"descartar_{hash_pdf}"):
                     descartar_borrador(con, hash_pdf)

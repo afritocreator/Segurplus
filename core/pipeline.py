@@ -195,14 +195,18 @@ def procesar_pdf(
         # guarda igual como borrador, con el texto extraído como respaldo
         # visual (ver apps/segurplus/paginas/confirmar.py) en vez del PDF.
         factura.ruta_evidencia = None
+        motivo = f"No se pudo guardar el PDF como evidencia: {exc}"
         guardar_factura(
             con,
             factura,
             estado="borrador",
-            motivo_carga=f"No se pudo guardar el PDF como evidencia: {exc}",
+            motivo_carga=motivo,
             texto_extraido=documento.texto,
         )
-        return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador")
+        # D-8: se propaga el detalle -- este borrador SÍ tiene los datos que
+        # leyó Gemini (no está vacío), pero cargar.py necesita poder avisar
+        # igual que el PDF de evidencia no quedó guardado.
+        return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=motivo)
 
     guardar_factura(con, factura, estado="borrador", texto_extraido=documento.texto)
     return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador")

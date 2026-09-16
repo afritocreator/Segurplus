@@ -429,6 +429,26 @@ def test_borrador_guarda_el_texto_extraido(tmp_path, monkeypatch):
     con.close()
 
 
+def test_fallo_al_guardar_evidencia_propaga_el_detalle(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-confirmacion.md, D-8: Gemini SÍ pudo leer la
+    factura, pero el PDF no se pudo guardar como evidencia (disco lleno,
+    S3 caído) -- antes `ResultadoPipeline.detalle` quedaba vacío en este
+    caso, así que `cargar.py` no podía avisar de qué se trataba."""
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "guardar_pdf", lambda *a, **k: (_ for _ in ()).throw(OSError("disco lleno"))
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "borrador"
+    assert "disco lleno" in resultado.detalle
+    con.close()
+
+
 # --- confirmar_factura: la última puerta antes de que algo impacte --------
 
 
