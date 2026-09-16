@@ -12,7 +12,13 @@ import pytest
 
 import core.pipeline as pipeline_mod
 from core.almacenamiento import conectar, guardar_factura
-from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto
+from core.extraccion.esquema import (
+    Concepto,
+    FacturaExtraida,
+    Impuesto,
+    conceptos_desde_filas,
+    montos_desde_filas,
+)
 from core.pipeline import confirmar_factura, procesar_pdf
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "fixtures" / "sintetico"
@@ -105,6 +111,27 @@ def test_factura_valida_queda_como_borrador(tmp_path, monkeypatch):
         "SELECT emisor, total, estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
     assert fila == ("Comunicaciones Sur S.A.", 12584.0, "borrador")
+    con.close()
+
+
+def test_borrador_es_invisible_para_el_analisis_antes_de_confirmar(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-confirmacion.md, D-19: el invariante central
+    que reemplazó a la cuarentena -- "un borrador no aparece en el
+    análisis" -- solo estaba probado indirectamente (los tests de punta a
+    punta comprueban que aparece DESPUÉS de confirmar, nunca que NO
+    aparece ANTES)."""
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert resultado.estado == "borrador"
+
+    from core.almacenamiento import listar_facturas_aprobadas, totales_por_periodo
+
+    assert totales_por_periodo(con, servicio="telefonia") == {}
+    assert listar_facturas_aprobadas(con) == []
     con.close()
 
 
@@ -910,6 +937,59 @@ def test_de_punta_a_punta_factura_rota_se_corrige_y_confirma(tmp_path, monkeypat
         "SELECT 1 FROM cuarentena WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
     assert en_cuarentena is None  # nunca pasó por ahí
+    con.close()
+
+
+def test_de_punta_a_punta_editar_como_lo_haria_el_editor_y_confirmar(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-confirmacion.md, D-20: a diferencia del test
+    de arriba (que arma la factura corregida con `Concepto(...)` directo),
+    este pasa por `conceptos_desde_filas`/`montos_desde_filas` con filas en
+    la forma EXACTA que deja `st.data_editor` en `confirmar.py`
+    (`list[dict]`, con una fila vacía de más como agrega el editor
+    dinámico) -- exactamente el camino donde vivía D-1 (una fila vacía que
+    colaba un concepto llamado "nan")."""
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_rota())
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "rota_importe_no_cierra.pdf", con, api_key="fake")
+    assert resultado.estado == "borrador"
+
+    filas_conceptos_del_editor = [
+        {
+            "descripcion": "Abono 5 líneas móviles",
+            "cantidad": 5.0,
+            "unidad": "línea",
+            "precio_unitario": 100.0,
+            "importe": 500.0,  # corregido: antes decía 800.0
+        },
+        # Fila extra vacía, como deja un editor dinámico sin usar:
+        {
+            "descripcion": float("nan"),
+            "cantidad": float("nan"),
+            "unidad": None,
+            "precio_unitario": float("nan"),
+            "importe": float("nan"),
+        },
+    ]
+    filas_impuestos_del_editor = [{"nombre": "IVA 21%", "importe": 105.0}]
+
+    corregida = replace(
+        _factura_rota(),
+        hash_pdf=resultado.hash_pdf,
+        ruta_pdf=str(resultado.ruta),
+        conceptos=conceptos_desde_filas(filas_conceptos_del_editor),
+        impuestos=montos_desde_filas(filas_impuestos_del_editor, Impuesto),
+        subtotal=500.0,
+        total=605.0,
+    )
+
+    estado = confirmar_factura(con, corregida)
+
+    assert estado == "aprobada"
+    fila = con.execute(
+        "SELECT count(*), sum(importe) FROM conceptos WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    assert fila == (1, 500.0)  # UN concepto, con el importe CORREGIDO -- no el original roto
     con.close()
 
 
