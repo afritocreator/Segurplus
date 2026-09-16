@@ -97,3 +97,36 @@ def leer_pdf(ruta_evidencia: str | None) -> bytes | None:
         return Path(ruta_evidencia).read_bytes()
     except OSError:
         return None
+
+
+def borrar_pdf(ruta_evidencia: str | None) -> None:
+    """Borra el PDF original a partir de la URI que devolvió `guardar_pdf`
+    -- usada por `core.almacenamiento.descartar_borrador` (docs/auditoria-
+    2026-09-confirmacion.md, D-11): antes, descartar un borrador borraba
+    las filas de la base pero dejaba el PDF huérfano en el disco del
+    servidor o en el bucket, sin ninguna fila que lo referenciara. Nunca
+    lanza -- si `ruta_evidencia` es `None` (no había evidencia guardada) o
+    el borrado falla por cualquier motivo, no debe bloquear el descarte del
+    borrador en sí."""
+    if not ruta_evidencia:
+        return
+    if ruta_evidencia.startswith("s3://"):
+        try:
+            import boto3
+        except ImportError:
+            return
+        bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
+        try:
+            cliente = boto3.client(
+                "s3",
+                endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
+                region_name=os.environ.get("S3_REGION") or None,
+            )
+            cliente.delete_object(Bucket=bucket, Key=clave)
+        except Exception:  # noqa: BLE001 -- nunca bloquear el descarte por esto
+            return
+        return
+    try:
+        Path(ruta_evidencia).unlink(missing_ok=True)
+    except OSError:
+        pass

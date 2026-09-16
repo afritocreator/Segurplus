@@ -3,7 +3,10 @@ está instalado por defecto, ver pyproject.toml extra "s3")."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from core.evidencia import (
+    borrar_pdf,
     evidencia_durable_configurada,
     guardar_pdf,
     leer_pdf,
@@ -77,3 +80,30 @@ def test_leer_pdf_s3_sin_boto3_devuelve_none_no_lanza():
     # boto3 no está instalado por defecto (ver docstring del módulo) --
     # leer_pdf nunca debe tumbar la pantalla de confirmación por esto.
     assert leer_pdf("s3://mi-bucket/segurplus/documentos/abc123.pdf") is None
+
+
+# --- borrar_pdf: docs/auditoria-2026-09-confirmacion.md, D-11 -------------
+
+
+def test_borrar_pdf_local_borra_el_archivo(tmp_path, monkeypatch):
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.setenv("EVIDENCIA_DIR", str(tmp_path))
+    ruta = guardar_pdf("abc123", b"contenido")
+    assert Path(ruta).exists()
+
+    borrar_pdf(ruta)
+
+    assert not Path(ruta).exists()
+
+
+def test_borrar_pdf_sin_ruta_no_lanza():
+    borrar_pdf(None)
+    borrar_pdf("")
+
+
+def test_borrar_pdf_archivo_inexistente_no_lanza(tmp_path):
+    borrar_pdf(str(tmp_path / "no-existe.pdf"))
+
+
+def test_borrar_pdf_s3_sin_boto3_no_lanza():
+    borrar_pdf("s3://mi-bucket/segurplus/documentos/abc123.pdf")

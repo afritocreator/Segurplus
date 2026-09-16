@@ -2,6 +2,7 @@
 data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -152,6 +153,36 @@ def test_descartar_borrador_libera_el_hash(tmp_path):
 
     assert not factura_ya_procesada(con, "b1")
     assert con.execute("SELECT count(*) FROM conceptos WHERE hash_pdf = 'b1'").fetchone()[0] == 0
+    con.close()
+
+
+def test_descartar_borrador_borra_el_pdf_de_evidencia(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-confirmacion.md, D-11: antes, descartar un
+    borrador borraba las filas de la base pero dejaba el PDF huérfano en
+    el disco -- sin ninguna fila que lo referenciara."""
+    from core.evidencia import guardar_pdf
+
+    evidencia_dir = tmp_path / "evidencia"
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.setenv("EVIDENCIA_DIR", str(evidencia_dir))
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura(hash_pdf="b1")
+    factura.ruta_evidencia = guardar_pdf("b1", b"contenido del pdf")
+    assert Path(factura.ruta_evidencia).exists()
+    guardar_factura(con, factura, estado="borrador")
+
+    descartar_borrador(con, "b1")
+
+    assert not Path(factura.ruta_evidencia).exists()
+    con.close()
+
+
+def test_descartar_borrador_sin_evidencia_no_falla(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(hash_pdf="b1"), estado="borrador")
+
+    descartar_borrador(con, "b1")  # no debe lanzar aunque no haya ruta_evidencia
     con.close()
 
 

@@ -33,6 +33,7 @@ from typing import Any
 import duckdb
 
 from core.analisis.alertas import Alerta
+from core.evidencia import borrar_pdf
 from core.extraccion.esquema import SERVICIOS_CONOCIDOS, FacturaExtraida, _normalizar_fecha
 from core.extraccion.validacion import ResultadoValidacion
 from core.operacion import dias_retencion_intentos_gemini
@@ -561,10 +562,18 @@ def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_p
     `factura_ya_procesada` deja de bloquearlo, así que se puede volver a
     subir el mismo PDF. Solo opera sobre un `'borrador'`: no es la función
     para sacar del análisis una factura ya aprobada (eso es
-    `decision_factura`, que además preserva el historial de auditoría)."""
-    fila = con.execute("SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]).fetchone()
+    `decision_factura`, que además preserva el historial de auditoría).
+
+    docs/auditoria-2026-09-confirmacion.md, D-11: también borra el PDF de
+    evidencia (`core.evidencia.borrar_pdf`) -- antes quedaba huérfano en el
+    disco del servidor o en el bucket, sin ninguna fila que lo
+    referenciara, cada vez que se descartaba un borrador."""
+    fila = con.execute(
+        "SELECT estado, ruta_evidencia FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchone()
     if fila is None or fila[0] != "borrador":
         raise ValueError("Solo se puede descartar una factura en estado borrador.")
+    borrar_pdf(fila[1])
     for tabla in ("conceptos", "impuestos", "recargos", "creditos", "alertas", "facturas"):
         con.execute(f"DELETE FROM {tabla} WHERE hash_pdf = ?", [hash_pdf])
 
