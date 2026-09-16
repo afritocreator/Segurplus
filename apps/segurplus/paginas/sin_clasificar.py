@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+from apps.segurplus.autenticacion import requerir_rol
 from apps.segurplus.estilo import DORADO, aplicar_estilo
 from core.almacenamiento import (
     conceptos_sin_clasificar,
@@ -46,6 +47,12 @@ st.title("🏷️ Conceptos sin clasificar")
 st.caption(
     "Priorizá aliases por importe. Los scores sin medición se separan para no sesgar el histograma."
 )
+# docs/auditoria-2026-09-confirmacion.md, D-24: "Aplicar cambios
+# confirmados" reescribe concepto_normalizado en TODAS las facturas
+# aprobadas -- era la única página que escribe en la base sin ningún
+# requerir_rol. Mismo mínimo que "Revisar facturas" (revisor+), radio de
+# impacto comparable.
+requerir_rol("revisor", "responsable", "administrador")
 
 con = conectar()
 try:

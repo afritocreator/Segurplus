@@ -43,9 +43,22 @@ def _factura_sin_homologar(hash_pdf: str, descripcion: str, importe: float) -> F
 def test_sin_conceptos_sin_clasificar_muestra_exito(tmp_path, monkeypatch):
     monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "vacia.duckdb")
     at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
     at.run()
     assert not at.exception
     assert any("No hay conceptos sin clasificar" in s.value for s in at.success)
+
+
+def test_sin_rol_suficiente_no_puede_ver_la_pagina(tmp_path, monkeypatch):
+    """D-24: era la única página que escribe en la base sin ningún
+    requerir_rol -- "Aplicar cambios confirmados" reescribe
+    concepto_normalizado en TODAS las facturas aprobadas."""
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "vacia.duckdb")
+    at = _app()
+    at.session_state["segurplus_rol"] = "cargador"
+    at.run()
+    assert not at.exception
+    assert any("No tenés permisos" in e.value for e in at.error)
 
 
 @pytest.fixture
@@ -62,12 +75,14 @@ def base_con_conceptos_sin_clasificar(tmp_path, monkeypatch):
 
 def test_pagina_renderiza_sin_errores(base_con_conceptos_sin_clasificar):
     at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
     at.run()
     assert not at.exception
 
 
 def test_pagina_muestra_el_importe_sin_clasificar(base_con_conceptos_sin_clasificar):
     at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
     at.run()
     metricas = {m.label: m.value for m in at.metric}
     assert metricas["Importe sin clasificar"] == "$30.000,00"
@@ -81,6 +96,7 @@ def test_boton_rehomologar_actualiza_concepto(base_con_conceptos_sin_clasificar,
     )
 
     at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
     at.run()
     at.button[0].click().run()  # previsualizar
     at.checkbox[0].check().run()
