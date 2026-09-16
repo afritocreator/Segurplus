@@ -721,6 +721,41 @@ def registrar_correccion(
     _registrar_decision(con, hash_pdf, "correccion", actor, motivo)
 
 
+def registrar_correccion_conocida(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    hash_pdf: str,
+    campo: str,
+    valor_anterior: str | None,
+    valor_nuevo: str | None,
+    motivo: str,
+    actor: str,
+) -> None:
+    """Deja constancia de una corrección cuyo valor anterior y nuevo YA SE
+    CONOCEN -- a diferencia de `registrar_correccion`, no relee la columna
+    de `facturas` (ya cambió) ni renormaliza (los dos valores ya vienen de
+    un `FacturaExtraida` validado). Usada por `core.pipeline.
+    confirmar_factura` (docs/auditoria-2026-09-confirmacion.md, D-4): para
+    cuando se llama, `guardar_factura` ya pisó la fila con el valor nuevo,
+    así que releerla con `registrar_correccion` daría `valor_anterior ==
+    valor_nuevo` -- exactamente el bug que este helper evita."""
+    con.execute(
+        """INSERT INTO correcciones_factura
+           (id, hash_pdf, campo, valor_anterior, valor_nuevo, motivo, actor)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            _id_auditoria(hash_pdf, "correccion"),
+            hash_pdf,
+            campo,
+            valor_anterior,
+            valor_nuevo,
+            motivo,
+            actor,
+        ],
+    )
+    _registrar_decision(con, hash_pdf, "correccion", actor, motivo)
+
+
 def resumen_financiero_factura(
     con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str
 ) -> dict[str, float]:
@@ -789,6 +824,7 @@ def guardar_factura(
     actor: str = "sistema",
     motivo_carga: str | None = None,
     texto_extraido: str | None = None,
+    motivo_decision: str | None = None,
 ) -> None:
     """Guarda una factura y sus conceptos. Para `estado="aprobada"` o
     `"requiere_revision"`, la factura ya está VALIDADA (ver
@@ -807,7 +843,13 @@ def guardar_factura(
     `motivo_carga`: por qué llegó como borrador, cuando la extracción falló
     del todo (`None` en el resto de los casos). `texto_extraido`: el texto
     plano que ya sacó `core.ingesta.pdf_texto.extraer_texto` -- se reusa en
-    la pantalla de confirmación en vez de volver a leer el PDF."""
+    la pantalla de confirmación en vez de volver a leer el PDF.
+
+    `motivo_decision`: reemplaza el motivo por defecto (`f"estado: {estado}"`)
+    del evento que se registra en `decisiones_factura` -- lo usa
+    `core.pipeline.confirmar_factura` (docs/auditoria-2026-09-confirmacion.md,
+    D-4) para dejar constancia de si hubo líneas de conceptos o montos
+    corregidas, además del cambio de estado."""
     if estado not in ESTADOS_FACTURA:
         raise ValueError(f"Estado de factura inválido: {estado}")
     conceptos_normalizados = conceptos_normalizados or {}
@@ -904,7 +946,8 @@ def guardar_factura(
     # antes los dos eventos quedaban indistinguibles en el historial como
     # "carga", incluida la confirmación misma.
     accion = "carga" if estado == "borrador" else "confirmacion"
-    _registrar_decision(con, factura.hash_pdf, accion, actor, f"estado: {estado}")
+    motivo = motivo_decision if motivo_decision is not None else f"estado: {estado}"
+    _registrar_decision(con, factura.hash_pdf, accion, actor, motivo)
 
 
 def conceptos_sin_clasificar(

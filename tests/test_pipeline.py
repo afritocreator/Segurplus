@@ -708,10 +708,94 @@ def test_confirmar_registra_accion_confirmacion_no_carga(tmp_path):
 
     confirmar_factura(con, factura, actor="ana")
 
+    # Filtra "correccion" (D-4: el borrador vacío de _dejar_como_borrador no
+    # tiene ningún dato de cabecera, así que TODOS los campos cambian al
+    # confirmar -- eso ya lo cubre el Bloque 3, acá solo importa carga/confirmacion).
     acciones = con.execute(
-        "SELECT accion, actor FROM decisiones_factura WHERE hash_pdf = 'h1' ORDER BY creado_en"
+        "SELECT accion, actor FROM decisiones_factura "
+        "WHERE hash_pdf = 'h1' AND accion IN ('carga', 'confirmacion') ORDER BY creado_en"
     ).fetchall()
     assert acciones == [("carga", "sistema"), ("confirmacion", "ana")]
+    con.close()
+
+
+# --- D-4: registrar qué corrigió la persona al confirmar ------------------
+
+
+def test_confirmar_registra_correccion_de_cabecera(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(
+        con,
+        replace(_factura_telefonia_julio(), hash_pdf="h1", ruta_pdf="/tmp/x.pdf", emisor="???"),
+        estado="borrador",
+    )
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.emisor = "Comunicaciones Sur S.A."  # corregido a mano en la pantalla
+
+    confirmar_factura(con, factura, actor="ana")
+
+    correccion = con.execute(
+        "SELECT campo, valor_anterior, valor_nuevo, actor, motivo "
+        "FROM correcciones_factura WHERE hash_pdf = 'h1' AND campo = 'emisor'"
+    ).fetchone()
+    assert correccion == (
+        "emisor",
+        "???",
+        "Comunicaciones Sur S.A.",
+        "ana",
+        "corrección al confirmar la carga",
+    )
+    con.close()
+
+
+def test_confirmar_sin_cambios_de_cabecera_no_registra_correccion(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(
+        con,
+        replace(_factura_telefonia_julio(), hash_pdf="h1", ruta_pdf="/tmp/x.pdf"),
+        estado="borrador",
+    )
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    confirmar_factura(con, factura)
+
+    filas = con.execute("SELECT * FROM correcciones_factura WHERE hash_pdf = 'h1'").fetchall()
+    assert filas == []
+    con.close()
+
+
+def test_confirmar_con_linea_editada_deja_la_marca_en_el_motivo(tmp_path):
+    """Los conceptos/impuestos/recargos/créditos no tienen tabla de
+    corrección propia -- si cambiaron, queda la marca en el motivo del
+    evento 'confirmacion'."""
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(
+        con,
+        replace(_factura_telefonia_julio(), hash_pdf="h1", ruta_pdf="/tmp/x.pdf"),
+        estado="borrador",
+    )
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.conceptos[0].importe = 10000.0  # sin cambios reales todavía
+
+    # Corrige de verdad una línea (el precio unitario, no solo el objeto):
+    factura.conceptos[0].precio_unitario = 2600.0
+    factura.conceptos[0].importe = 10400.0
+    factura.subtotal = 10800.0
+    factura.impuestos[0].importe = 2268.0
+    factura.total = 13068.0
+
+    confirmar_factura(con, factura)
+
+    motivo = con.execute(
+        "SELECT motivo FROM decisiones_factura WHERE hash_pdf = 'h1' AND accion = 'confirmacion'"
+    ).fetchone()[0]
+    assert "líneas de conceptos o montos corregidas" in motivo
     con.close()
 
 

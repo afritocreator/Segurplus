@@ -36,6 +36,7 @@ from core.almacenamiento import (
     leer_borrador,
     llamadas_ultima_hora,
     proxima_ventana_libre,
+    registrar_correccion_conocida,
     registrar_intento_gemini,
     sincronizar_casos_de_factura,
 )
@@ -61,6 +62,23 @@ class ResultadoPipeline:
     # ahí no hay nada que mostrar en la pantalla de confirmación.
     estado: str
     detalle: str = ""
+
+
+# Mismo conjunto que acepta core.almacenamiento.registrar_correccion --
+# docs/auditoria-2026-09-confirmacion.md, D-4: son los únicos campos de
+# cabecera para los que existe una forma de dejar constancia de "esto lo
+# corrigió una persona, de esto a esto".
+_CAMPOS_CABECERA_CORREGIBLE = (
+    "emisor",
+    "cuit",
+    "servicio",
+    "periodo_desde",
+    "periodo_hasta",
+    "fecha_emision",
+    "fecha_vencimiento",
+    "numero_comprobante",
+    "moneda",
+)
 
 
 def _borrador_vacio(hash_pdf: str, ruta: Path) -> FacturaExtraida:
@@ -229,7 +247,14 @@ def confirmar_factura(
     `version_prompt`, `version_esquema`) se toman de ahí, NUNCA de `factura`
     -- si el llamador arma el objeto sin ellos (como ya hace algún test con
     `dataclasses.replace`), antes se perdía en silencio el vínculo con el
-    PDF de evidencia."""
+    PDF de evidencia.
+
+    D-4: lo que corrigió la persona al confirmar queda registrado -- los
+    campos de cabecera que cambiaron respecto del borrador, vía
+    `core.almacenamiento.registrar_correccion` (uno por campo, con su valor
+    anterior); las líneas de conceptos/impuestos/recargos/créditos no
+    tienen tabla de corrección propia, así que si cambiaron se deja
+    constancia en el propio motivo del evento "confirmacion"."""
     if factura.periodo_desde is None or factura.servicio is None:
         raise ValueError("No se puede confirmar sin período y servicio.")
 
@@ -251,6 +276,29 @@ def confirmar_factura(
         version_esquema=datos_borrador["version_esquema"],
     )
 
+    # D-4: se compara ANTES de guardar -- después, `datos_borrador` seguiría
+    # disponible en memoria, pero es más claro dejarlo junto a la lectura.
+    # `registrar_correccion` exige que el estado en la base ya sea
+    # aprobada/requiere_revision (docs/auditoria-2026-09-facturas-reales.md,
+    # A-50), así que las llamadas van DESPUÉS de `guardar_factura`.
+    campos_corregidos = [
+        campo
+        for campo in _CAMPOS_CABECERA_CORREGIBLE
+        if getattr(factura, campo) != datos_borrador[campo]
+    ]
+    conceptos_viejos = datos_borrador["conceptos"]
+    conceptos_nuevos = [
+        (c.descripcion, c.cantidad, c.unidad, c.precio_unitario, c.importe)
+        for c in factura.conceptos
+    ]
+    montos_viejos = (
+        datos_borrador["impuestos"] + datos_borrador["recargos"] + datos_borrador["creditos"]
+    )
+    montos_nuevos = [
+        (m.nombre, m.importe) for m in (*factura.impuestos, *factura.recargos, *factura.creditos)
+    ]
+    lineas_corregidas = conceptos_nuevos != conceptos_viejos or montos_nuevos != montos_viejos
+
     diccionario_a_usar = (
         diccionario if diccionario is not None else cargar_diccionario(factura.servicio)
     )
@@ -271,6 +319,9 @@ def confirmar_factura(
             conceptos_normalizados[i] = resultado_homologacion.concepto
 
     estado = "requiere_revision" if revision_humana_obligatoria() else "aprobada"
+    motivo_decision = "confirmado"
+    if lineas_corregidas:
+        motivo_decision += ", con líneas de conceptos o montos corregidas"
     guardar_factura(
         con,
         factura,
@@ -286,7 +337,22 @@ def confirmar_factura(
         # que pasa a ser un dato bueno). Sin esto, confirmar los borraba.
         texto_extraido=datos_borrador["texto_extraido"],
         motivo_carga=datos_borrador["motivo_carga"],
+        motivo_decision=motivo_decision,
     )
+    # D-4: valor_anterior viene de `datos_borrador` (leído ANTES de guardar)
+    # -- `registrar_correccion` releería la columna de `facturas`, que para
+    # este punto ya tiene el valor NUEVO (la pisó `guardar_factura` arriba),
+    # y daría `valor_anterior == valor_nuevo` en cada fila.
+    for campo in campos_corregidos:
+        registrar_correccion_conocida(
+            con,
+            hash_pdf=factura.hash_pdf,
+            campo=campo,
+            valor_anterior=datos_borrador[campo],
+            valor_nuevo=getattr(factura, campo),
+            motivo="corrección al confirmar la carga",
+            actor=actor,
+        )
     # Ítem duplicado se calcula sobre la factura YA CORREGIDA -- si el
     # usuario arregló una descripción que coincidía con otra por error de
     # lectura, esta alerta no debe seguir disparando sobre el dato viejo.
