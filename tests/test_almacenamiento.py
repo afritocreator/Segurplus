@@ -1,6 +1,8 @@
 """Tests del almacenamiento DuckDB contra un archivo temporal (nunca
 data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 
+from dataclasses import replace
+
 import pytest
 
 from core.almacenamiento import (
@@ -10,6 +12,7 @@ from core.almacenamiento import (
     borrar_de_cuarentena,
     conceptos_sin_clasificar,
     conectar,
+    contar_borradores,
     decision_factura,
     descartar_borrador,
     factura_ya_procesada,
@@ -966,6 +969,29 @@ def test_metricas_por_proveedor_no_cuenta_borradores_como_cargadas(tmp_path):
 
     filas = {fila[0]: fila for fila in metricas_por_proveedor(con)}
     assert filas["Movistar"][1] == 1  # facturas_cargadas: solo la aprobada
+    con.close()
+
+
+def test_contar_borradores_cuenta_solo_estado_borrador(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura("aprobada"), estado="aprobada")
+    guardar_factura(con, _factura("borrador1"), estado="borrador")
+    guardar_factura(con, _factura("borrador2"), estado="borrador")
+
+    assert contar_borradores(con) == 2
+    con.close()
+
+
+def test_contar_borradores_respeta_el_filtro_de_servicio(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    borrador_telefonia = _factura("b1")
+    guardar_factura(con, borrador_telefonia, estado="borrador")
+    borrador_gas = replace(_factura("b2"), servicio="gas")
+    guardar_factura(con, borrador_gas, estado="borrador")
+
+    assert contar_borradores(con, servicio="telefonia") == 1
+    assert contar_borradores(con, servicio="gas") == 1
+    assert contar_borradores(con, servicio="agua") == 0
     con.close()
 
 

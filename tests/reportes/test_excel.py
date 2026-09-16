@@ -28,6 +28,7 @@ def test_genera_excel_con_hojas_y_totales_correctos():
         alertas=alertas,
         cuarentena=cuarentena,
         ruta_salida=buffer,
+        borradores_sin_confirmar=2,
     )
 
     assert resultado is buffer
@@ -42,6 +43,7 @@ def test_genera_excel_con_hojas_y_totales_correctos():
     assert ws_resumen.cell(row=6, column=2).value == 1  # 1 concepto
     assert ws_resumen.cell(row=7, column=2).value == 1  # 1 alerta
     assert ws_resumen.cell(row=8, column=2).value == 1  # 1 en cuarentena
+    assert ws_resumen.cell(row=9, column=2).value == 2  # 2 sin confirmar (D-3)
 
     ws_desc = wb["Precio vs. cantidad"]
     # "abono_movil" es un slug ya homologado -- etiqueta_legible lo traduce

@@ -94,3 +94,24 @@ def test_sin_facturas_muestra_mensaje_informativo(tmp_path, monkeypatch):
     at.run()
     assert not at.exception
     assert any("Todavía no hay facturas" in i.value for i in at.info)
+
+
+def test_borrador_pendiente_muestra_aviso(base_con_dos_periodos):
+    """docs/auditoria-2026-09-confirmacion.md, D-3: si hay un borrador sin
+    confirmar de este servicio, el análisis está incompleto -- tiene que
+    avisarse, no solo callar."""
+    con = conectar()
+    guardar_factura(con, _factura("h3", "2026-08-01", "2026-08-31", 4, 2900.0), estado="borrador")
+    con.close()
+
+    at = _app()
+    at.run()
+    assert not at.exception
+    assert any("esperando confirmación" in w.value for w in at.warning)
+
+
+def test_sin_borradores_no_muestra_aviso(base_con_dos_periodos):
+    at = _app()
+    at.run()
+    assert not at.exception
+    assert not any("esperando confirmación" in w.value for w in at.warning)

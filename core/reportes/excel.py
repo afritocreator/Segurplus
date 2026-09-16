@@ -139,13 +139,19 @@ def generar_reporte_excel(
     alertas: list[Alerta],
     cuarentena: list[tuple[str, str]],
     ruta_salida: str | Path | BytesIO,
+    borradores_sin_confirmar: int = 0,
 ) -> Path | BytesIO:
     """Escribe el Excel de una comparación de evolución.
 
     `ruta_salida` acepta una ruta de archivo (str/Path) o un buffer en
     memoria (BytesIO — lo que usa el botón de descarga de Streamlit, sin
     tocar disco). Devuelve la ruta final, o el mismo buffer recibido, ya
-    con el contenido escrito y el cursor al inicio."""
+    con el contenido escrito y el cursor al inicio.
+
+    `borradores_sin_confirmar` (docs/auditoria-2026-09-confirmacion.md,
+    D-3): cuántas facturas de este servicio están esperando confirmación y
+    por lo tanto NO están incluidas en este reporte -- sin esto, un total
+    podía estar incompleto sin ninguna advertencia en el Excel."""
     wb = Workbook()
 
     ws_resumen = wb.active
@@ -163,6 +169,7 @@ def generar_reporte_excel(
         ("Cantidad de conceptos", len(descomposiciones), None),
         ("Cantidad de alertas", len(alertas), None),
         ("En cuarentena (histórico)", len(cuarentena), None),
+        ("Facturas sin confirmar (no incluidas)", borradores_sin_confirmar, None),
     ]
     fila = 3
     for etiqueta, valor, formato in filas_resumen:

@@ -486,6 +486,22 @@ def listar_borradores(
     ).fetchall()
 
 
+def contar_borradores(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, *, servicio: str | None = None
+) -> int:
+    """Cuántas facturas están esperando confirmación -- docs/auditoria-
+    2026-09-confirmacion.md, D-3: sin esto, ni el tablero ni el Excel
+    avisaban que un total podía estar incompleto porque quedaban borradores
+    sin confirmar (la hoja "Cuarentena" que cumplía ese rol dejó de
+    recibir filas nuevas desde el plan de confirmación de carga)."""
+    if servicio is not None:
+        return con.execute(
+            "SELECT count(*) FROM facturas WHERE estado = 'borrador' AND servicio = ?",
+            [servicio],
+        ).fetchone()[0]
+    return con.execute("SELECT count(*) FROM facturas WHERE estado = 'borrador'").fetchone()[0]
+
+
 _CAMPOS_BORRADOR = (
     "ruta_pdf",
     "emisor",

@@ -24,6 +24,7 @@ from core.almacenamiento import (
     alertas_del_periodo,
     componentes_financieros_periodo,
     conectar,
+    contar_borradores,
     recargos_del_periodo,
     sincronizar_casos_alertas,
     totales_por_periodo,
@@ -90,6 +91,16 @@ if not servicios:
 
 with st.sidebar:
     servicio = st.selectbox("Servicio", servicios)
+
+# D-3: sin esto, un total podía estar incompleto (facturas todavía sin
+# confirmar) sin ningún aviso -- la hoja "Cuarentena" que cumplía ese rol
+# dejó de recibir filas nuevas desde el plan de confirmación de carga.
+borradores_pendientes = contar_borradores(con, servicio=servicio)
+if borradores_pendientes:
+    st.warning(
+        f"Hay {borradores_pendientes} factura(s) de {servicio} esperando confirmación -- "
+        'no están incluidas en este análisis. Ver "Confirmar carga".'
+    )
 
 filas_periodos = con.execute(
     "SELECT periodo_desde, max(periodo_hasta) FROM facturas "
@@ -438,7 +449,14 @@ with tab_detalle:
 
 cuarentena_actual = con.execute("SELECT ruta_pdf, motivos FROM cuarentena").fetchall()
 
-clave_excel = (servicio, periodo_0, periodo_1, len(descomposiciones), len(alertas_totales))
+clave_excel = (
+    servicio,
+    periodo_0,
+    periodo_1,
+    len(descomposiciones),
+    len(alertas_totales),
+    borradores_pendientes,
+)
 if st.button("Preparar reporte en Excel"):
     buffer_excel = BytesIO()
     generar_reporte_excel(
@@ -449,6 +467,7 @@ if st.button("Preparar reporte en Excel"):
         alertas=alertas_totales,
         cuarentena=cuarentena_actual,
         ruta_salida=buffer_excel,
+        borradores_sin_confirmar=borradores_pendientes,
     )
     st.session_state["excel_preparado"] = (clave_excel, buffer_excel.getvalue())
 excel_preparado = st.session_state.get("excel_preparado")
