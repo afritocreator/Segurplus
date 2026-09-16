@@ -36,7 +36,7 @@ from core.almacenamiento import (
     resumen_financiero_factura,
     sincronizar_casos_alertas,
 )
-from core.extraccion.esquema import Concepto, FacturaExtraida
+from core.extraccion.esquema import Concepto, FacturaExtraida, Recargo
 from core.extraccion.validacion import validar_factura
 
 
@@ -175,6 +175,37 @@ def test_descartar_borrador_borra_el_pdf_de_evidencia(tmp_path, monkeypatch):
     descartar_borrador(con, "b1")
 
     assert not Path(factura.ruta_evidencia).exists()
+    con.close()
+
+
+def test_recargos_conservan_el_orden_de_guardado(tmp_path):
+    """docs/auditoria-2026-09-confirmacion.md, D-12: sin una columna de
+    orden, un re-guardado (UPSERT) podía devolver las filas en otro orden
+    en PostgreSQL -- st.data_editor aplica las ediciones por POSICIÓN, así
+    que una corrección podía terminar aplicada al recargo equivocado."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura(hash_pdf="b1")
+    factura.recargos = [
+        Recargo("Interés por mora", importe=100.0),
+        Recargo("Refacturación agosto", importe=200.0),
+        Recargo("Interés por mora (segunda vez)", importe=300.0),
+    ]
+    guardar_factura(con, factura, estado="borrador")
+
+    # Re-guardar (UPSERT) con los recargos en OTRO orden en la lista de
+    # Python -- lo que importa es que la base devuelva ESE orden, no el que
+    # tenían las filas anteriores.
+    factura.recargos = list(reversed(factura.recargos))
+    guardar_factura(con, factura, estado="borrador")
+
+    nombres = con.execute(
+        "SELECT nombre FROM recargos WHERE hash_pdf = 'b1' ORDER BY orden"
+    ).fetchall()
+    assert [n[0] for n in nombres] == [
+        "Interés por mora (segunda vez)",
+        "Refacturación agosto",
+        "Interés por mora",
+    ]
     con.close()
 
 

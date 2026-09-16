@@ -101,16 +101,19 @@ CREATE TABLE IF NOT EXISTS recargos (
     nombre VARCHAR,
     importe DOUBLE PRECISION
 );
+ALTER TABLE recargos ADD COLUMN IF NOT EXISTS orden INTEGER;
 CREATE TABLE IF NOT EXISTS impuestos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
     importe DOUBLE PRECISION
 );
+ALTER TABLE impuestos ADD COLUMN IF NOT EXISTS orden INTEGER;
 CREATE TABLE IF NOT EXISTS creditos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
     importe DOUBLE PRECISION
 );
+ALTER TABLE creditos ADD COLUMN IF NOT EXISTS orden INTEGER;
 CREATE TABLE IF NOT EXISTS alertas (
     hash_pdf VARCHAR,
     tipo VARCHAR,
@@ -546,13 +549,13 @@ def leer_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: s
         [hash_pdf],
     ).fetchall()
     datos["impuestos"] = con.execute(
-        "SELECT nombre, importe FROM impuestos WHERE hash_pdf = ?", [hash_pdf]
+        "SELECT nombre, importe FROM impuestos WHERE hash_pdf = ? ORDER BY orden", [hash_pdf]
     ).fetchall()
     datos["recargos"] = con.execute(
-        "SELECT nombre, importe FROM recargos WHERE hash_pdf = ?", [hash_pdf]
+        "SELECT nombre, importe FROM recargos WHERE hash_pdf = ? ORDER BY orden", [hash_pdf]
     ).fetchall()
     datos["creditos"] = con.execute(
-        "SELECT nombre, importe FROM creditos WHERE hash_pdf = ?", [hash_pdf]
+        "SELECT nombre, importe FROM creditos WHERE hash_pdf = ? ORDER BY orden", [hash_pdf]
     ).fetchall()
     return datos
 
@@ -947,23 +950,28 @@ def guardar_factura(
             ],
         )
 
+    # D-12: `orden` (como ya tenía `conceptos`) para que el orden de fila no
+    # dependa de lo que devuelva la base sin ORDER BY -- en PostgreSQL (el
+    # deploy real) no está garantizado tras un UPDATE, y st.data_editor
+    # aplica las ediciones por POSICIÓN: si el orden cambiara entre
+    # renders, una corrección podía aplicarse al ítem equivocado.
     con.execute("DELETE FROM recargos WHERE hash_pdf = ?", [factura.hash_pdf])
-    for r in factura.recargos:
+    for i, r in enumerate(factura.recargos):
         con.execute(
-            "INSERT INTO recargos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
-            [factura.hash_pdf, r.nombre, r.importe],
+            "INSERT INTO recargos (hash_pdf, nombre, importe, orden) VALUES (?, ?, ?, ?)",
+            [factura.hash_pdf, r.nombre, r.importe, i],
         )
     con.execute("DELETE FROM impuestos WHERE hash_pdf = ?", [factura.hash_pdf])
-    for impuesto in factura.impuestos:
+    for i, impuesto in enumerate(factura.impuestos):
         con.execute(
-            "INSERT INTO impuestos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
-            [factura.hash_pdf, impuesto.nombre, impuesto.importe],
+            "INSERT INTO impuestos (hash_pdf, nombre, importe, orden) VALUES (?, ?, ?, ?)",
+            [factura.hash_pdf, impuesto.nombre, impuesto.importe, i],
         )
     con.execute("DELETE FROM creditos WHERE hash_pdf = ?", [factura.hash_pdf])
-    for credito in factura.creditos:
+    for i, credito in enumerate(factura.creditos):
         con.execute(
-            "INSERT INTO creditos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
-            [factura.hash_pdf, credito.nombre, credito.importe],
+            "INSERT INTO creditos (hash_pdf, nombre, importe, orden) VALUES (?, ?, ?, ?)",
+            [factura.hash_pdf, credito.nombre, credito.importe, i],
         )
     # docs/auditoria-2026-09-confirmacion.md, D-22: guardar un "borrador" es
     # la carga (Gemini leyó o falló); guardar cualquier otro estado es la
