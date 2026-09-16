@@ -320,6 +320,30 @@ def factura_desde_json(
     )
 
 
+def _texto_o_none(valor: object) -> str | None:
+    """`None`/`NaN`/blanco -> `None`; el resto, recortado. `or ""` no
+    alcanza para esto: `NaN` es *truthy* en Python, así que una celda vacía
+    que `st.data_editor` deja como `float("nan")` (una fila nueva del
+    editor sin completar) pasaba de largo -- `str(float("nan"))` da la
+    cadena `"nan"`, no una cadena vacía, y esa fila entraba al análisis
+    como un concepto real llamado "nan" (ver docs/auditoria-2026-09-
+    confirmacion.md, D-1)."""
+    if valor is None or (isinstance(valor, float) and valor != valor):  # NaN != NaN
+        return None
+    texto = str(valor).strip()
+    return texto or None
+
+
+def _numero(valor: object, *, default: float = 0.0) -> float:
+    """Igual criterio que `_texto_o_none` para campos numéricos: `None`/`NaN`
+    da `default`, nunca `float("nan")` propagado a `Concepto`/`Impuesto`
+    (que después haría que el control aritmético mostrara "nan × $nan" en
+    vez de bloquear con un mensaje claro -- D-17)."""
+    if valor is None or (isinstance(valor, float) and valor != valor):
+        return default
+    return float(valor)
+
+
 def conceptos_desde_filas(filas: list[dict]) -> list[Concepto]:
     """Convierte filas editadas a mano (ej. en un `st.data_editor` de
     `apps/segurplus/paginas/confirmar.py`) a `Concepto` -- descarta las
@@ -329,17 +353,16 @@ def conceptos_desde_filas(filas: list[dict]) -> list[Concepto]:
     tiene por qué saber que la UI usa pandas."""
     conceptos = []
     for fila in filas:
-        descripcion = str(fila.get("descripcion") or "").strip()
-        if not descripcion:
+        descripcion = _texto_o_none(fila.get("descripcion"))
+        if descripcion is None:
             continue
-        unidad = str(fila.get("unidad") or "").strip() or None
         conceptos.append(
             Concepto(
                 descripcion=descripcion,
-                cantidad=float(fila.get("cantidad") or 0),
-                unidad=unidad,
-                precio_unitario=float(fila.get("precio_unitario") or 0),
-                importe=float(fila.get("importe") or 0),
+                cantidad=_numero(fila.get("cantidad")),
+                unidad=_texto_o_none(fila.get("unidad")),
+                precio_unitario=_numero(fila.get("precio_unitario")),
+                importe=_numero(fila.get("importe")),
             )
         )
     return conceptos
@@ -351,8 +374,8 @@ def montos_desde_filas(filas: list[dict], clase: type) -> list:
     Descarta las filas sin nombre."""
     resultado = []
     for fila in filas:
-        nombre = str(fila.get("nombre") or "").strip()
-        if not nombre:
+        nombre = _texto_o_none(fila.get("nombre"))
+        if nombre is None:
             continue
-        resultado.append(clase(nombre=nombre, importe=float(fila.get("importe") or 0)))
+        resultado.append(clase(nombre=nombre, importe=_numero(fila.get("importe"))))
     return resultado

@@ -898,7 +898,13 @@ def guardar_factura(
             "INSERT INTO creditos (hash_pdf, nombre, importe) VALUES (?, ?, ?)",
             [factura.hash_pdf, credito.nombre, credito.importe],
         )
-    _registrar_decision(con, factura.hash_pdf, "carga", actor, f"estado inicial: {estado}")
+    # docs/auditoria-2026-09-confirmacion.md, D-22: guardar un "borrador" es
+    # la carga (Gemini leyó o falló); guardar cualquier otro estado es la
+    # confirmación (una persona revisó el borrador y lo dio por bueno) --
+    # antes los dos eventos quedaban indistinguibles en el historial como
+    # "carga", incluida la confirmación misma.
+    accion = "carga" if estado == "borrador" else "confirmacion"
+    _registrar_decision(con, factura.hash_pdf, accion, actor, f"estado: {estado}")
 
 
 def conceptos_sin_clasificar(

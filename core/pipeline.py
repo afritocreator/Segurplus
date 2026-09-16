@@ -22,7 +22,7 @@ Cáscara delgada sobre `core/ingesta/`, `core/extraccion/` y `core/analisis/`
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,6 +33,7 @@ from core.almacenamiento import (
     factura_ya_procesada,
     guardar_alertas,
     guardar_factura,
+    leer_borrador,
     llamadas_ultima_hora,
     proxima_ventana_libre,
     registrar_intento_gemini,
@@ -215,9 +216,24 @@ def confirmar_factura(
     - La aritmética tiene que cerrar (`validar_factura`, con la misma
       doble lectura del total que usaba el pipeline viejo -- pasar
       `total_impreso` si se tiene, calculado por la pantalla sobre
-      `facturas.texto_extraido`)."""
+      `facturas.texto_extraido`).
+
+    docs/auditoria-2026-09-confirmacion.md, D-5/D-6/D-7: esta función es la
+    AUTORIDAD sobre el estado y la procedencia de la factura, no un
+    receptor confiado de lo que arme la pantalla. `leer_borrador` (que ya
+    lanza `ValueError` si el hash no existe o no está en `'borrador'`)
+    cierra la ventana de doble confirmación -- sin esto, confirmar dos
+    veces la misma factura (una pestaña vieja, una carrera con `revision.py`
+    editando la cabecera) pisaba en silencio lo ya confirmado. Los campos de
+    procedencia (`ruta_evidencia`, `respuesta_extraida`, `modelo_extraccion`,
+    `version_prompt`, `version_esquema`) se toman de ahí, NUNCA de `factura`
+    -- si el llamador arma el objeto sin ellos (como ya hace algún test con
+    `dataclasses.replace`), antes se perdía en silencio el vínculo con el
+    PDF de evidencia."""
     if factura.periodo_desde is None or factura.servicio is None:
         raise ValueError("No se puede confirmar sin período y servicio.")
+
+    datos_borrador = leer_borrador(con, factura.hash_pdf)
 
     resultado_validacion = validar_factura(factura, total_impreso=total_impreso)
     if not resultado_validacion.factura_valida:
@@ -225,6 +241,15 @@ def confirmar_factura(
             "La factura no cierra aritméticamente: "
             + "; ".join(resultado_validacion.motivos_de_falla())
         )
+
+    factura = replace(
+        factura,
+        ruta_evidencia=datos_borrador["ruta_evidencia"],
+        respuesta_extraida=datos_borrador["respuesta_extraida"],
+        modelo_extraccion=datos_borrador["modelo_extraccion"],
+        version_prompt=datos_borrador["version_prompt"],
+        version_esquema=datos_borrador["version_esquema"],
+    )
 
     diccionario_a_usar = (
         diccionario if diccionario is not None else cargar_diccionario(factura.servicio)
@@ -255,6 +280,12 @@ def confirmar_factura(
         candidatos_empatados=candidatos_empatados,
         estado=estado,
         actor=actor,
+        # D-5: se preservan -- texto_extraido sigue siendo el respaldo
+        # visual/de doble lectura, y motivo_carga documenta que esta
+        # factura llegó rota, justo cuando más importa saberlo (una vez
+        # que pasa a ser un dato bueno). Sin esto, confirmar los borraba.
+        texto_extraido=datos_borrador["texto_extraido"],
+        motivo_carga=datos_borrador["motivo_carga"],
     )
     # Ítem duplicado se calcula sobre la factura YA CORREGIDA -- si el
     # usuario arregló una descripción que coincidía con otra por error de

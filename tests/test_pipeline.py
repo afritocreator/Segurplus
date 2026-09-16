@@ -11,11 +11,36 @@ from pathlib import Path
 import pytest
 
 import core.pipeline as pipeline_mod
-from core.almacenamiento import conectar
+from core.almacenamiento import conectar, guardar_factura
 from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto
 from core.pipeline import confirmar_factura, procesar_pdf
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "fixtures" / "sintetico"
+
+
+def _dejar_como_borrador(con, hash_pdf: str, *, ruta_pdf: str = "/tmp/x.pdf") -> None:
+    """Inserta un borrador vacío con este hash -- desde docs/auditoria-2026-
+    09-confirmacion.md, D-6, `confirmar_factura` exige que exista un
+    borrador en estado 'borrador' con ese hash antes de confirmar (cierra
+    la ventana de doble confirmación). El contenido no importa para estos
+    tests: lo único que se necesita es que la fila exista."""
+    guardar_factura(
+        con,
+        FacturaExtraida(
+            emisor=None,
+            cuit=None,
+            servicio=None,
+            periodo_desde=None,
+            periodo_hasta=None,
+            fecha_emision=None,
+            fecha_vencimiento=None,
+            numero_comprobante=None,
+            moneda="ARS",
+            hash_pdf=hash_pdf,
+            ruta_pdf=ruta_pdf,
+        ),
+        estado="borrador",
+    )
 
 
 def _factura_telefonia_julio() -> FacturaExtraida:
@@ -409,6 +434,7 @@ def test_borrador_guarda_el_texto_extraido(tmp_path, monkeypatch):
 
 def test_confirmar_guarda_aprobada_por_defecto(tmp_path, monkeypatch):
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -424,6 +450,7 @@ def test_confirmar_guarda_aprobada_por_defecto(tmp_path, monkeypatch):
 def test_confirmar_con_revision_obligatoria_queda_pendiente(tmp_path, monkeypatch):
     monkeypatch.setattr("core.pipeline.revision_humana_obligatoria", lambda: True)
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -461,6 +488,7 @@ def test_confirmar_factura_que_no_cierra_no_se_puede(tmp_path):
     CONFIRMACIÓN, no la carga -- el borrador se puede seguir editando en
     pantalla hasta que cierre."""
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_rota()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -476,6 +504,7 @@ def test_confirmar_re_homologa_con_la_descripcion_corregida(tmp_path):
     corrige a mano en la pantalla de confirmación, la homologación tiene
     que correr sobre lo CORREGIDO, no sobre lo que devolvió Gemini."""
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -497,6 +526,7 @@ def test_confirmar_re_homologa_con_la_descripcion_corregida(tmp_path):
 
 def test_confirmar_persiste_score_de_homologacion(tmp_path):
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -517,6 +547,7 @@ def test_confirmar_acota_la_homologacion_al_servicio_de_la_factura(tmp_path):
     # homologar aunque la factura (por error del modelo) diga "telefonia",
     # porque cargar_diccionario("telefonia") ni siquiera trae consumo_gas.
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -543,6 +574,7 @@ def test_confirmar_guarda_item_duplicado_como_alerta_y_caso(tmp_path):
     from core.almacenamiento import listar_casos_alerta
 
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -566,6 +598,7 @@ def test_confirmar_guarda_item_duplicado_como_alerta_y_caso(tmp_path):
 
 def test_confirmar_sin_item_duplicado_no_guarda_alertas(tmp_path):
     con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
     factura = _factura_telefonia_julio()
     factura.hash_pdf = "h1"
     factura.ruta_pdf = "/tmp/x.pdf"
@@ -574,6 +607,111 @@ def test_confirmar_sin_item_duplicado_no_guarda_alertas(tmp_path):
 
     filas = con.execute("SELECT * FROM alertas WHERE hash_pdf = 'h1'").fetchall()
     assert filas == []
+    con.close()
+
+
+# --- confirmar_factura como autoridad (docs/auditoria-2026-09-confirmacion.md,
+# --- D-5, D-6, D-7, D-22) -------------------------------------------------
+
+
+def test_confirmar_sin_borrador_previo_no_se_puede(tmp_path):
+    """D-6: sin un borrador con ese hash, no hay nada que confirmar --
+    antes esto simplemente insertaba una factura 'aprobada' de la nada."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    with pytest.raises(ValueError, match="borrador"):
+        confirmar_factura(con, factura)
+    con.close()
+
+
+def test_confirmar_dos_veces_la_misma_factura_no_se_puede(tmp_path):
+    """D-6: una vez aprobada, ya no es un 'borrador' -- confirmarla de
+    nuevo (una pestaña vieja, una carrera con 'Revisar facturas') debe
+    rechazarse en vez de pisar en silencio lo ya confirmado."""
+    con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    assert confirmar_factura(con, factura) == "aprobada"
+    with pytest.raises(ValueError, match="borrador"):
+        confirmar_factura(con, factura)
+    con.close()
+
+
+def test_confirmar_preserva_texto_extraido_y_motivo_carga(tmp_path):
+    """D-5: antes, confirmar borraba estas dos columnas porque no se las
+    pasaba a guardar_factura -- se perdía el respaldo del texto del PDF y
+    el rastro de que la factura había llegado rota."""
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(
+        con,
+        replace(_factura_telefonia_julio(), hash_pdf="h1", ruta_pdf="/tmp/x.pdf"),
+        estado="borrador",
+        texto_extraido="TOTAL A PAGAR $ 12.584,00",
+        motivo_carga="No se pudo leer con Gemini: timeout",
+    )
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    confirmar_factura(con, factura)
+
+    fila = con.execute(
+        "SELECT texto_extraido, motivo_carga FROM facturas WHERE hash_pdf = 'h1'"
+    ).fetchone()
+    assert fila == ("TOTAL A PAGAR $ 12.584,00", "No se pudo leer con Gemini: timeout")
+    con.close()
+
+
+def test_confirmar_preserva_procedencia_aunque_el_formulario_no_la_traiga(tmp_path):
+    """D-7: la procedencia (ruta_evidencia, respuesta_extraida,
+    modelo_extraccion, version_prompt, version_esquema) la decide lo que
+    hay guardado en el borrador, no lo que arme el llamador -- antes, un
+    `FacturaExtraida` armado sin esos campos (como ya hace este mismo
+    archivo con `replace(...)` en otros tests) borraba en silencio el
+    vínculo con el PDF de evidencia real."""
+    con = conectar(tmp_path / "test.duckdb")
+    borrador = _factura_telefonia_julio()
+    borrador.hash_pdf = "h1"
+    borrador.ruta_pdf = "/tmp/x.pdf"
+    borrador.ruta_evidencia = "/tmp/evidencia/h1.pdf"
+    borrador.modelo_extraccion = "gemini-2.5-flash"
+    guardar_factura(con, borrador, estado="borrador")
+
+    # El formulario llega SIN esos campos de procedencia (None por default).
+    factura_editada = _factura_telefonia_julio()
+    factura_editada.hash_pdf = "h1"
+    factura_editada.ruta_pdf = "/tmp/x.pdf"
+
+    confirmar_factura(con, factura_editada)
+
+    fila = con.execute(
+        "SELECT ruta_evidencia, modelo_extraccion FROM facturas WHERE hash_pdf = 'h1'"
+    ).fetchone()
+    assert fila == ("/tmp/evidencia/h1.pdf", "gemini-2.5-flash")
+    con.close()
+
+
+def test_confirmar_registra_accion_confirmacion_no_carga(tmp_path):
+    """D-22: el evento de auditoría de una confirmación tiene que decir
+    'confirmacion', no 'carga' -- antes los dos eran indistinguibles."""
+    con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    confirmar_factura(con, factura, actor="ana")
+
+    acciones = con.execute(
+        "SELECT accion, actor FROM decisiones_factura WHERE hash_pdf = 'h1' ORDER BY creado_en"
+    ).fetchall()
+    assert acciones == [("carga", "sistema"), ("confirmacion", "ana")]
     con.close()
 
 

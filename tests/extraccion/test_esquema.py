@@ -176,6 +176,54 @@ def test_montos_desde_filas_ignora_filas_sin_nombre():
     assert impuestos == [Impuesto("IVA 21%", importe=2100.0)]
 
 
+def test_conceptos_desde_filas_descarta_descripcion_nan():
+    """docs/auditoria-2026-09-confirmacion.md, D-1: una fila nueva del
+    editor sin completar llega con celdas `float("nan")`, no `""` -- `or`
+    no las atrapa porque `NaN` es *truthy*, y antes de este fix entraba al
+    análisis como un concepto llamado "nan" con la plata que tuviera esa
+    fila."""
+    filas = [
+        {
+            "descripcion": "Abono",
+            "cantidad": 4,
+            "unidad": "línea",
+            "precio_unitario": 2500.0,
+            "importe": 10000.0,
+        },
+        {
+            "descripcion": float("nan"),
+            "cantidad": 1.0,
+            "unidad": None,
+            "precio_unitario": 500.0,
+            "importe": 500.0,
+        },
+    ]
+    conceptos = conceptos_desde_filas(filas)
+    assert len(conceptos) == 1
+    assert conceptos[0].descripcion == "Abono"
+
+
+def test_conceptos_desde_filas_cantidad_nan_da_cero_no_nan():
+    filas = [
+        {
+            "descripcion": "Cargo nuevo",
+            "cantidad": float("nan"),
+            "unidad": None,
+            "precio_unitario": float("nan"),
+            "importe": float("nan"),
+        }
+    ]
+    concepto = conceptos_desde_filas(filas)[0]
+    assert concepto.cantidad == 0.0
+    assert concepto.precio_unitario == 0.0
+    assert concepto.importe == 0.0
+
+
+def test_montos_desde_filas_descarta_nombre_nan():
+    filas = [{"nombre": float("nan"), "importe": 500.0}]
+    assert montos_desde_filas(filas, Impuesto) == []
+
+
 def test_montos_desde_filas_funciona_para_recargos_y_creditos():
     assert montos_desde_filas([{"nombre": "Interés por mora", "importe": 350.0}], Recargo) == [
         Recargo("Interés por mora", importe=350.0)
