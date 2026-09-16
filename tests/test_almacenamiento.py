@@ -11,11 +11,14 @@ from core.almacenamiento import (
     conceptos_sin_clasificar,
     conectar,
     decision_factura,
+    descartar_borrador,
     factura_ya_procesada,
     guardar_alertas,
     guardar_en_cuarentena,
     guardar_factura,
     intentos_gemini_fallidos_recientes,
+    leer_borrador,
+    listar_borradores,
     listar_casos_alerta,
     listar_facturas_aprobadas,
     listar_facturas_pendientes,
@@ -69,6 +72,94 @@ def test_guardar_y_leer_factura(tmp_path):
         "SELECT concepto_normalizado, importe FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf]
     ).fetchone()
     assert concepto == ("abono_movil", 10000.0)
+    con.close()
+
+
+# --- borrador: plan de confirmación de carga -------------------------------
+# El pipeline deja SIEMPRE un borrador (docs/auditoria-2026-09-facturas-
+# reales-2.md), sea cual sea su calidad -- estas tres funciones son la cola
+# que lee/gestiona apps/segurplus/paginas/confirmar.py.
+
+
+def test_listar_borradores_solo_trae_estado_borrador(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(hash_pdf="b1"), estado="borrador")
+    guardar_factura(con, _factura(hash_pdf="a1"), estado="aprobada")
+
+    borradores = listar_borradores(con)
+
+    assert [b[0] for b in borradores] == ["b1"]
+    con.close()
+
+
+def test_listar_borradores_trae_motivo_carga(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(
+        con, _factura(hash_pdf="b1"), estado="borrador", motivo_carga="No se pudo leer con Gemini"
+    )
+
+    borradores = listar_borradores(con)
+
+    assert borradores[0][-1] == "No se pudo leer con Gemini"
+    con.close()
+
+
+def test_leer_borrador_trae_cabecera_y_lineas(tmp_path):
+    from core.extraccion.esquema import Impuesto
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura(hash_pdf="b1")
+    factura.impuestos = [Impuesto("IVA 21%", importe=2100.0)]
+    guardar_factura(con, factura, estado="borrador", texto_extraido="TOTAL A PAGAR $ 12.100,00")
+
+    datos = leer_borrador(con, "b1")
+
+    assert datos["emisor"] == "Movistar"
+    assert datos["texto_extraido"] == "TOTAL A PAGAR $ 12.100,00"
+    assert datos["conceptos"] == [("Abono", 4.0, "línea", 2500.0, 10000.0)]
+    assert datos["impuestos"] == [("IVA 21%", 2100.0)]
+    assert datos["recargos"] == []
+    assert datos["creditos"] == []
+    con.close()
+
+
+def test_leer_borrador_de_algo_que_no_es_borrador_rechaza(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(hash_pdf="a1"), estado="aprobada")
+
+    with pytest.raises(ValueError, match="no es un borrador"):
+        leer_borrador(con, "a1")
+    con.close()
+
+
+def test_leer_borrador_inexistente_rechaza(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    with pytest.raises(ValueError, match="no es un borrador"):
+        leer_borrador(con, "no-existe")
+    con.close()
+
+
+def test_descartar_borrador_libera_el_hash(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura(hash_pdf="b1")
+    guardar_factura(con, factura, estado="borrador")
+    assert factura_ya_procesada(con, "b1")
+
+    descartar_borrador(con, "b1")
+
+    assert not factura_ya_procesada(con, "b1")
+    assert con.execute("SELECT count(*) FROM conceptos WHERE hash_pdf = 'b1'").fetchone()[0] == 0
+    con.close()
+
+
+def test_descartar_borrador_de_algo_que_no_es_borrador_rechaza(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(hash_pdf="a1"), estado="aprobada")
+
+    with pytest.raises(ValueError, match="borrador"):
+        descartar_borrador(con, "a1")
+    # No se borró nada -- rechazar tiene que ser atómico con no hacer nada.
+    assert factura_ya_procesada(con, "a1")
     con.close()
 
 

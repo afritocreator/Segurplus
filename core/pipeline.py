@@ -1,12 +1,23 @@
-"""Orquesta el pipeline completo para UN PDF: ingesta -> extracción con
-Gemini -> validación aritmética -> homologación -> guardado (en `facturas`
-si es válida, en `cuarentena` si no). Es la única función que la app
-Streamlit (o un script de línea de comandos, a futuro) necesita llamar por
-factura -- así la UI queda como cáscara fina (CLAUDE.md) y este módulo es
-testeable sin Streamlit.
+"""Orquesta el pipeline de facturas en DOS pasos, ninguno de los cuales
+decide solo si una factura entra al análisis:
 
-No hace nada nuevo: compone funciones ya escritas y probadas en
-`core/ingesta/`, `core/extraccion/` y `core/analisis/`.
+1. `procesar_pdf` -- ingesta + extracción con Gemini. Deja SIEMPRE un
+   BORRADOR (`estado="borrador"` en `facturas`), sea cual sea su calidad:
+   la aritmética no cierre, falte período o servicio, o la extracción haya
+   fallado del todo. Nunca escribe `aprobada`/`requiere_revision` -- eso
+   pasa a `confirmar_factura`, después de que alguien revisó el borrador
+   con el PDF a la vista en `apps/segurplus/paginas/confirmar.py`.
+2. `confirmar_factura` -- guarda como DEFINITIVA una factura ya editada y
+   validada en esa pantalla: re-homologa, guarda alertas, sincroniza casos.
+
+Antes de este rediseño, el pipeline decidía solo y una factura que no
+cerraba terminaba en uno de tres callejones sin salida (cuarentena, con
+solo un botón "reintentar" que no arreglaba nada; "necesita_datos", que
+mandaba a corregir de a un campo sin ver el PDF; o un mensaje que se
+perdía). El circuito de confirmación reemplaza los tres.
+
+Cáscara delgada sobre `core/ingesta/`, `core/extraccion/` y `core/analisis/`
+-- no hace ningún cálculo nuevo, compone lo que ya está escrito y probado.
 """
 
 from __future__ import annotations
@@ -21,7 +32,6 @@ import duckdb
 from core.almacenamiento import (
     factura_ya_procesada,
     guardar_alertas,
-    guardar_en_cuarentena,
     guardar_factura,
     llamadas_ultima_hora,
     proxima_ventana_libre,
@@ -32,9 +42,10 @@ from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
 from core.evidencia import guardar_pdf
+from core.extraccion.esquema import FacturaExtraida
 from core.extraccion.gemini import ExtraccionError, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
-from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto, total_impreso
+from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto
 from core.operacion import max_llamadas_gemini_por_hora, revision_humana_obligatoria, zona_horaria
 
 
@@ -42,34 +53,42 @@ from core.operacion import max_llamadas_gemini_por_hora, revision_humana_obligat
 class ResultadoPipeline:
     ruta: Path
     hash_pdf: str
-    # "ya_procesada" | "cuarentena" | "guardada" | "necesita_datos" | "error_extraccion"
-    # -- "necesita_datos" (docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1): la
-    # factura se guardó y validó aritméticamente, pero le falta `periodo_desde`
-    # o `servicio`, los dos campos que el análisis usa para filtrar -- sin
-    # completarlos queda invisible en todo el tablero. Deliberadamente
-    # DISTINTO de "guardada": la UI no debe mostrarlo como éxito.
+    # "ya_procesada" | "borrador" | "error_extraccion" -- el pipeline ya NO
+    # decide si una factura entra al análisis (ver docstring del módulo).
+    # "error_extraccion" queda reservado para lo que ni siquiera se llegó a
+    # INTENTAR leer (tope de llamadas por hora, PDF ilegible o sin texto):
+    # ahí no hay nada que mostrar en la pantalla de confirmación.
     estado: str
     detalle: str = ""
 
 
-def procesar_pdf(
-    ruta: Path,
-    con: duckdb.DuckDBPyConnection,
-    *,
-    api_key: str | None = None,
-    diccionario: dict[str, list[str]] | None = None,
-) -> ResultadoPipeline:
-    """Procesa un único PDF de punta a punta. No lanza excepciones para
-    errores esperables del pipeline (PDF sin texto, extracción fallida,
-    factura que no valida) -- esos casos se reportan en `ResultadoPipeline`,
-    no cortan el procesamiento de los demás PDFs de un lote.
+def _borrador_vacio(hash_pdf: str, ruta: Path) -> FacturaExtraida:
+    """El borrador que se deja cuando ni siquiera Gemini pudo leer la
+    factura -- vacío pero con el hash y la ruta, para completarlo a mano en
+    la pantalla de confirmación en vez de perder el PDF por completo."""
+    return FacturaExtraida(
+        emisor=None,
+        cuit=None,
+        servicio=None,
+        periodo_desde=None,
+        periodo_hasta=None,
+        fecha_emision=None,
+        fecha_vencimiento=None,
+        numero_comprobante=None,
+        moneda="ARS",
+        hash_pdf=hash_pdf,
+        ruta_pdf=str(ruta),
+    )
 
-    `diccionario`: si se pasa explícito, se usa tal cual (útil para tests).
-    Si no, se carga DESPUÉS de la extracción, acotado al `servicio` de la
-    factura (ver `core.analisis.diccionario.cargar_diccionario`, hallazgo
-    A-3) -- antes de este fix se cargaba upfront, combinando TODOS los
-    servicios, porque en ese punto del pipeline todavía no se sabía de qué
-    servicio era la factura."""
+
+def procesar_pdf(
+    ruta: Path, con: duckdb.DuckDBPyConnection, *, api_key: str | None = None
+) -> ResultadoPipeline:
+    """Procesa un único PDF: ingesta + extracción con Gemini, y deja un
+    BORRADOR. No lanza excepciones para errores esperables del pipeline
+    (PDF sin texto, extracción fallida) -- se reportan en
+    `ResultadoPipeline`, no cortan el procesamiento de los demás PDFs de un
+    lote."""
     try:
         documento = extraer_texto(ruta)
     except PdfSinTextoError as exc:
@@ -92,16 +111,9 @@ def procesar_pdf(
     tope = max_llamadas_gemini_por_hora()
     if llamadas_ultima_hora(con) >= tope:
         # docs/auditoria-2026-09.md, hallazgo A-7 -- y docs/auditoria-2026-
-        # 09-facturas-reales.md, B-4: el tope ahora se hace cumplir contra
-        # llamadas REALES (tabla intentos_gemini), no contra un proxy que
-        # subestimaba el uso real cuando la extracción fallaba. El mensaje
-        # dice A QUÉ HORA reintentar, no solo que se alcanzó el tope.
-        # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-8:
-        # proxima_ventana_libre devuelve un timedelta (cuánto falta), no un
-        # datetime del servidor -- se suma acá a la hora ACTUAL en la zona
-        # horaria del usuario (core.operacion.zona_horaria), no en la del
-        # servidor (UTC en Streamlit Cloud, 3 horas adelantada respecto de
-        # Tandil).
+        # 09-facturas-reales.md, B-4/C-8/C-11: el tope se hace cumplir
+        # contra llamadas REALES, y el mensaje dice a qué hora reintentar,
+        # en la zona horaria del usuario.
         destrabe = proxima_ventana_libre(con, tope=tope)
         detalle = f"Se alcanzó el tope de {tope} llamadas a Gemini por hora"
         if destrabe is not None:
@@ -121,13 +133,11 @@ def procesar_pdf(
         # columnas o líneas de impuesto con dos montos.
         factura = extraer_con_gemini(contenido_pdf, api_key=api_key, texto_extraido=documento.texto)
     except ExtraccionError as exc:
-        # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5: antes esto
-        # no dejaba NINGÚN rastro en la base -- se perdía al recargar la
-        # página, y el usuario no tenía forma de contar qué pasó.
-        # respuesta_cruda (hallazgo C-2): si Gemini SÍ llegó a responder
-        # (un JSON válido pero incompleto, ej. sin "descripcion" en un
-        # concepto), queda igual disponible acá para diagnosticar -- antes
-        # ese caso ni siquiera llegaba a este except (ver ExtraccionError).
+        # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5/C-2: el
+        # intento queda registrado igual, con el JSON crudo si Gemini llegó
+        # a responder. A diferencia de antes, la factura NO se pierde: se
+        # deja un borrador vacío para completar a mano, con el PDF a la
+        # vista -- Gemini no pudo leerla, pero el usuario sí puede.
         registrar_intento_gemini(
             con,
             hash_pdf=documento.hash_sha256,
@@ -136,51 +146,83 @@ def procesar_pdf(
             mensaje=str(exc),
             respuesta_cruda=getattr(exc, "respuesta_cruda", None),
         )
-        return ResultadoPipeline(
-            ruta, documento.hash_sha256, estado="error_extraccion", detalle=str(exc)
+        factura = _borrador_vacio(documento.hash_sha256, ruta)
+        try:
+            factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf)
+        except Exception:  # noqa: BLE001 -- un borrador vacío sin PDF sigue siendo mejor que nada
+            factura.ruta_evidencia = None
+        guardar_factura(
+            con,
+            factura,
+            estado="borrador",
+            motivo_carga=f"No se pudo leer con Gemini: {exc}",
+            texto_extraido=documento.texto,
         )
+        return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=str(exc))
+
     # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-10: en un
     # intento EXITOSO no se manda respuesta_cruda -- esa misma cadena ya va
     # a facturas.respuesta_extraida vía guardar_factura más abajo.
-    # Duplicar el JSON completo de cada factura acá no compra nada (el
-    # diagnóstico de B-5 solo necesita los FALLIDOS) y ocupa espacio en una
-    # base gratuita.
-    registrar_intento_gemini(
-        con,
-        hash_pdf=documento.hash_sha256,
-        ruta_pdf=str(ruta),
-        exito=True,
-    )
+    registrar_intento_gemini(con, hash_pdf=documento.hash_sha256, ruta_pdf=str(ruta), exito=True)
 
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)
     try:
         factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf)
-    except Exception as exc:  # noqa: BLE001 -- no se acepta evidencia silenciosamente rota
-        return ResultadoPipeline(
-            ruta,
-            documento.hash_sha256,
-            estado="error_extraccion",
-            detalle=f"No se pudo guardar evidencia: {exc}",
-        )
-
-    resultado = validar_factura(factura, total_impreso=total_impreso(documento.texto))
-
-    if not resultado.factura_valida:
-        guardar_en_cuarentena(
+    except Exception as exc:  # noqa: BLE001 -- no se pierde una lectura exitosa por esto
+        # Gemini SÍ pudo leer la factura -- que el PDF no se haya podido
+        # guardar como evidencia (disco lleno, S3 caído) es un problema de
+        # infraestructura aparte, y no vale perder la lectura por eso: se
+        # guarda igual como borrador, con el texto extraído como respaldo
+        # visual (ver apps/segurplus/paginas/confirmar.py) en vez del PDF.
+        factura.ruta_evidencia = None
+        guardar_factura(
             con,
-            hash_pdf=factura.hash_pdf,
-            ruta_pdf=factura.ruta_pdf,
-            resultado=resultado,
-            ruta_evidencia=factura.ruta_evidencia,
-            emisor=factura.emisor,
-            servicio=factura.servicio,
+            factura,
+            estado="borrador",
+            motivo_carga=f"No se pudo guardar el PDF como evidencia: {exc}",
+            texto_extraido=documento.texto,
         )
-        return ResultadoPipeline(
-            ruta,
-            factura.hash_pdf,
-            estado="cuarentena",
-            detalle="; ".join(resultado.motivos_de_falla()),
+        return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador")
+
+    guardar_factura(con, factura, estado="borrador", texto_extraido=documento.texto)
+    return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador")
+
+
+def confirmar_factura(
+    con: duckdb.DuckDBPyConnection,
+    factura: FacturaExtraida,
+    *,
+    diccionario: dict[str, list[str]] | None = None,
+    total_impreso: float | None = None,
+) -> str:
+    """Guarda como DEFINITIVA una factura editada en la pantalla de
+    confirmación (`apps/segurplus/paginas/confirmar.py`) -- re-homologa con
+    las descripciones YA CORREGIDAS, no con lo que devolvió Gemini (si el
+    usuario arregló "Cargo Fijo (100,00 / 30 x 60)" a "Cargo Fijo",
+    homologa mejor que el original). Devuelve el estado final ("aprobada"
+    o "requiere_revision", según `data/operacion.yaml::revision_humana_obligatoria`).
+
+    Dos controles, redundantes a propósito con lo que la pantalla ya
+    bloquea en el botón "Confirmar" -- CLAUDE.md, "nunca mostrarle a un
+    usuario un número no verificado": esta función es la última puerta
+    antes de escribir, no solo la pantalla.
+
+    - `periodo_desde` y `servicio` tienen que estar completos (docs/
+      auditoria-2026-09.md, A-3; docs/auditoria-2026-09-facturas-reales.md,
+      B-1): toda consulta del análisis filtra por los dos.
+    - La aritmética tiene que cerrar (`validar_factura`, con la misma
+      doble lectura del total que usaba el pipeline viejo -- pasar
+      `total_impreso` si se tiene, calculado por la pantalla sobre
+      `facturas.texto_extraido`)."""
+    if factura.periodo_desde is None or factura.servicio is None:
+        raise ValueError("No se puede confirmar sin período y servicio.")
+
+    resultado_validacion = validar_factura(factura, total_impreso=total_impreso)
+    if not resultado_validacion.factura_valida:
+        raise ValueError(
+            "La factura no cierra aritméticamente: "
+            + "; ".join(resultado_validacion.motivos_de_falla())
         )
 
     diccionario_a_usar = (
@@ -202,30 +244,7 @@ def procesar_pdf(
         if resultado_homologacion.concepto:
             conceptos_normalizados[i] = resultado_homologacion.concepto
 
-    # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1: una factura sin
-    # `periodo_desde` o sin `servicio` valida bien aritméticamente y antes
-    # quedaba "aprobada" (con el default) o "requiere_revision" -- pero
-    # TODAS las consultas del análisis (totales por período, calibración,
-    # re-homologación) filtran por esos dos campos, así que quedaba
-    # invisible en todo el tablero sin un solo aviso: la UI decía en verde
-    # "guardada y validada" y no había forma de encontrarla ni siquiera en
-    # "Sin clasificar" (que también filtra por período). Si falta
-    # cualquiera de los dos, la factura NUNCA queda aprobada directo
-    # -- pase lo que pase con `revision_humana_obligatoria` -- para que el
-    # usuario la vea y la complete desde "Revisar facturas" (`registrar_correccion`
-    # ya acepta corregir `periodo_desde` y `servicio` de una pendiente).
-    datos_faltantes = []
-    if factura.periodo_desde is None:
-        datos_faltantes.append("periodo_desde")
-    if factura.servicio is None:
-        datos_faltantes.append("servicio")
-
-    # Si `data/operacion.yaml::revision_humana_obligatoria` está en true, no
-    # alcanza para impactar el análisis sin que alguien la apruebe -- ver
-    # apps/segurplus/paginas/revision.py. Si está en false (el default de
-    # este piloto), queda aprobada directo; la auditoría de quién cargó qué
-    # se escribe igual en los dos casos (ver guardar_factura).
-    factura_queda_aprobada = not datos_faltantes and not revision_humana_obligatoria()
+    estado = "requiere_revision" if revision_humana_obligatoria() else "aprobada"
     guardar_factura(
         con,
         factura,
@@ -233,30 +252,12 @@ def procesar_pdf(
         scores_homologacion=scores_homologacion,
         motivos_homologacion=motivos_homologacion,
         candidatos_empatados=candidatos_empatados,
-        estado="aprobada" if factura_queda_aprobada else "requiere_revision",
+        estado=estado,
     )
-
-    # Ítem duplicado se calcula UNA VEZ acá, sobre la factura individual --
-    # no en la página de evolución (que ve una factura agregada sin
-    # conceptos propios, ver docs/auditoria-2026-09.md, hallazgo A-6).
+    # Ítem duplicado se calcula sobre la factura YA CORREGIDA -- si el
+    # usuario arregló una descripción que coincidía con otra por error de
+    # lectura, esta alerta no debe seguir disparando sobre el dato viejo.
     guardar_alertas(con, factura.hash_pdf, alertas_por_item_duplicado(factura))
-    if factura_queda_aprobada:
-        # decision_factura ya hace esto mismo cuando la aprobación pasa por
-        # la revisión humana -- acá hace falta el mismo llamado porque la
-        # factura nunca pasa por decision_factura cuando queda aprobada
-        # directo (ver el comentario de arriba). Sin esto, las alertas de
-        # ítem duplicado de una factura aprobada directo no se convertían
-        # nunca en un caso operativo.
+    if estado == "aprobada":
         sincronizar_casos_de_factura(con, factura.hash_pdf)
-    if datos_faltantes:
-        return ResultadoPipeline(
-            ruta,
-            factura.hash_pdf,
-            estado="necesita_datos",
-            detalle=(
-                f"Se guardó pero falta completar: {', '.join(datos_faltantes)} -- "
-                'corregilo Y APROBALO en "Revisar facturas" para que entre al análisis '
-                "(corregir solo no alcanza, la factura sigue sin aprobar)."
-            ),
-        )
-    return ResultadoPipeline(ruta, factura.hash_pdf, estado="guardada")
+    return estado

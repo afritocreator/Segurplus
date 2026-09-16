@@ -66,3 +66,34 @@ def guardar_pdf(hash_pdf: str, contenido: bytes) -> str | None:
     if not destino.exists():
         destino.write_bytes(contenido)
     return str(destino)
+
+
+def leer_pdf(ruta_evidencia: str | None) -> bytes | None:
+    """Lee el PDF original a partir de la URI que devolvió `guardar_pdf`
+    (`s3://bucket/clave` o una ruta de archivo local) -- para mostrarlo en
+    la pantalla de confirmación (`apps/segurplus/paginas/confirmar.py`,
+    `st.pdf`). `None` si no hay evidencia (`ruta_evidencia` vacía, ej.
+    `EVIDENCIA_DIR` sin configurar) o si la lectura falla por cualquier
+    motivo -- NUNCA lanza: esa pantalla cae a mostrar el texto extraído
+    (`facturas.texto_extraido`) en su lugar, nunca se cae por esto."""
+    if not ruta_evidencia:
+        return None
+    if ruta_evidencia.startswith("s3://"):
+        try:
+            import boto3
+        except ImportError:
+            return None
+        bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
+        try:
+            cliente = boto3.client(
+                "s3",
+                endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
+                region_name=os.environ.get("S3_REGION") or None,
+            )
+            return cliente.get_object(Bucket=bucket, Key=clave)["Body"].read()
+        except Exception:  # noqa: BLE001 -- nunca romper la pantalla por esto
+            return None
+    try:
+        return Path(ruta_evidencia).read_bytes()
+    except OSError:
+        return None

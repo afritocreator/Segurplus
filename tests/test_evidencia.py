@@ -6,6 +6,7 @@ from __future__ import annotations
 from core.evidencia import (
     evidencia_durable_configurada,
     guardar_pdf,
+    leer_pdf,
     persistencia_durable_configurada,
 )
 
@@ -50,3 +51,29 @@ def test_guardar_pdf_local_es_idempotente(tmp_path, monkeypatch):
     ruta_2 = guardar_pdf("abc123", b"contenido distinto")
     assert ruta_2 == ruta_1
     assert (tmp_path / "abc123.pdf").read_bytes() == b"contenido original"
+
+
+# --- leer_pdf: para mostrar el PDF en la pantalla de confirmación ---------
+
+
+def test_leer_pdf_local_lee_lo_que_guardo_pdf(tmp_path, monkeypatch):
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.setenv("EVIDENCIA_DIR", str(tmp_path))
+    ruta = guardar_pdf("abc123", b"contenido original")
+
+    assert leer_pdf(ruta) == b"contenido original"
+
+
+def test_leer_pdf_sin_ruta_devuelve_none():
+    assert leer_pdf(None) is None
+    assert leer_pdf("") is None
+
+
+def test_leer_pdf_archivo_inexistente_devuelve_none_no_lanza(tmp_path):
+    assert leer_pdf(str(tmp_path / "no-existe.pdf")) is None
+
+
+def test_leer_pdf_s3_sin_boto3_devuelve_none_no_lanza():
+    # boto3 no está instalado por defecto (ver docstring del módulo) --
+    # leer_pdf nunca debe tumbar la pantalla de confirmación por esto.
+    assert leer_pdf("s3://mi-bucket/segurplus/documentos/abc123.pdf") is None

@@ -15,16 +15,19 @@ Kleric- no necesita:
   del mismo dato — si no coinciden, algo está mal y no hay que confiar en
   ninguna de las dos.
 - `subtotal`/`total` AUSENTES (el modelo devolvió `null`) son un motivo de
-  cuarentena en sí mismo, no algo que se tapa con un fallback. Antes, si
+  falla en sí mismo, no algo que se tapa con un fallback. Antes, si
   faltaban, se usaba el propio cálculo (`suma_conceptos`,
   `subtotal + impuestos + recargos`) como referencia -- y esa referencia se
   comparaba contra sí misma, así que CUALQUIER número pasaba la validación
   con esos campos en `null` (ver docs/auditoria-2026-09.md, hallazgo A-4).
 
-Si CUALQUIERA de estos controles falla, la factura va a cuarentena (ver
-`core/almacenamiento.py::guardar_en_cuarentena`) y NO entra al análisis.
-CLAUDE.md: "nunca mostrarle a un usuario un número no verificado".
-"""
+Si CUALQUIERA de estos controles falla, la factura NO entra al análisis --
+CLAUDE.md: "nunca mostrarle a un usuario un número no verificado". Antes
+esto se hacía cumplir mandando la factura a la tabla `cuarentena`; con el
+plan de confirmación de carga (docs/auditoria-2026-09-facturas-reales-2.md)
+`core.pipeline.confirmar_factura` es quien llama a `validar_factura` y
+rechaza confirmar si `factura_valida` da `False` -- la factura sigue
+siendo un borrador editable, no un callejón sin salida."""
 
 from __future__ import annotations
 

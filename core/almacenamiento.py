@@ -71,6 +71,17 @@ ALTER TABLE facturas ADD COLUMN IF NOT EXISTS modelo_extraccion VARCHAR;
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS version_prompt VARCHAR;
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS version_esquema VARCHAR;
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS respuesta_extraida VARCHAR;
+-- Plan de confirmación de carga: el pipeline ya no decide sola si una
+-- factura entra al análisis -- deja un estado 'borrador' y la pantalla de
+-- confirmación (apps/segurplus/paginas/confirmar.py) decide, con el PDF a
+-- la vista. `motivo_carga` explica por qué llegó como borrador cuando la
+-- extracción falló del todo (queda NULL en el resto de los casos).
+-- `texto_extraido` es el texto plano que ya sacó `core/ingesta/pdf_texto.py`
+-- al procesar -- se reusa en la pantalla de confirmación para la doble
+-- lectura del total y como respaldo visual si no hay PDF de evidencia
+-- disponible, sin tener que volver a leer el archivo.
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS motivo_carga VARCHAR;
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS texto_extraido VARCHAR;
 CREATE TABLE IF NOT EXISTS conceptos (
     hash_pdf VARCHAR,
     orden INTEGER,
@@ -186,7 +197,7 @@ CREATE INDEX IF NOT EXISTS idx_intentos_gemini_creado_en ON intentos_gemini (cre
 """
 
 ESTADOS_FACTURA = frozenset(
-    {"recibida", "extraida", "requiere_revision", "aprobada", "rechazada", "cuarentena"}
+    {"recibida", "extraida", "borrador", "requiere_revision", "aprobada", "rechazada", "cuarentena"}
 )
 ESTADOS_CASO = frozenset({"abierto", "en_analisis", "resuelto", "descartado"})
 
@@ -461,6 +472,83 @@ def _registrar_decision(
 _ESTADOS_DECIDIBLES = frozenset({"requiere_revision", "aprobada"})
 
 
+def listar_borradores(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+) -> list[tuple[str, str | None, str | None, str | None, float | None, str | None, str | None]]:
+    """`(hash_pdf, emisor, servicio, periodo_desde, total, ruta_evidencia,
+    motivo_carga)` de las facturas en estado `'borrador'`, ordenadas por
+    antigüedad -- la cola de `apps/segurplus/paginas/confirmar.py`. Un
+    borrador es invisible para el resto del tablero sin tocar ninguna
+    consulta del análisis: todas ya filtran `estado = 'aprobada'`."""
+    return con.execute(
+        """SELECT hash_pdf, emisor, servicio, periodo_desde, total, ruta_evidencia, motivo_carga
+           FROM facturas WHERE estado = 'borrador' ORDER BY creado_en"""
+    ).fetchall()
+
+
+_CAMPOS_BORRADOR = (
+    "emisor",
+    "cuit",
+    "servicio",
+    "periodo_desde",
+    "periodo_hasta",
+    "fecha_emision",
+    "fecha_vencimiento",
+    "numero_comprobante",
+    "moneda",
+    "subtotal",
+    "total",
+    "ruta_evidencia",
+    "respuesta_extraida",
+    "texto_extraido",
+    "motivo_carga",
+)
+
+
+def leer_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str) -> dict:
+    """Cabecera + líneas de un borrador, para prellenar el formulario de
+    `apps/segurplus/paginas/confirmar.py`. Lanza `ValueError` si `hash_pdf`
+    no existe o no está en estado `'borrador'` -- la página no debería
+    llegar a pedir esto de otra forma, pero es más claro que un `None`
+    silencioso si algo cambió de estado entre que se listó y se abrió."""
+    fila = con.execute(
+        f"""SELECT {", ".join(_CAMPOS_BORRADOR)}, estado FROM facturas WHERE hash_pdf = ?""",
+        [hash_pdf],
+    ).fetchone()
+    if fila is None or fila[-1] != "borrador":
+        raise ValueError(f"{hash_pdf!r} no es un borrador disponible para confirmar.")
+    datos = dict(zip(_CAMPOS_BORRADOR, fila[:-1], strict=True))
+    datos["hash_pdf"] = hash_pdf
+    datos["conceptos"] = con.execute(
+        """SELECT descripcion, cantidad, unidad, precio_unitario, importe FROM conceptos
+           WHERE hash_pdf = ? ORDER BY orden""",
+        [hash_pdf],
+    ).fetchall()
+    datos["impuestos"] = con.execute(
+        "SELECT nombre, importe FROM impuestos WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchall()
+    datos["recargos"] = con.execute(
+        "SELECT nombre, importe FROM recargos WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchall()
+    datos["creditos"] = con.execute(
+        "SELECT nombre, importe FROM creditos WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchall()
+    return datos
+
+
+def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str) -> None:
+    """Borra un borrador entero (cabecera y líneas) y libera el hash --
+    `factura_ya_procesada` deja de bloquearlo, así que se puede volver a
+    subir el mismo PDF. Solo opera sobre un `'borrador'`: no es la función
+    para sacar del análisis una factura ya aprobada (eso es
+    `decision_factura`, que además preserva el historial de auditoría)."""
+    fila = con.execute("SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]).fetchone()
+    if fila is None or fila[0] != "borrador":
+        raise ValueError("Solo se puede descartar una factura en estado borrador.")
+    for tabla in ("conceptos", "impuestos", "recargos", "creditos", "alertas", "facturas"):
+        con.execute(f"DELETE FROM {tabla} WHERE hash_pdf = ?", [hash_pdf])
+
+
 def listar_facturas_pendientes(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
 ) -> list[tuple[str, str | None, str | None, str | None, float | None, str | None]]:
@@ -695,18 +783,27 @@ def guardar_factura(
     candidatos_empatados: dict[int, str] | None = None,
     estado: str = "aprobada",
     actor: str = "sistema",
+    motivo_carga: str | None = None,
+    texto_extraido: str | None = None,
 ) -> None:
-    """Guarda una factura YA VALIDADA (ver validar_factura) y sus conceptos.
-    No hace ningún control aritmético acá -- eso ya pasó antes, este módulo
-    solo persiste.
+    """Guarda una factura y sus conceptos. Para `estado="aprobada"` o
+    `"requiere_revision"`, la factura ya está VALIDADA (ver
+    `core.pipeline.confirmar_factura`) -- este módulo no hace ningún
+    control aritmético, solo persiste. Para `estado="borrador"`
+    (`core.pipeline.procesar_pdf`), puede guardar CUALQUIER cosa, incluso
+    vacía: un borrador es justamente lo que todavía no se revisó.
 
     `scores_homologacion`: el score de similitud que dio `homologar_concepto`
     para cada línea (índice `i`), HAYA homologado o no. El score de las que
     NO homologaron es el dato valioso para calibrar: dice si falta un alias
     (score cerca del umbral, ej. 0.55) o si es un concepto genuinamente
     nuevo (score bajo, ej. 0.12) -- ver `core/rehomologacion.py` y
-    `apps/segurplus/paginas/sin_clasificar.py`. Antes de esto el score se
-    calculaba y se descartaba en `core/pipeline.py`."""
+    `apps/segurplus/paginas/sin_clasificar.py`.
+
+    `motivo_carga`: por qué llegó como borrador, cuando la extracción falló
+    del todo (`None` en el resto de los casos). `texto_extraido`: el texto
+    plano que ya sacó `core.ingesta.pdf_texto.extraer_texto` -- se reusa en
+    la pantalla de confirmación en vez de volver a leer el PDF."""
     if estado not in ESTADOS_FACTURA:
         raise ValueError(f"Estado de factura inválido: {estado}")
     conceptos_normalizados = conceptos_normalizados or {}
@@ -718,8 +815,8 @@ def guardar_factura(
            (hash_pdf, ruta_pdf, emisor, cuit, servicio, periodo_desde, periodo_hasta,
             fecha_emision, fecha_vencimiento, numero_comprobante, moneda, subtotal, total,
             estado, ruta_evidencia, modelo_extraccion, version_prompt, version_esquema,
-            respuesta_extraida, actualizado_en)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+            respuesta_extraida, motivo_carga, texto_extraido, actualizado_en)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
            ON CONFLICT (hash_pdf) DO UPDATE SET
              ruta_pdf = excluded.ruta_pdf, emisor = excluded.emisor, cuit = excluded.cuit,
              servicio = excluded.servicio, periodo_desde = excluded.periodo_desde,
@@ -730,7 +827,8 @@ def guardar_factura(
              ruta_evidencia = excluded.ruta_evidencia,
              modelo_extraccion = excluded.modelo_extraccion,
              version_prompt = excluded.version_prompt, version_esquema = excluded.version_esquema,
-             respuesta_extraida = excluded.respuesta_extraida, actualizado_en = now()""",
+             respuesta_extraida = excluded.respuesta_extraida, motivo_carga = excluded.motivo_carga,
+             texto_extraido = excluded.texto_extraido, actualizado_en = now()""",
         [
             factura.hash_pdf,
             factura.ruta_pdf,
@@ -751,6 +849,8 @@ def guardar_factura(
             factura.version_prompt,
             factura.version_esquema,
             factura.respuesta_extraida,
+            motivo_carga,
+            texto_extraido,
         ],
     )
     con.execute("DELETE FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf])

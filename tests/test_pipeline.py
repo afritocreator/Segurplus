@@ -1,4 +1,5 @@
-"""Test del pipeline completo de punta a punta contra las fixtures
+"""Test del pipeline de dos pasos (`procesar_pdf` deja un borrador,
+`confirmar_factura` lo guarda como definitivo) contra las fixtures
 sintéticas, con la llamada a Gemini reemplazada por monkeypatch (no pega a
 la red -- lo que Gemini devolvería ya se conoce de memoria, porque las
 fixtures se generaron con esos valores exactos, ver
@@ -12,7 +13,7 @@ import pytest
 import core.pipeline as pipeline_mod
 from core.almacenamiento import conectar
 from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto
-from core.pipeline import procesar_pdf
+from core.pipeline import confirmar_factura, procesar_pdf
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "fixtures" / "sintetico"
 
@@ -56,7 +57,17 @@ def _factura_rota() -> FacturaExtraida:
     )
 
 
-def test_factura_valida_se_guarda(tmp_path, monkeypatch):
+# --- procesar_pdf: SIEMPRE deja un borrador, nunca decide sola --------------
+# docs/auditoria-2026-09-facturas-reales-2.md (plan de confirmación de
+# carga): antes, una factura que no cerraba terminaba en uno de tres
+# callejones sin salida (cuarentena, "necesita_datos", o un mensaje que se
+# perdía). Ahora el pipeline SIEMPRE deja un borrador -- la calidad de la
+# extracción (válida, con la aritmética rota, o sin período/servicio) no
+# cambia el resultado de procesar_pdf, solo lo que hay para confirmar
+# después en apps/segurplus/paginas/confirmar.py.
+
+
+def test_factura_valida_queda_como_borrador(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
     )
@@ -64,71 +75,33 @@ def test_factura_valida_se_guarda(tmp_path, monkeypatch):
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "guardada"
+    assert resultado.estado == "borrador"
     fila = con.execute(
-        "SELECT emisor, total FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+        "SELECT emisor, total, estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
-    assert fila == ("Comunicaciones Sur S.A.", 12584.0)
-    fila_estado = con.execute(
-        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
-    ).fetchone()
-    # data/operacion.yaml::revision_humana_obligatoria default es false -- una
-    # factura procesada queda aprobada directo, sin paso manual intermedio.
-    assert fila_estado == ("aprobada",)
+    assert fila == ("Comunicaciones Sur S.A.", 12584.0, "borrador")
     con.close()
 
 
-def test_factura_con_revision_obligatoria_queda_pendiente(tmp_path, monkeypatch):
-    """Con `revision_humana_obligatoria` en true (data/operacion.yaml), la
-    misma factura válida queda `requiere_revision` en vez de `aprobada` --
-    no impacta Evolución/alertas/Excel hasta que alguien la apruebe (ver
-    apps/segurplus/paginas/revision.py)."""
-    monkeypatch.setattr(
-        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
-    )
-    monkeypatch.setattr(pipeline_mod, "revision_humana_obligatoria", lambda: True)
-    con = conectar(tmp_path / "test.duckdb")
-
-    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-
-    assert resultado.estado == "guardada"
-    fila_estado = con.execute(
-        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
-    ).fetchone()
-    assert fila_estado == ("requiere_revision",)
-    con.close()
-
-
-def test_factura_sin_periodo_no_queda_aprobada_ni_dice_guardada(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1, reproducido con
-    facturas reales de la Usina Popular de Tandil: el modelo puede leer
-    perfectamente el período impreso en la factura y aun así no lograr
-    devolverlo en un formato que `_normalizar_fecha` interprete (antes de
-    esta corrección, "07/2022" -- mes/año, sin día -- ya se arreglaba en
-    `_normalizar_fecha`, pero acá se simula el caso general: CUALQUIER
-    motivo por el que `periodo_desde` llegue en `None`). Con el pipeline
-    viejo, esa factura validaba bien, quedaba `aprobada` (el default) y la
-    UI decía "guardada y validada" -- pero `totales_por_periodo` y el resto
-    del análisis filtran `periodo_desde IS NOT NULL`, así que desaparecía
-    sin ningún aviso. Ahora nunca queda aprobada sin período, sea cual sea
-    `revision_humana_obligatoria`, y el estado que ve la UI lo dice."""
+def test_factura_sin_periodo_tambien_queda_como_borrador(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1, reproducido
+    con facturas reales de la Usina Popular de Tandil: el modelo puede leer
+    perfectamente el período impreso y aun así no devolverlo en un formato
+    interpretable. Antes de la pantalla de confirmación, esto se resolvía
+    con un estado intermedio ("necesita_datos") -- ahora es un borrador
+    más: falta período, así que no se va a poder confirmar todavía, pero
+    procesar_pdf no tiene por qué saberlo."""
     factura_sin_periodo = replace(_factura_telefonia_julio(), periodo_desde=None)
     monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_sin_periodo)
     con = conectar(tmp_path / "test.duckdb")
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "necesita_datos"
-    assert "periodo_desde" in resultado.detalle
-    # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-6: el mensaje
-    # decía "corregilo... para que entre al análisis", pero corregir SOLO
-    # no alcanza -- la factura sigue en requiere_revision hasta que además
-    # se aprueba. El mensaje tiene que decir las dos cosas.
-    assert "aprobal" in resultado.detalle.lower()
+    assert resultado.estado == "borrador"
     fila_estado = con.execute(
-        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+        "SELECT estado, periodo_desde FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
-    assert fila_estado == ("requiere_revision",)
+    assert fila_estado == ("borrador", None)
     con.close()
 
 
@@ -186,46 +159,46 @@ def test_pipeline_de_punta_a_punta_con_fixture_de_gas_periodo_mes_anio(tmp_path,
     # periodo_hasta al ÚLTIMO día del mes de cierre (2026-08-31, hallazgo
     # C-1) -- si los dos fueran el primer día, alertas_por_periodo_faltante
     # esperaría el próximo bimestre al día siguiente de 2026-07-01.
-    assert resultado.estado == "guardada"
+    assert resultado.estado == "borrador"
     fila = con.execute(
         "SELECT periodo_desde, periodo_hasta, estado FROM facturas WHERE hash_pdf = ?",
         [resultado.hash_pdf],
     ).fetchone()
-    assert fila == ("2026-07-01", "2026-08-31", "aprobada")
+    assert fila == ("2026-07-01", "2026-08-31", "borrador")
     con.close()
 
 
-def test_factura_sin_servicio_no_queda_aprobada(tmp_path, monkeypatch):
+def test_factura_sin_servicio_tambien_queda_como_borrador(tmp_path, monkeypatch):
     factura_sin_servicio = replace(_factura_telefonia_julio(), servicio=None)
     monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_sin_servicio)
     con = conectar(tmp_path / "test.duckdb")
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "necesita_datos"
-    assert "servicio" in resultado.detalle
+    assert resultado.estado == "borrador"
     con.close()
 
 
-def test_factura_rota_va_a_cuarentena(tmp_path, monkeypatch):
+def test_factura_rota_tambien_queda_como_borrador_no_en_cuarentena(tmp_path, monkeypatch):
+    """La aritmética rota YA NO manda la factura a la tabla `cuarentena`
+    (que dejó de recibir escrituras nuevas, ver
+    apps/segurplus/paginas/cuarentena.py) -- queda como cualquier otro
+    borrador, con el importe que no cierra tal cual lo devolvió Gemini,
+    para corregir con el PDF a la vista en la pantalla de confirmación."""
     monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_rota())
     con = conectar(tmp_path / "test.duckdb")
 
     resultado = procesar_pdf(FIXTURES / "rota_importe_no_cierra.pdf", con, api_key="fake")
 
-    assert resultado.estado == "cuarentena"
-    assert "línea" in resultado.detalle
+    assert resultado.estado == "borrador"
     en_facturas = con.execute(
-        "SELECT 1 FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
-    assert en_facturas is None
-    fila_cuarentena = con.execute(
-        "SELECT emisor, servicio FROM cuarentena WHERE hash_pdf = ?", [resultado.hash_pdf]
+    assert en_facturas == ("borrador",)
+    en_cuarentena = con.execute(
+        "SELECT 1 FROM cuarentena WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
-    # Aunque la factura no haya validado aritméticamente, la extracción sí
-    # pudo leer emisor y servicio -- se guardan para poder calcular métricas
-    # de calidad de lectura por proveedor (core.almacenamiento.metricas_por_proveedor).
-    assert fila_cuarentena == ("Comunicaciones Sur S.A.", "telefonia")
+    assert en_cuarentena is None
     con.close()
 
 
@@ -238,166 +211,8 @@ def test_reprocesar_el_mismo_pdf_no_duplica(tmp_path, monkeypatch):
     r1 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
     r2 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert r1.estado == "guardada"
-    assert r2.estado == "ya_procesada"
-    con.close()
-
-
-def test_rechazar_una_factura_permite_volver_a_subir_el_mismo_pdf(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-piloto.md, A-56, de punta a punta: cargar un
-    PDF, rechazar la factura resultante, y volver a subir el MISMO PDF --
-    antes de esta corrección, el segundo intento devolvía "ya_procesada"
-    para siempre, sin ninguna forma de reprocesarlo."""
-    from core.almacenamiento import decision_factura
-
-    monkeypatch.setattr(
-        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
-    )
-    con = conectar(tmp_path / "test.duckdb")
-
-    r1 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-    assert r1.estado == "guardada"
-
-    decision_factura(
-        con, hash_pdf=r1.hash_pdf, estado="rechazada", actor="ana", motivo="emisor equivocado"
-    )
-
-    r2 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-    assert r2.estado == "guardada"  # se reprocesó, no "ya_procesada"
-    estado_final = con.execute(
-        "SELECT estado FROM facturas WHERE hash_pdf = ?", [r1.hash_pdf]
-    ).fetchone()[0]
-    assert estado_final == "aprobada"  # el pipeline la vuelve a guardar aprobada
-    con.close()
-
-
-def test_homologa_conceptos_al_guardar(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
-    )
-    con = conectar(tmp_path / "test.duckdb")
-
-    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-
-    normalizado = con.execute(
-        "SELECT concepto_normalizado FROM conceptos WHERE hash_pdf = ? AND orden = 0",
-        [resultado.hash_pdf],
-    ).fetchone()[0]
-    assert normalizado == "abono_movil"
-    con.close()
-
-
-def test_homologacion_se_acota_al_servicio_de_la_factura(tmp_path, monkeypatch):
-    # docs/auditoria-2026-09.md, hallazgo A-3: el diccionario que usa
-    # procesar_pdf se carga DESPUÉS de la extracción, acotado al
-    # factura.servicio -- confirmamos que un concepto de gas no homologa
-    # aunque la factura (por error del modelo) diga "telefonia", porque
-    # cargar_diccionario("telefonia") ni siquiera trae consumo_gas.
-    factura = _factura_telefonia_julio()
-    factura.conceptos = [Concepto("Consumo de gas natural m3", 50, "m3", 100.0, 5000.0)]
-    factura.subtotal = 5000.0
-    factura.total = 6050.0
-    factura.impuestos = [Impuesto("IVA 21%", importe=1050.0)]
-
-    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
-    monkeypatch.setattr(pipeline_mod, "total_impreso", lambda texto: None)
-    con = conectar(tmp_path / "test.duckdb")
-
-    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-    assert resultado.estado == "guardada"
-
-    fila = con.execute(
-        "SELECT concepto_normalizado, score_homologacion FROM conceptos "
-        "WHERE hash_pdf = ? AND orden = 0",
-        [resultado.hash_pdf],
-    ).fetchone()
-    assert fila[0] is None  # sin clasificar -- correcto, "consumo_gas" no está en telefonia
-    # El score se persiste IGUAL, aunque no haya homologado -- es el dato
-    # que permite calibrar (¿le faltó poco? ¿es un concepto nuevo de
-    # verdad?), ver core/almacenamiento.py::guardar_factura.
-    assert fila[1] is not None
-    con.close()
-
-
-def test_score_homologacion_se_persiste_para_concepto_homologado(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
-    )
-    con = conectar(tmp_path / "test.duckdb")
-
-    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-
-    filas = con.execute(
-        "SELECT concepto_normalizado, score_homologacion FROM conceptos "
-        "WHERE hash_pdf = ? ORDER BY orden",
-        [resultado.hash_pdf],
-    ).fetchall()
-    # Scores con el diccionario real (Bloque 4 agregó el alias "abono
-    # lineas moviles" a telefonia.yaml, que sube este score respecto de
-    # antes de esa calibración).
-    assert filas[0] == ("abono_movil", pytest.approx(0.95))
-    assert filas[1] == ("consumo_datos", pytest.approx(0.7567567567567568))
-    con.close()
-
-
-def test_item_duplicado_se_persiste_al_procesar(tmp_path, monkeypatch):
-    # docs/auditoria-2026-09.md, hallazgo A-6: antes, alertas_por_item_duplicado
-    # nunca se ejecutaba en el flujo real -- se invocaba en evolucion.py
-    # sobre una factura agregada sin conceptos, así que siempre daba [].
-    factura = _factura_telefonia_julio()
-    factura.conceptos = [
-        Concepto("Abono", 1, None, 1000.0, 1000.0),
-        Concepto("Abono", 1, None, 1000.0, 1000.0),
-    ]
-    factura.subtotal = 2000.0
-    factura.total = 2420.0  # 2000 + IVA 21% (420)
-    factura.impuestos = [Impuesto("IVA 21%", importe=420.0)]
-
-    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
-    # El PDF de la fixture imprime un total distinto al de esta factura
-    # sintética (no viene al caso para este test, que prueba item_duplicado
-    # -- no la doble lectura, ya cubierta en tests/extraccion/test_validacion.py).
-    monkeypatch.setattr(pipeline_mod, "total_impreso", lambda texto: None)
-    con = conectar(tmp_path / "test.duckdb")
-
-    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-    assert resultado.estado == "guardada"
-
-    fila = con.execute(
-        "SELECT tipo, severidad FROM alertas WHERE hash_pdf = ?", [resultado.hash_pdf]
-    ).fetchone()
-    assert fila == ("item_duplicado", "media")
-    con.close()
-
-
-def test_item_duplicado_se_convierte_en_caso_sin_pasar_por_revision(tmp_path, monkeypatch):
-    """Con revision_humana_obligatoria en false (default), la factura queda
-    aprobada directo en guardar_factura, SIN pasar nunca por
-    decision_factura -- que es el único lugar donde antes se sincronizaban
-    los casos de alerta. Sin el llamado agregado en procesar_pdf, un ítem
-    duplicado real nunca se convertía en un caso operativo visible en la
-    página Casos."""
-    from core.almacenamiento import listar_casos_alerta
-
-    factura = _factura_telefonia_julio()
-    factura.conceptos = [
-        Concepto("Abono", 1, None, 1000.0, 1000.0),
-        Concepto("Abono", 1, None, 1000.0, 1000.0),
-    ]
-    factura.subtotal = 2000.0
-    factura.total = 2420.0
-    factura.impuestos = [Impuesto("IVA 21%", importe=420.0)]
-
-    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura)
-    monkeypatch.setattr(pipeline_mod, "total_impreso", lambda texto: None)
-    con = conectar(tmp_path / "test.duckdb")
-
-    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
-    assert resultado.estado == "guardada"
-
-    casos = listar_casos_alerta(con)
-    assert len(casos) == 1
-    assert casos[0][1] == "item_duplicado"  # (clave, tipo, severidad, ...)
+    assert r1.estado == "borrador"
+    assert r2.estado == "ya_procesada"  # el borrador ya existe, no se pisa
     con.close()
 
 
@@ -405,7 +220,8 @@ def test_pdf_corrupto_no_tumba_el_procesamiento(tmp_path, monkeypatch):
     # docs/auditoria-2026-09.md, hallazgo A-18: antes solo se atrapaba
     # PdfSinTextoError -- cualquier otra excepción al leer el PDF (acá
     # simulada) tumbaba todo el pipeline en vez de reportarse como
-    # error_extraccion, como cualquier otro PDF ilegible.
+    # error_extraccion, como cualquier otro PDF ilegible. Este caso SIGUE
+    # dando error_extraccion (no hay ni texto para mostrar en un borrador).
     def _romper(*a, **k):
         raise ValueError("PDF con estructura inválida")
 
@@ -421,9 +237,10 @@ def test_pdf_corrupto_no_tumba_el_procesamiento(tmp_path, monkeypatch):
 
 def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
     # docs/auditoria-2026-09.md, hallazgo A-7: el tope estaba declarado y
-    # nunca se usaba. docs/auditoria-2026-09-facturas-reales.md, B-4: ahora vive en
-    # data/operacion.yaml (core.operacion.max_llamadas_gemini_por_hora),
-    # no hardcodeado.
+    # nunca se usaba. docs/auditoria-2026-09-facturas-reales.md, B-4: ahora
+    # vive en data/operacion.yaml (core.operacion.max_llamadas_gemini_por_hora),
+    # no hardcodeado. Sin llegar a llamar a Gemini, no hay nada que dejar
+    # como borrador -- sigue siendo error_extraccion.
     monkeypatch.setattr(pipeline_mod, "max_llamadas_gemini_por_hora", lambda: 0)
     llamado = False
 
@@ -465,10 +282,13 @@ def test_tope_de_llamadas_dice_a_que_hora_reintentar(tmp_path, monkeypatch):
     con.close()
 
 
-def test_intento_fallido_de_extraccion_queda_registrado(tmp_path, monkeypatch):
-    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5: antes un fallo de
-    extracción no dejaba NINGÚN rastro en la base -- se perdía al recargar
-    la página."""
+def test_intento_fallido_de_extraccion_deja_un_borrador_vacio(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5, extendido
+    por el plan de confirmación: antes un fallo de extracción no dejaba
+    NINGÚN rastro en la base. Ahora deja DOS cosas -- el registro en
+    intentos_gemini de siempre, Y un borrador vacío (con el PDF, si se pudo
+    guardar) para completar a mano en vez de perder la factura por
+    completo."""
     from core.extraccion.gemini import ExtraccionError
 
     def _falla(*a, **k):
@@ -479,7 +299,15 @@ def test_intento_fallido_de_extraccion_queda_registrado(tmp_path, monkeypatch):
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "error_extraccion"
+    assert resultado.estado == "borrador"
+    fila = con.execute(
+        "SELECT estado, emisor, motivo_carga FROM facturas WHERE hash_pdf = ?",
+        [resultado.hash_pdf],
+    ).fetchone()
+    assert fila[0] == "borrador"
+    assert fila[1] is None  # nada que extraer -- vacío para completar a mano
+    assert "503" in fila[2]
+
     from core.almacenamiento import intentos_gemini_fallidos_recientes
 
     fallidos = intentos_gemini_fallidos_recientes(con)
@@ -489,13 +317,13 @@ def test_intento_fallido_de_extraccion_queda_registrado(tmp_path, monkeypatch):
     con.close()
 
 
-def test_json_valido_pero_incompleto_cuenta_para_el_tope_y_queda_registrado(tmp_path, monkeypatch):
+def test_json_valido_pero_incompleto_deja_borrador_y_cuenta_para_el_tope(tmp_path, monkeypatch):
     """docs/auditoria-2026-09-facturas-reales.md, hallazgo C-2: un JSON
     sintácticamente válido pero con un campo faltante (el caso real:
-    Gemini omite "descripcion" en un concepto) tiene que comportarse EXACTO
-    igual que cualquier otro ExtraccionError -- contar para el tope (B-4) y
-    quedar registrado con el JSON crudo (B-5). Antes escapaba como
-    KeyError sin pasar por ninguno de los dos."""
+    Gemini omite "descripcion" en un concepto) tiene que comportarse igual
+    que cualquier otro ExtraccionError -- contar para el tope (B-4) y
+    quedar registrado con el JSON crudo (B-5), y ahora además dejar un
+    borrador vacío en vez de perderse."""
     from core.extraccion.gemini import ExtraccionError
 
     json_crudo = '{"conceptos": [{"cantidad": 1, "precio_unitario": 10.0, "importe": 10.0}]}'
@@ -511,7 +339,7 @@ def test_json_valido_pero_incompleto_cuenta_para_el_tope_y_queda_registrado(tmp_
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "error_extraccion"
+    assert resultado.estado == "borrador"
     from core.almacenamiento import intentos_gemini_fallidos_recientes, llamadas_ultima_hora
 
     assert llamadas_ultima_hora(con) == 1
@@ -557,7 +385,11 @@ def test_intento_exitoso_no_duplica_la_respuesta_cruda(tmp_path, monkeypatch):
     con.close()
 
 
-def test_sin_item_duplicado_no_guarda_alertas(tmp_path, monkeypatch):
+def test_borrador_guarda_el_texto_extraido(tmp_path, monkeypatch):
+    """El texto que ya sacó `core.ingesta.pdf_texto.extraer_texto` se
+    persiste en `facturas.texto_extraido` -- la pantalla de confirmación lo
+    reusa (doble lectura del total, respaldo visual si no hay PDF) sin
+    tener que volver a leer el archivo."""
     monkeypatch.setattr(
         pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
     )
@@ -565,6 +397,231 @@ def test_sin_item_duplicado_no_guarda_alertas(tmp_path, monkeypatch):
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    filas = con.execute("SELECT * FROM alertas WHERE hash_pdf = ?", [resultado.hash_pdf]).fetchall()
+    texto = con.execute(
+        "SELECT texto_extraido FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()[0]
+    assert "Comunicaciones Sur" in texto
+    con.close()
+
+
+# --- confirmar_factura: la última puerta antes de que algo impacte --------
+
+
+def test_confirmar_guarda_aprobada_por_defecto(tmp_path, monkeypatch):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    estado = confirmar_factura(con, factura)
+
+    assert estado == "aprobada"
+    fila = con.execute("SELECT estado FROM facturas WHERE hash_pdf = 'h1'").fetchone()
+    assert fila == ("aprobada",)
+    con.close()
+
+
+def test_confirmar_con_revision_obligatoria_queda_pendiente(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.pipeline.revision_humana_obligatoria", lambda: True)
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    estado = confirmar_factura(con, factura)
+
+    assert estado == "requiere_revision"
+    con.close()
+
+
+def test_confirmar_sin_periodo_no_se_puede(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = replace(_factura_telefonia_julio(), periodo_desde=None)
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    with pytest.raises(ValueError, match="período y servicio"):
+        confirmar_factura(con, factura)
+    con.close()
+
+
+def test_confirmar_sin_servicio_no_se_puede(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = replace(_factura_telefonia_julio(), servicio=None)
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    with pytest.raises(ValueError, match="período y servicio"):
+        confirmar_factura(con, factura)
+    con.close()
+
+
+def test_confirmar_factura_que_no_cierra_no_se_puede(tmp_path):
+    """La aritmética rota que antes mandaba a cuarentena ahora bloquea la
+    CONFIRMACIÓN, no la carga -- el borrador se puede seguir editando en
+    pantalla hasta que cierre."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_rota()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    with pytest.raises(ValueError, match="no cierra aritméticamente"):
+        confirmar_factura(con, factura)
+    con.close()
+
+
+def test_confirmar_re_homologa_con_la_descripcion_corregida(tmp_path):
+    """El detalle de cálculo pegado a la descripción ("Cargo Fijo (414,4500
+    / 30.5 x 8)") hunde el score de homologación -- si el usuario lo
+    corrige a mano en la pantalla de confirmación, la homologación tiene
+    que correr sobre lo CORREGIDO, no sobre lo que devolvió Gemini."""
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.conceptos = [
+        Concepto("Cargo Fijo", 1, "mes", 10400.0, 10400.0),  # ya corregido a mano
+    ]
+    factura.impuestos = [Impuesto("IVA 21%", importe=2184.0)]
+    factura.subtotal = 10400.0
+    factura.total = 12584.0
+
+    confirmar_factura(con, factura)
+
+    normalizado = con.execute(
+        "SELECT concepto_normalizado FROM conceptos WHERE hash_pdf = 'h1' AND orden = 0"
+    ).fetchone()[0]
+    assert normalizado == "cargo_fijo"
+    con.close()
+
+
+def test_confirmar_persiste_score_de_homologacion(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    confirmar_factura(con, factura)
+
+    filas = con.execute(
+        "SELECT concepto_normalizado, score_homologacion FROM conceptos "
+        "WHERE hash_pdf = 'h1' ORDER BY orden"
+    ).fetchall()
+    assert filas[0][0] == "abono_movil"
+    assert filas[0][1] is not None
+    con.close()
+
+
+def test_confirmar_acota_la_homologacion_al_servicio_de_la_factura(tmp_path):
+    # docs/auditoria-2026-09.md, hallazgo A-3: un concepto de gas no debe
+    # homologar aunque la factura (por error del modelo) diga "telefonia",
+    # porque cargar_diccionario("telefonia") ni siquiera trae consumo_gas.
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.conceptos = [Concepto("Consumo de gas natural m3", 50, "m3", 100.0, 5000.0)]
+    factura.subtotal = 5000.0
+    factura.total = 6050.0
+    factura.impuestos = [Impuesto("IVA 21%", importe=1050.0)]
+
+    confirmar_factura(con, factura)
+
+    fila = con.execute(
+        "SELECT concepto_normalizado, score_homologacion FROM conceptos WHERE hash_pdf = 'h1'"
+    ).fetchone()
+    assert fila[0] is None  # sin clasificar -- correcto, "consumo_gas" no está en telefonia
+    assert fila[1] is not None  # el score se persiste igual, para calibrar
+    con.close()
+
+
+def test_confirmar_guarda_item_duplicado_como_alerta_y_caso(tmp_path):
+    # docs/auditoria-2026-09.md, hallazgo A-6: alertas_por_item_duplicado
+    # tiene que correr sobre la factura individual con sus conceptos, y
+    # convertirse en un caso operativo aunque la factura quede aprobada
+    # directo (sin pasar nunca por decision_factura).
+    from core.almacenamiento import listar_casos_alerta
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.conceptos = [
+        Concepto("Abono", 1, None, 1000.0, 1000.0),
+        Concepto("Abono", 1, None, 1000.0, 1000.0),
+    ]
+    factura.subtotal = 2000.0
+    factura.total = 2420.0
+    factura.impuestos = [Impuesto("IVA 21%", importe=420.0)]
+
+    confirmar_factura(con, factura)
+
+    fila = con.execute("SELECT tipo, severidad FROM alertas WHERE hash_pdf = 'h1'").fetchone()
+    assert fila == ("item_duplicado", "media")
+    casos = listar_casos_alerta(con)
+    assert len(casos) == 1
+    assert casos[0][1] == "item_duplicado"
+    con.close()
+
+
+def test_confirmar_sin_item_duplicado_no_guarda_alertas(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+
+    confirmar_factura(con, factura)
+
+    filas = con.execute("SELECT * FROM alertas WHERE hash_pdf = 'h1'").fetchall()
     assert filas == []
+    con.close()
+
+
+# --- De punta a punta: procesar_pdf (borrador) -> confirmar_factura -------
+
+
+def test_de_punta_a_punta_borrador_a_aprobada(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert resultado.estado == "borrador"
+
+    factura = replace(
+        _factura_telefonia_julio(), hash_pdf=resultado.hash_pdf, ruta_pdf=str(resultado.ruta)
+    )
+    estado = confirmar_factura(con, factura)
+
+    assert estado == "aprobada"
+    from core.almacenamiento import totales_por_periodo
+
+    assert totales_por_periodo(con, servicio="telefonia") != {}
+    con.close()
+
+
+def test_rechazar_una_factura_permite_volver_a_subir_el_mismo_pdf(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-piloto.md, A-56, de punta a punta: cargar un
+    PDF, confirmarlo, rechazar la factura resultante, y volver a subir el
+    MISMO PDF -- antes de esta corrección, el segundo intento devolvía
+    "ya_procesada" para siempre, sin ninguna forma de reprocesarlo."""
+    from core.almacenamiento import decision_factura
+
+    monkeypatch.setattr(
+        pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_telefonia_julio()
+    )
+    con = conectar(tmp_path / "test.duckdb")
+
+    r1 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert r1.estado == "borrador"
+    factura = replace(_factura_telefonia_julio(), hash_pdf=r1.hash_pdf, ruta_pdf=str(r1.ruta))
+    confirmar_factura(con, factura)
+
+    decision_factura(
+        con, hash_pdf=r1.hash_pdf, estado="rechazada", actor="ana", motivo="emisor equivocado"
+    )
+
+    r2 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert r2.estado == "borrador"  # se reprocesó, no "ya_procesada"
     con.close()
