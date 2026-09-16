@@ -487,6 +487,7 @@ def listar_borradores(
 
 
 _CAMPOS_BORRADOR = (
+    "ruta_pdf",
     "emisor",
     "cuit",
     "servicio",
@@ -500,6 +501,9 @@ _CAMPOS_BORRADOR = (
     "total",
     "ruta_evidencia",
     "respuesta_extraida",
+    "modelo_extraccion",
+    "version_prompt",
+    "version_esquema",
     "texto_extraido",
     "motivo_carga",
 )

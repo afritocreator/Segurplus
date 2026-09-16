@@ -318,3 +318,41 @@ def factura_desde_json(
         hash_pdf=hash_pdf,
         ruta_pdf=ruta_pdf,
     )
+
+
+def conceptos_desde_filas(filas: list[dict]) -> list[Concepto]:
+    """Convierte filas editadas a mano (ej. en un `st.data_editor` de
+    `apps/segurplus/paginas/confirmar.py`) a `Concepto` -- descarta las
+    filas sin descripción (vacías, agregadas de más en un editor
+    dinámico). Sin depender de pandas: recibe `list[dict]`
+    (`DataFrame.to_dict("records")`), no el DataFrame en sí -- `core/` no
+    tiene por qué saber que la UI usa pandas."""
+    conceptos = []
+    for fila in filas:
+        descripcion = str(fila.get("descripcion") or "").strip()
+        if not descripcion:
+            continue
+        unidad = str(fila.get("unidad") or "").strip() or None
+        conceptos.append(
+            Concepto(
+                descripcion=descripcion,
+                cantidad=float(fila.get("cantidad") or 0),
+                unidad=unidad,
+                precio_unitario=float(fila.get("precio_unitario") or 0),
+                importe=float(fila.get("importe") or 0),
+            )
+        )
+    return conceptos
+
+
+def montos_desde_filas(filas: list[dict], clase: type) -> list:
+    """Igual que `conceptos_desde_filas`, para `Impuesto`/`Recargo`/
+    `Credito` -- las tres comparten la misma forma (`nombre` + `importe`).
+    Descarta las filas sin nombre."""
+    resultado = []
+    for fila in filas:
+        nombre = str(fila.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        resultado.append(clase(nombre=nombre, importe=float(fila.get("importe") or 0)))
+    return resultado

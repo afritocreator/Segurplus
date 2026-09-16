@@ -31,6 +31,12 @@ requerir_contrasena()
 pagina_cargar = st.Page(
     "apps/segurplus/paginas/cargar.py", title="Cargar facturas", icon="📥", default=True
 )
+# Plan de confirmación de carga: subir deja un borrador acá, y se confirma
+# en esta pantalla nueva -- con el PDF al lado, estilo Klericó
+# (app/(app)/facturas/[id]/review-grid.tsx) -- antes de que impacte nada.
+pagina_confirmar = st.Page(
+    "apps/segurplus/paginas/confirmar.py", title="Confirmar carga", icon="🧾"
+)
 pagina_evolucion = st.Page(
     "apps/segurplus/paginas/evolucion.py", title="Evolución por servicio", icon="📊"
 )
@@ -44,6 +50,7 @@ pagina_sin_clasificar = st.Page(
 st.navigation(
     [
         pagina_cargar,
+        pagina_confirmar,
         pagina_revision,
         pagina_evolucion,
         pagina_casos,

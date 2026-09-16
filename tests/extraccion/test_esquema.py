@@ -3,7 +3,15 @@ normalización de fechas (docs/auditoria-2026-09.md, hallazgo A-11): el
 prompt le pide al modelo formato ISO, pero un LLM puede devolver el formato
 argentino que ve impreso en la factura."""
 
-from core.extraccion.esquema import _normalizar_fecha, factura_desde_json
+from core.extraccion.esquema import (
+    Credito,
+    Impuesto,
+    Recargo,
+    _normalizar_fecha,
+    conceptos_desde_filas,
+    factura_desde_json,
+    montos_desde_filas,
+)
 
 
 def _datos_minimos(**overrides) -> dict:
@@ -111,3 +119,67 @@ def test_factura_desde_json_periodo_hasta_mes_anio_va_a_fin_de_mes():
     factura = factura_desde_json(datos)
     assert factura.periodo_desde == "2022-07-01"
     assert factura.periodo_hasta == "2022-07-31"
+
+
+# --- conceptos_desde_filas / montos_desde_filas: la contraparte de
+# --- factura_desde_json para filas editadas a mano en un st.data_editor
+# --- (apps/segurplus/paginas/confirmar.py, plan de confirmación de carga) --
+
+
+def test_conceptos_desde_filas_ignora_filas_sin_descripcion():
+    filas = [
+        {
+            "descripcion": "Abono",
+            "cantidad": 4,
+            "unidad": "línea",
+            "precio_unitario": 2500.0,
+            "importe": 10000.0,
+        },
+        {"descripcion": "", "cantidad": 0, "unidad": "", "precio_unitario": 0.0, "importe": 0.0},
+        {
+            "descripcion": "  ",
+            "cantidad": 1,
+            "unidad": None,
+            "precio_unitario": 0.0,
+            "importe": 0.0,
+        },
+    ]
+    conceptos = conceptos_desde_filas(filas)
+    assert len(conceptos) == 1
+    assert conceptos[0].descripcion == "Abono"
+    assert conceptos[0].unidad == "línea"
+
+
+def test_conceptos_desde_filas_vacia_devuelve_lista_vacia():
+    filas = [
+        {"descripcion": "", "cantidad": 1.0, "unidad": "", "precio_unitario": 0.0, "importe": 0.0}
+    ]
+    assert conceptos_desde_filas(filas) == []
+
+
+def test_conceptos_desde_filas_sin_unidad_da_none():
+    filas = [
+        {
+            "descripcion": "Cargo fijo",
+            "cantidad": 1,
+            "unidad": "",
+            "precio_unitario": 100.0,
+            "importe": 100.0,
+        }
+    ]
+    assert conceptos_desde_filas(filas)[0].unidad is None
+
+
+def test_montos_desde_filas_ignora_filas_sin_nombre():
+    filas = [{"nombre": "IVA 21%", "importe": 2100.0}, {"nombre": "", "importe": 0.0}]
+    impuestos = montos_desde_filas(filas, Impuesto)
+    assert impuestos == [Impuesto("IVA 21%", importe=2100.0)]
+
+
+def test_montos_desde_filas_funciona_para_recargos_y_creditos():
+    assert montos_desde_filas([{"nombre": "Interés por mora", "importe": 350.0}], Recargo) == [
+        Recargo("Interés por mora", importe=350.0)
+    ]
+    assert montos_desde_filas([{"nombre": "Bonificación", "importe": 100.0}], Credito) == [
+        Credito("Bonificación", importe=100.0)
+    ]

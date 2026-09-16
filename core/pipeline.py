@@ -195,6 +195,7 @@ def confirmar_factura(
     *,
     diccionario: dict[str, list[str]] | None = None,
     total_impreso: float | None = None,
+    actor: str = "sistema",
 ) -> str:
     """Guarda como DEFINITIVA una factura editada en la pantalla de
     confirmación (`apps/segurplus/paginas/confirmar.py`) -- re-homologa con
@@ -253,6 +254,7 @@ def confirmar_factura(
         motivos_homologacion=motivos_homologacion,
         candidatos_empatados=candidatos_empatados,
         estado=estado,
+        actor=actor,
     )
     # Ítem duplicado se calcula sobre la factura YA CORREGIDA -- si el
     # usuario arregló una descripción que coincidía con otra por error de

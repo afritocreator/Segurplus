@@ -15,6 +15,7 @@ dependencies = [
     "pdfplumber>=0.11",
     "google-genai>=0.3",
     "psycopg[binary]>=3.2",  # Postgres gratis (Neon/Supabase), ver ADR-003
+    "pandas>=2.0",  # solo para st.data_editor en apps/segurplus/paginas/confirmar.py
 ]
 
 [project.optional-dependencies]
