@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 import core.almacenamiento as almacenamiento_mod
-from core.almacenamiento import conectar, guardar_factura
+from core.almacenamiento import conectar, guardar_en_cuarentena, guardar_factura
 from core.extraccion.esquema import Concepto, FacturaExtraida
+from core.extraccion.validacion import validar_factura
 
 _ENTRYPOINT = (
     Path(__file__).resolve().parents[2] / "apps" / "segurplus" / "paginas" / "sin_clasificar.py"
@@ -78,6 +79,39 @@ def test_pagina_renderiza_sin_errores(base_con_conceptos_sin_clasificar):
     at.session_state["segurplus_rol"] = "administrador"
     at.run()
     assert not at.exception
+
+
+def test_sin_cuarentena_historica_no_muestra_el_aviso(base_con_conceptos_sin_clasificar):
+    """docs/auditoria-2026-09-confirmacion.md, D-25: el aviso de
+    "En cuarentena (histórico)" no tiene sentido en una instalación que
+    nunca tuvo nada en cuarentena -- antes se mostraba siempre."""
+    at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
+    at.run()
+    assert not at.exception
+    assert not any("ya no recibe cargas nuevas" in c.value for c in at.caption)
+
+
+def test_con_cuarentena_historica_muestra_el_aviso(tmp_path, monkeypatch):
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
+    con = conectar()
+    factura = _factura_sin_homologar("h1", "Abono", 100.0)
+    factura.conceptos[0].importe = 999999.0  # rompe la validación aritmética
+    guardar_en_cuarentena(
+        con,
+        hash_pdf="h1",
+        ruta_pdf="/tmp/x.pdf",
+        resultado=validar_factura(factura),
+        emisor=factura.emisor,
+        servicio=factura.servicio,
+    )
+    con.close()
+
+    at = _app()
+    at.session_state["segurplus_rol"] = "administrador"
+    at.run()
+    assert not at.exception
+    assert any("ya no recibe cargas nuevas" in c.value for c in at.caption)
 
 
 def test_pagina_muestra_el_importe_sin_clasificar(base_con_conceptos_sin_clasificar):

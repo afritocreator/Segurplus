@@ -291,6 +291,37 @@ tablero como en el Excel exportado al cliente.
   `estado = 'borrador'`. "En cuarentena" quedó relabeleado como "(histórico)" en
   `sin_clasificar.py` y el Excel -- ya no recibe filas nuevas desde el plan anterior.
 
+## Auditoría D-1 a D-25 y sus correcciones
+
+`docs/auditoria-2026-09-confirmacion.md` revisó los dos planes de arriba (confirmación de
+carga + vocabulario) sin corregir nada; los 25 hallazgos ya están corregidos, en bloques
+separados sobre la misma rama. Los más importantes:
+
+- **Un concepto fantasma "nan" podía entrar al análisis** (D-1): una fila del editor sin
+  completar llegaba con celdas `NaN`, que `or` no atrapa -- `conceptos_desde_filas`/
+  `montos_desde_filas` ahora la descartan con helpers NaN-safe.
+- **La traducción de conceptos no aplicaba a los consumos con unidad** (D-2): la clave real
+  de un consumo medido lleva el sufijo `" [unidad]"` -- `etiqueta_legible` ahora lo separa
+  antes de traducir. De paso se cacheó por `mtime` (D-16, antes se re-leía el YAML en cada
+  fila) y se tradujo el concepto también dentro de los mensajes de alerta (D-13).
+- **`confirmar_factura` pasó a ser la autoridad sobre estado y procedencia** (D-5, D-6,
+  D-7): exige que exista un borrador antes de confirmar (cierra la doble confirmación),
+  preserva `ruta_evidencia`/`respuesta_extraida`/`modelo_extraccion`/`texto_extraido`/
+  `motivo_carga` desde la base en vez de confiar en lo que arme el formulario, y registra
+  las correcciones de cabecera (`correcciones_factura`, D-4) y una acción "confirmacion"
+  distinguible de "carga" en el historial (D-22).
+- **Avisos de incompletitud que faltaban**: Evolución y el Excel ahora dicen cuántas
+  facturas de un servicio siguen sin confirmar (D-3); `cargar.py` separa los borradores
+  que llegaron con un problema de los que salieron limpios (D-8).
+- **Nombres de hoja del Excel cambiados sin aviso (D-21)**: `"Descomposición"` →
+  `"Precio vs. cantidad"`, `"Cuarentena"` → `"Cuarentena (histórico)"` -- si tenés una
+  plantilla propia que las referencia por nombre, hay que actualizarla. Sin consumidores
+  automatizados conocidos dentro del repo.
+- El resto (D-9 a D-12, D-14, D-17 a D-20, D-23 a D-25) son mejoras de robustez, wording y
+  permisos de menor alcance -- ver el propio documento de auditoría para el detalle de
+  cada uno. **D-23** (qué rol mínimo puede confirmar una factura) se dejó como decisión
+  consciente: `cargador` sigue pudiendo confirmar.
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver

@@ -26,8 +26,12 @@ y mostrado la salida.
 El modelo (Gemini) SOLO extrae texto a JSON. Nunca decide un número que se muestra sin
 pasar antes por `core/extraccion/validacion.py` (control aritmético determinístico:
 cantidad × precio = importe, Σ conceptos = subtotal, subtotal + impuestos = total, y la
-doble lectura del total contra `pdfplumber`). Si una factura no cierra, va a cuarentena
-y NO entra al análisis — nunca se le muestra un número no verificado a un usuario.
+doble lectura del total contra `pdfplumber`). Cada factura que sube el pipeline queda
+primero como un **borrador editable** en "Confirmar carga", con el PDF original al lado
+(`core.pipeline.procesar_pdf` nunca decide si algo entra al análisis, ver `docs/estado.md`,
+sección "Plan de confirmación de carga") — recién `core.pipeline.confirmar_factura` la deja
+aprobada, y solo si la aritmética cierra: si no, sigue como borrador para corregir a mano,
+nunca se le muestra un número no verificado a un usuario.
 
 ## Definition of Done
 `pytest` verde + `ruff check` sin warnings + toda fórmula de `core/analisis/` con

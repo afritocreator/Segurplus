@@ -2,6 +2,14 @@
 
 Repo: `afritocreator/Segurplus`, separado de `Consultora` (herramienta interna, no un producto de la biblioteca de análisis financiero).
 
+**Este documento describe el diseño ORIGINAL (fases 0-6), no necesariamente el estado
+actual** -- igual que las auditorías viejas (`docs/auditoria-2026-09*.md`), es un registro
+histórico y no se reescribe para seguir cada cambio posterior. En particular, el circuito
+de "cuarentena" que se menciona varias veces abajo cambió: desde el plan de confirmación de
+carga, una factura que no cierra queda como un **borrador editable** en "Confirmar carga",
+con el PDF al lado, en vez de ir a una cola de cuarentena -- ver `docs/estado.md`, sección
+"Plan de confirmación de carga", para cómo funciona hoy.
+
 ---
 
 ## Contexto

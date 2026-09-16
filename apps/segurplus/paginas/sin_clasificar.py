@@ -61,15 +61,20 @@ try:
         "¿La herramienta está leyendo bien a ESTE proveedor? Ordenado por tasa de "
         "cuarentena descendente -- el que más falla, primero."
     )
-    st.caption(
-        '"En cuarentena (histórico)" ya no recibe cargas nuevas -- desde el circuito de '
-        '"Confirmar carga", una factura que no cierra queda como borrador editable, no '
-        "en cuarentena. Se mantiene el dato viejo como trazabilidad."
-    )
     metricas = metricas_por_proveedor(metricas_por_proveedor_db(con))
     if not metricas:
         st.info("Todavía no se cargó ninguna factura.")
     else:
+        # D-25: este aviso solo tiene sentido si hay algo histórico que
+        # explicar -- antes se mostraba siempre, incluso en una instalación
+        # nueva que nunca tuvo nada en cuarentena.
+        if any(m.facturas_en_cuarentena for m in metricas):
+            st.caption(
+                '"En cuarentena (histórico)" ya no recibe cargas nuevas -- desde el '
+                'circuito de "Confirmar carga", una factura que no cierra queda como '
+                "borrador editable, no en cuarentena. Se mantiene el dato viejo como "
+                "trazabilidad."
+            )
         st.dataframe(
             [
                 {
