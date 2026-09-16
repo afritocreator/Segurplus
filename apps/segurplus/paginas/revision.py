@@ -2,7 +2,14 @@
 después una factura que ya quedó aprobada (docs/auditoria-2026-09-piloto.md,
 A-50: con revision_humana_obligatoria en false -- el default -- TODA
 factura nace aprobada, así que esta segunda vía es la única forma de sacar
-del análisis una factura mal leída o corregirle la cabecera)."""
+del análisis una factura mal leída o corregirle la cabecera).
+
+Esta página SOLO ve facturas que ya pasaron por "Confirmar carga" --
+`requiere_revision` (si `revision_humana_obligatoria` está en true) o
+`aprobada` (si está en false, el default). Un borrador recién subido NO
+aparece acá: se corrige y confirma en `apps/segurplus/paginas/confirmar.py`,
+con el PDF al lado -- esta pantalla es para lo posterior a esa carga, no
+para arreglar una carga que salió mal."""
 
 from __future__ import annotations
 

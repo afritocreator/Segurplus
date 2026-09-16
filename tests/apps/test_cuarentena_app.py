@@ -1,6 +1,9 @@
 """Test de la página de Cuarentena contra AppTest de Streamlit --
 docs/auditoria-2026-09.md, hallazgo A-19 (0% de cobertura antes de este
-bloque) y A-17 (botón "Reintentar")."""
+bloque) y A-17 (botón "Reintentar"). Desde el plan de confirmación de
+carga, esta página es un archivo histórico -- `procesar_pdf` ya no escribe
+filas nuevas acá (ver `guardar_en_cuarentena` usado directo en los tests
+de abajo, simulando una fila vieja de antes de ese cambio)."""
 
 from pathlib import Path
 
@@ -45,7 +48,7 @@ def test_sin_cuarentena_muestra_mensaje_de_exito(tmp_path, monkeypatch):
     at = _app()
     at.run()
     assert not at.exception
-    assert any("No hay facturas en cuarentena" in s.value for s in at.success)
+    assert any("No hay nada en cuarentena" in s.value for s in at.success)
 
 
 @pytest.fixture

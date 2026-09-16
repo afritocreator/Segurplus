@@ -24,7 +24,7 @@ Kleric- no necesita:
 Si CUALQUIERA de estos controles falla, la factura NO entra al análisis --
 CLAUDE.md: "nunca mostrarle a un usuario un número no verificado". Antes
 esto se hacía cumplir mandando la factura a la tabla `cuarentena`; con el
-plan de confirmación de carga (docs/auditoria-2026-09-facturas-reales-2.md)
+plan de confirmación de carga (docs/estado.md),
 `core.pipeline.confirmar_factura` es quien llama a `validar_factura` y
 rechaza confirmar si `factura_valida` da `False` -- la factura sigue
 siendo un borrador editable, no un callejón sin salida."""

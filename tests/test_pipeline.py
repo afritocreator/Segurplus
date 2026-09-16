@@ -58,8 +58,8 @@ def _factura_rota() -> FacturaExtraida:
 
 
 # --- procesar_pdf: SIEMPRE deja un borrador, nunca decide sola --------------
-# docs/auditoria-2026-09-facturas-reales-2.md (plan de confirmación de
-# carga): antes, una factura que no cerraba terminaba en uno de tres
+# Plan de confirmación de carga (docs/estado.md): antes, una factura que
+# no cerraba terminaba en uno de tres
 # callejones sin salida (cuarentena, "necesita_datos", o un mensaje que se
 # perdía). Ahora el pipeline SIEMPRE deja un borrador -- la calidad de la
 # extracción (válida, con la aritmética rota, o sin período/servicio) no

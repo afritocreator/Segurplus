@@ -212,6 +212,52 @@ de un servicio a lo largo de todos los períodos cargados, y la página de Evolu
 selectores en el sidebar, métricas + la frase de veredicto, y pestañas (Descomposición
 / Composición total / Serie histórica / Alertas / Detalle) en vez de todo apilado.
 
+## Plan de confirmación de carga
+
+Después de la auditoría de arriba, el usuario volvió a probar con facturas reales:
+las de luz entraron bien, pero las de Movistar fallaron de las tres formas a la vez
+(error al leer, cuarentena, "faltan datos") -- y además la interpretación de los
+datos resultaba confusa. El problema de fondo era que **el pipeline decidía solo**:
+leía con Gemini, validaba, y escribía el resultado final sin que nadie viera nada
+antes. Si algo salía mal, la factura terminaba en uno de tres callejones sin salida
+distintos (cuarentena con un botón "reintentar" que no arreglaba nada; "necesita
+datos", que mandaba a corregir de a un campo sin ver el PDF; o un mensaje que se
+perdía al recargar la página).
+
+Este plan trae el patrón de Klericó (`app/(app)/facturas/[id]/review-grid.tsx`): al
+subir, la factura queda como un **borrador** editable, con el **PDF original al
+lado**, y nada entra al análisis hasta que se confirma.
+
+- **`core/pipeline.py::procesar_pdf`** ya no decide nada -- solo extrae con Gemini y
+  deja SIEMPRE un `estado="borrador"` en `facturas`, sea cual sea su calidad
+  (aritmética rota, sin período/servicio, o la extracción fallada del todo, que ahora
+  deja un borrador VACÍO para completar a mano en vez de perderse). Nueva
+  `confirmar_factura`: guarda como definitiva una factura ya editada -- re-homologa
+  con las descripciones CORREGIDAS (no las de Gemini), valida aritméticamente y exige
+  período+servicio, redundante a propósito con lo que la pantalla ya bloquea.
+- **`core/almacenamiento.py`**: nuevo estado `"borrador"`, columnas `motivo_carga` y
+  `texto_extraido` en `facturas`, y `listar_borradores`/`leer_borrador`/
+  `descartar_borrador` -- la cola que lee la pantalla nueva. Ninguna consulta del
+  análisis necesitó cambiar: todas ya filtraban `estado = 'aprobada'`.
+- **`apps/segurplus/paginas/confirmar.py`** (nueva): el PDF a la izquierda (`st.pdf`,
+  con fallback al texto extraído si no hay evidencia guardada) y todo editable a la
+  derecha -- cabecera, conceptos/impuestos/recargos/créditos en `st.data_editor`. El
+  control aritmético corre EN VIVO mientras se edita, en castellano y línea por línea,
+  más la doble lectura contra el total impreso en el PDF. El botón "Confirmar
+  factura" queda bloqueado hasta que la aritmética cierra y hay período y servicio,
+  con el motivo exacto de por qué no se puede todavía.
+- **`apps/segurplus/paginas/cargar.py`** ahora dice "N factura(s) listas para
+  confirmar" y enlaza a la pantalla nueva, en vez de mostrar cinco categorías
+  distintas. **`revision.py`** queda solo para lo YA aprobado (corregir una cabecera
+  o rechazar algo que resultó mal después) -- deja de ser el lugar donde se arregla
+  una carga. **`cuarentena.py`** pasa a ser un archivo histórico de solo lectura:
+  `procesar_pdf` ya no le escribe filas nuevas.
+
+Esto resuelve que una factura que no entra deje de ser un callejón sin salida -- se
+corrige a mano, con el PDF a la vista, en vez de perderse. **No resuelve** que Gemini
+lea mejor una factura de Movistar de entrada -- eso necesita una factura real para
+diagnosticar y sigue dependiendo de B-3 (nunca verificado contra la API real).
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver

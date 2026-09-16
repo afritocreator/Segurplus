@@ -1,6 +1,7 @@
 """Página de carga de facturas: subir PDFs, correr el pipeline de punta a
-punta (core.pipeline.procesar_pdf) y mostrar un resumen de qué se guardó,
-qué fue a cuarentena y qué ya estaba procesado.
+punta (core.pipeline.procesar_pdf) -- que SIEMPRE deja un borrador, nunca
+decide sola si algo entra al análisis -- y mandar a "Confirmar carga" para
+revisar cada una con el PDF al lado antes de que impacte nada.
 
 Cáscara fina (CLAUDE.md): no calcula nada acá, todo pasa por core/.
 """
@@ -19,9 +20,9 @@ from core.pipeline import ResultadoPipeline, procesar_pdf
 
 st.title("📥 Cargar facturas")
 st.caption(
-    "Subí los PDFs de facturas del mes. Cada una pasa por un control aritmético "
-    "antes de entrar al análisis -- si algo no cierra, va a la cola de Cuarentena "
-    "en vez de mostrarse como si fuera un dato confiable."
+    "Subí los PDFs de facturas del mes. Cada una queda como un BORRADOR -- "
+    "ninguna entra al análisis todavía, se revisa y confirma después en "
+    '"Confirmar carga", con el PDF al lado.'
 )
 if not persistencia_durable_configurada():
     st.info(
@@ -78,42 +79,36 @@ if archivos and st.button("Procesar", type="primary", disabled=not api_key):
         barra.progress((i + 1) / len(archivos))
     con.close()
 
-    guardadas = [r for r in resultados if r.estado == "guardada"]
-    # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-1: NO se cuenta junto con
-    # "guardadas" a propósito -- son facturas que se guardaron pero sin
-    # `periodo_desde` o `servicio`, así que hoy son invisibles para el
-    # análisis. Mostrarlas como éxito sería repetir el mismo engaño que
-    # causó el hallazgo.
-    necesitan_datos = [r for r in resultados if r.estado == "necesita_datos"]
-    cuarentena = [r for r in resultados if r.estado == "cuarentena"]
+    # Plan de confirmación de carga (docs/estado.md): procesar_pdf ya no
+    # decide si una factura entra al análisis --
+    # solo puede dejar un borrador (haya salido perfecta o con la
+    # aritmética rota, da lo mismo acá: eso se resuelve en "Confirmar
+    # carga") o, si ni siquiera se llegó a intentar leerla (tope de
+    # llamadas, PDF ilegible), un error.
+    borradores = [r for r in resultados if r.estado == "borrador"]
     repetidas = [r for r in resultados if r.estado == "ya_procesada"]
     errores = [r for r in resultados if r.estado == "error_extraccion"]
 
-    col_g, col_n, col_c, col_r, col_e = st.columns(5)
-    col_g.metric("Guardadas", len(guardadas))
-    col_n.metric("Faltan datos", len(necesitan_datos))
-    col_c.metric("Cuarentena", len(cuarentena))
+    col_b, col_r, col_e = st.columns(3)
+    col_b.metric("Listas para confirmar", len(borradores))
     col_r.metric("Ya procesadas", len(repetidas))
     col_e.metric("Errores", len(errores))
 
-    if guardadas:
-        st.success(f"{len(guardadas)} factura(s) guardadas y validadas.")
-    if necesitan_datos:
-        st.warning(
-            f"{len(necesitan_datos)} factura(s) se guardaron pero les falta un dato "
-            "que el análisis necesita para verlas -- no van a aparecer en ningún "
-            "gráfico hasta que se completen:"
-        )
-        for r in necesitan_datos:
-            st.write(f"- **{r.ruta.name}**: {r.detalle}")
+    if borradores:
+        st.success(f"{len(borradores)} factura(s) listas para confirmar.")
+        try:
+            st.page_link(
+                "apps/segurplus/paginas/confirmar.py",
+                label="Ir a Confirmar carga",
+                icon="🧾",
+            )
+        except st.errors.StreamlitPageNotFoundError:
+            # st.page_link exige que la página esté registrada en
+            # st.navigation (streamlit_app.py) -- no pasa en producción,
+            # pero sí al testear esta página standalone con AppTest.
+            st.caption('Andá a "Confirmar carga" para revisarlas.')
     if repetidas:
         st.info(f"{len(repetidas)} factura(s) ya estaban procesadas (se ignoraron).")
-    if cuarentena:
-        st.error(
-            f"{len(cuarentena)} factura(s) fueron a cuarentena -- no cerraron aritméticamente:"
-        )
-        for r in cuarentena:
-            st.write(f"- **{r.ruta.name}**: {r.detalle}")
     if errores:
         st.warning(f"{len(errores)} factura(s) no se pudieron leer:")
         for r in errores:

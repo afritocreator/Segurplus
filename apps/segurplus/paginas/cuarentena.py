@@ -1,10 +1,19 @@
-"""Página de cuarentena: facturas que NO cerraron aritméticamente y por eso
-nunca entraron al análisis (ver CLAUDE.md, "la regla que separa esto de
-confiar en la IA"). Cada fila tiene un botón "Reintentar" (docs/
-auditoria-2026-09.md, hallazgo A-17) que solo saca el registro de la cola --
-corregir el dato en sí (ajustar el prompt, resubir un PDF corregido) es
-trabajo manual fuera del tablero, esto no reprocesa nada automáticamente.
-"""
+"""Página de cuarentena -- ARCHIVO HISTÓRICO, ya no recibe filas nuevas.
+
+Antes, una factura que no cerraba aritméticamente terminaba acá: un
+callejón sin salida, con un único botón "Reintentar" (docs/auditoria-
+2026-09.md, hallazgo A-17) que solo sacaba el registro de la cola sin
+arreglar nada -- corregir el dato en sí era trabajo manual fuera del
+tablero. Desde el plan de confirmación de carga (docs/estado.md),
+`core.pipeline.procesar_pdf` ya NO manda nada a la tabla `cuarentena`:
+una factura con la aritmética
+rota queda como un BORRADOR editable en "Confirmar carga", con el PDF al
+lado, en vez de en esta cola.
+
+Esta página se deja de solo lectura mientras pueda quedar algo viejo acá
+(de antes de este cambio) -- el botón "Reintentar" se mantiene para
+liberar esas filas puntuales. Se puede borrar del todo (y del menú) una
+vez que esté confirmado que no queda nada."""
 
 from __future__ import annotations
 
@@ -12,12 +21,7 @@ import streamlit as st
 
 from core.almacenamiento import borrar_de_cuarentena, conectar
 
-st.title("🧾 Cuarentena")
-st.caption(
-    "Facturas que un modelo leyó pero cuyos números no cerraron (cantidad×precio, "
-    "subtotal, total, o el total impreso en el PDF). Ninguna de estas entró al "
-    "análisis -- revisalas a mano."
-)
+st.title("🧾 Cuarentena (archivo histórico)")
 
 con = conectar()
 filas = con.execute(
@@ -25,8 +29,17 @@ filas = con.execute(
 ).fetchall()
 
 if not filas:
-    st.success("No hay facturas en cuarentena.")
+    st.success(
+        "No hay nada en cuarentena -- y no debería volver a haber nada: las cargas "
+        'nuevas que no cierran aritméticamente quedan como borrador en "Confirmar '
+        'carga", no acá.'
+    )
 else:
+    st.caption(
+        "Filas de ANTES del plan de confirmación de carga -- las cargas nuevas no "
+        'pasan más por acá, van directo a "Confirmar carga" como un borrador editable '
+        'con el PDF al lado. "Reintentar" libera el hash para volver a subir el PDF.'
+    )
     for hash_pdf, ruta, motivos in filas:
         with st.container(border=True):
             col_info, col_boton = st.columns([5, 1])
