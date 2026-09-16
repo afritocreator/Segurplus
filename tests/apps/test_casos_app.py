@@ -65,6 +65,7 @@ def test_pagina_muestra_el_caso(base_con_un_caso):
     assert len(filas) == 1
     assert filas.iloc[0]["Tipo"] == "Ítem duplicado"
     assert filas.iloc[0]["Estado"] == "Abierto"
+    assert filas.iloc[0]["Severidad"] == "Media"  # D-18: no "media" crudo
 
 
 def test_actualizar_caso_persiste_estado_responsable_y_vencimiento(base_con_un_caso):

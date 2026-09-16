@@ -15,6 +15,12 @@ ETIQUETAS_ESTADO_CASO: dict[str, str] = {
     "descartado": "Descartado",
 }
 
+ETIQUETAS_SEVERIDAD: dict[str, str] = {
+    "alta": "Alta",
+    "media": "Media",
+    "baja": "Baja",
+}
+
 st.title("📌 Casos de alertas")
 st.caption("Asigná, documentá y cerrá cada alerta relevante sin perder su evidencia.")
 requerir_rol("responsable", "administrador")
@@ -35,7 +41,7 @@ try:
         {
             "Clave": clave,
             "Tipo": etiqueta_tipo(tipo),
-            "Severidad": severidad,
+            "Severidad": ETIQUETAS_SEVERIDAD.get(severidad, severidad),
             "Mensaje": mensaje,
             "Concepto": concepto or "—",
             "Estado": ETIQUETAS_ESTADO_CASO.get(estado, estado),

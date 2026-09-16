@@ -316,7 +316,7 @@ with st.container(border=True):
         st.caption("No hubo variación nominal entre los períodos seleccionados.")
 
 tab_descomposicion, tab_composicion, tab_serie, tab_alertas, tab_detalle = st.tabs(
-    ["Precio vs. cantidad", "Todos los conceptos", "Serie histórica", "Alertas", "Detalle"]
+    ["Precio vs. cantidad", "Impuestos y total pagable", "Serie histórica", "Alertas", "Detalle"]
 )
 
 with tab_descomposicion:

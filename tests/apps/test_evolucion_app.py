@@ -80,6 +80,17 @@ def test_pagina_muestra_la_serie_historica(base_con_dos_periodos):
     assert any("Todos los períodos cargados" in c.value for c in at.caption)
 
 
+def test_pestana_de_componentes_financieros_tiene_nombre_preciso(base_con_dos_periodos):
+    """docs/auditoria-2026-09-confirmacion.md, D-14: esta pestaña muestra
+    consumos/impuestos/recargos/créditos/total pagable, NO conceptos uno
+    por uno (eso es "Detalle") -- "Todos los conceptos" describía mal el
+    contenido y colisionaba con lo que sí hace esa otra pestaña."""
+    at = _app()
+    at.run()
+    assert not at.exception
+    assert any(tab.label == "Impuestos y total pagable" for tab in at.tabs)
+
+
 def test_pagina_muestra_totales_de_ambos_periodos(base_con_dos_periodos):
     at = _app()
     at.run()
