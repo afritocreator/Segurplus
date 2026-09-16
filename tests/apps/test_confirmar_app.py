@@ -29,12 +29,17 @@ def _app():
     return AppTest.from_file(str(_ENTRYPOINT))
 
 
-def _factura(hash_pdf: str = "b1", *, servicio: str | None = "telefonia") -> FacturaExtraida:
+def _factura(
+    hash_pdf: str = "b1",
+    *,
+    servicio: str | None = "telefonia",
+    periodo_desde: str | None = "2026-07-01",
+) -> FacturaExtraida:
     return FacturaExtraida(
         emisor="Comunicaciones Sur S.A.",
         cuit="30-71234567-8",
         servicio=servicio,
-        periodo_desde="2026-07-01",
+        periodo_desde=periodo_desde,
         periodo_hasta="2026-07-31",
         fecha_emision="2026-07-05",
         fecha_vencimiento=None,
@@ -96,6 +101,50 @@ def test_boton_confirmar_deshabilitado_sin_servicio(tmp_path, monkeypatch):
     boton = at.get_by_key("confirmar_b1")
     assert boton.disabled is True
     assert any("no se puede confirmar" in w.value.lower() for w in at.warning)
+
+
+def test_boton_confirmar_deshabilitado_sin_periodo(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, B-1: el caso real que
+    bloqueaba al usuario -- una factura sin período interpretable. Con el
+    campo vacío (el borrador no trajo nada) el botón queda bloqueado y el
+    motivo lo dice."""
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(periodo_desde=None), estado="borrador")
+    con.close()
+
+    at = _app()
+    at.run()
+
+    boton = at.get_by_key("confirmar_b1")
+    assert boton.disabled is True
+    assert any("período desde" in w.value.lower() for w in at.warning)
+
+
+def test_control_aritmetico_muestra_el_error_de_linea(tmp_path, monkeypatch):
+    """El detalle en castellano, línea por línea, que reemplaza a la fila
+    genérica de "cuarentena" de antes."""
+    monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    factura.conceptos = [
+        Concepto("Abono 5 líneas móviles", 5, "línea", 100.0, 800.0)
+    ]  # debería ser 500
+    factura.subtotal = 800.0
+    factura.impuestos = [Impuesto("IVA 21%", importe=168.0)]
+    factura.total = 968.0
+    guardar_factura(con, factura, estado="borrador")
+    con.close()
+
+    at = _app()
+    at.run()
+
+    assert not at.exception
+    textos = " ".join(e.value for e in at.error)
+    assert "Abono 5 líneas móviles" in textos
+    assert "500" in textos  # lo que debería dar cantidad × precio
+    boton = at.get_by_key("confirmar_b1")
+    assert boton.disabled is True
 
 
 def test_boton_confirmar_deshabilitado_sin_ningun_concepto(tmp_path, monkeypatch):

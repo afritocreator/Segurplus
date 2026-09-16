@@ -15,8 +15,9 @@ lectura de facturas con IA y su validación aritmética).
 ## Cómo funciona, en una frase
 
 El modelo (Gemini, gratis) solo extrae texto a JSON. Ningún número se muestra sin pasar
-antes por un control aritmético determinístico (`core/extraccion/validacion.py`): si una
-factura no cierra, va a cuarentena y no entra al análisis.
+antes por un control aritmético determinístico (`core/extraccion/validacion.py`): subir un
+PDF deja un **borrador** editable en **Confirmar carga**, con el PDF al lado -- si algo no
+cierra, se corrige ahí mismo; nada entra al análisis hasta que se confirma.
 
 ## Instalación
 
@@ -91,7 +92,9 @@ después de agregar un alias.
 
 ## Diagnosticar una factura que no entra
 
-Cuando una factura da error, va a cuarentena, o simplemente no aparece donde se esperaba:
+Subir un PDF SIEMPRE deja un borrador -- si algo no cierra, no se pierde: queda en
+**Confirmar carga**, con el PDF al lado, para corregir a mano y confirmar recién cuando
+cierra. Si una factura ni siquiera llegó a leerse (Gemini no respondió, el PDF está roto):
 
 1. La página **Cargar facturas** tiene un checkbox "Ver últimos intentos de extracción
    fallidos" con el historial persistido (tabla `intentos_gemini`) -- sigue disponible

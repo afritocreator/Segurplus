@@ -625,3 +625,77 @@ def test_rechazar_una_factura_permite_volver_a_subir_el_mismo_pdf(tmp_path, monk
     r2 = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
     assert r2.estado == "borrador"  # se reprocesó, no "ya_procesada"
     con.close()
+
+
+# --- Escenarios de verificación del plan de confirmación de carga
+# --- (docs/estado.md): de punta a punta con las fixtures sintéticas --------
+
+
+def test_de_punta_a_punta_factura_rota_se_corrige_y_confirma(tmp_path, monkeypatch):
+    """El caso que antes iba a cuarentena (5 × $100 = $500, pero la factura
+    dice $800): ahora queda como borrador editable. Confirmar SIN corregir
+    tiene que rechazarse (la aritmética no cierra); corregir el importe a
+    lo que realmente da la cuenta lo destraba, y la factura termina
+    visible en el análisis (`totales_por_periodo`, lo que usa Evolución)."""
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: _factura_rota())
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "rota_importe_no_cierra.pdf", con, api_key="fake")
+    assert resultado.estado == "borrador"
+
+    # Sin corregir: confirmar tiene que rechazarse, no colarse al análisis.
+    con_el_dato_roto = replace(
+        _factura_rota(), hash_pdf=resultado.hash_pdf, ruta_pdf=str(resultado.ruta)
+    )
+    with pytest.raises(ValueError, match="no cierra aritméticamente"):
+        confirmar_factura(con, con_el_dato_roto)
+
+    # Corregido a mano en la pantalla (5 × $100 = $500, no $800):
+    corregida = replace(
+        con_el_dato_roto,
+        conceptos=[Concepto("Abono 5 líneas móviles", 5, "línea", 100.0, 500.0)],
+        subtotal=500.0,
+        impuestos=[Impuesto("IVA 21%", importe=105.0)],
+        total=605.0,
+    )
+    estado = confirmar_factura(con, corregida)
+    assert estado == "aprobada"
+
+    from core.almacenamiento import totales_por_periodo
+
+    assert totales_por_periodo(con, servicio="telefonia") != {}
+    en_cuarentena = con.execute(
+        "SELECT 1 FROM cuarentena WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    assert en_cuarentena is None  # nunca pasó por ahí
+    con.close()
+
+
+def test_de_punta_a_punta_factura_sin_periodo_se_completa_a_mano_y_confirma(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-facturas-reales.md, B-1: el caso real que
+    bloqueaba al usuario -- una factura de luz que el modelo lee bien pero
+    sin devolver un período interpretable. Antes tenía su propio estado
+    intermedio ("necesita_datos"); ahora es un borrador más, que queda
+    confirmable en cuanto se completa el período a mano (como si se
+    escribiera "07/2022" en el campo de la pantalla, que ya se normaliza
+    al confirmar)."""
+    factura_sin_periodo = replace(_factura_telefonia_julio(), periodo_desde=None)
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", lambda *a, **k: factura_sin_periodo)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    assert resultado.estado == "borrador"
+
+    sin_periodo = replace(
+        factura_sin_periodo, hash_pdf=resultado.hash_pdf, ruta_pdf=str(resultado.ruta)
+    )
+    with pytest.raises(ValueError, match="período y servicio"):
+        confirmar_factura(con, sin_periodo)
+
+    # Completado a mano -- "07/2022" tal como lo escribiría el usuario ya
+    # llega acá normalizado (_normalizar_fecha, el mismo que usa la
+    # pantalla en _fecha_editable).
+    completada = replace(sin_periodo, periodo_desde="2022-07-01")
+    estado = confirmar_factura(con, completada)
+    assert estado == "aprobada"
+    con.close()
