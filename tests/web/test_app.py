@@ -366,6 +366,9 @@ def test_ver_con_dos_periodos_muestra_el_analisis(cliente_logueado):
     assert r.status_code == 200
     assert "$100,00" in r.text
     assert "$110,00" in r.text
+    # Bloque 5: el relato en castellano tiene que estar arriba de todo.
+    assert 'class="relato"' in r.text
+    assert "pagaste $110,00 de energia" in r.text
 
     r = cliente_logueado.get(
         "/ver/excel",

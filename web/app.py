@@ -84,6 +84,7 @@ from core.formato import pesos_ars
 from core.ingesta.pdf_texto import total_impreso
 from core.macro.ipc import leer_ipc
 from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf
+from core.relato import DatosRelato, generar_relato_determinista, redactar_con_modelo
 from core.reportes.excel import generar_reporte_excel
 from web.auth import NOMBRE_COOKIE, contrasena_configurada, intentar_login, leer_sesion
 
@@ -805,6 +806,26 @@ def _analisis(
                 f"{len(descomposiciones)} en total -- el resto está en Detalle."
             )
 
+        # Bloque 5 del plan de rediseño: el párrafo en castellano de arriba
+        # de todo -- se arma con los MISMOS números que las métricas y la
+        # tabla de abajo, nunca un cálculo aparte (ver core/relato.py).
+        relato = redactar_con_modelo(
+            generar_relato_determinista(
+                DatosRelato(
+                    servicio=servicio,
+                    periodo_0=periodo_0,
+                    periodo_1=periodo_1,
+                    total_0=total_0,
+                    total_1=total_1,
+                    tipo_dominante=tipo_dominante,
+                    proporcion_dominante=abs(proporcion_dominante),
+                    variacion_real_pct=vr.variacion_real_pct if vr is not None else None,
+                    inflacion_pct=ipc_periodo_pct,
+                    concepto_destacado=principales[0] if principales else None,
+                )
+            )
+        )
+
         componentes_0 = componentes_financieros_periodo(
             con, servicio=servicio, periodo_desde=periodo_0
         )
@@ -873,6 +894,7 @@ def _analisis(
         "variacion_real": f"{vr.variacion_real_pct:+.1%}" if vr is not None else None,
         "inflacion_periodo": f"{ipc_periodo_pct:+.1%}",
         "veredicto": veredicto,
+        "relato": relato,
         "descomposiciones": [
             {
                 "concepto": etiqueta_legible(d.concepto),

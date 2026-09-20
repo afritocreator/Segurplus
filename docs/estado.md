@@ -409,6 +409,20 @@ clasificar" quedan fuera de esta primera versión (administración interna, no e
 principal); y `core/pipeline.py::procesar_pdf` sigue llamando a Gemini directo, no a la
 cascada del Bloque 2 (ver esa sección arriba).
 
+**Bloque 5 -- el resultado, en castellano** (`core/relato.py`): el párrafo que responde
+en una frase la pregunta que motivó el proyecto, arriba de todo en la pantalla "Ver".
+Regla dura: el modelo de lenguaje NUNCA produce un número -- `generar_relato_determinista`
+arma el párrafo con una plantilla de Python a partir de los MISMOS números ya validados
+que muestran las métricas de al lado (nunca un cálculo aparte), y opcionalmente
+`redactar_con_modelo` (Groq `llama-3.3-70b-versatile`, recomendación #1 del Informe
+Técnico Semanal de APIs Gratuitas del 18/09/2026) le pide a un modelo que lo redacte más
+natural, pasándole el párrafo YA ARMADO como única fuente y prohibiéndole tocar un
+número -- si no hay clave, falla, o da timeout, se muestra el párrafo determinístico tal
+cual (nunca un punto de falla). **Sin GROQ_API_KEY en este entorno, todavía no se probó
+la redacción por modelo contra la API real** -- el párrafo determinístico sí se probó y
+se ve en la pantalla "Ver" (`tests/test_relato.py`, 14 tests con valores calculados a
+mano).
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver
