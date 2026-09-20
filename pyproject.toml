@@ -23,12 +23,21 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "reportlab>=4.0",
+    "pymupdf>=1.24",  # tests de core/extraccion/proveedores/render.py
 ]
 # Solo si se despliega con S3/R2 real para el PDF original -- el default del
 # piloto guarda el PDF en una carpeta local (EVIDENCIA_DIR), ver
 # core/evidencia.py y ADR-003. `pip install -e ".[s3]"` para sumarlo.
 s3 = [
     "boto3>=1.35",
+]
+# Solo para probar un proveedor de extracción que reciba imagen en vez de
+# PDF nativo (Groq y similares -- ver core/extraccion/proveedores/render.py
+# y docs/decisiones/ADR-004-render-pdf-a-imagen.md). El pipeline real
+# (core/pipeline.py) no la necesita: solo llama a Gemini, que recibe el PDF
+# nativo. `pip install -e ".[vision]"` para sumarla.
+vision = [
+    "pymupdf>=1.24",
 ]
 
 [tool.pytest.ini_options]

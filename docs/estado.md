@@ -322,6 +322,45 @@ separados sobre la misma rama. Los más importantes:
   cada uno. **D-23** (qué rol mínimo puede confirmar una factura) se dejó como decisión
   consciente: `cargador` sigue pudiendo confirmar.
 
+## Rediseño de septiembre 2026: medir la lectura, sacar Streamlit, hacerlo entendible
+
+El usuario reportó que la herramienta no sirve para lo que se construyó: cuesta que lea
+las facturas (incluso las de luz y gas), y cuando las lee bien el análisis no se entiende.
+Plan en curso, con tres decisiones tomadas: (1) el resultado tiene que ser un texto en
+castellano que explique el mes, en una sola pantalla sin pestañas; (2) la herramienta sale
+de Streamlit a una web propia en Python (FastAPI + HTML plano, reusando `core/` tal cual);
+(3) antes de cambiar de proveedor de IA, medir con un banco de facturas reales -- cambiar
+sin medir es adivinar dos veces.
+
+**Bloque 1 -- banco de medición** (`docs/banco_extraccion.md`, `scripts/banco_extraccion.py`):
+convierte "¿lee bien las facturas?" en un número. Compara, campo a campo, lo que un
+proveedor extrajo contra una verdad de referencia tipeada a mano mirando el PDF real
+(nunca generada por un modelo). La verdad de referencia vive en `data/reales/banco/`
+(zona restringida, nunca se commitea). Con las primeras 4 facturas reales usadas para
+armarla (2 de luz, 2 de gas), confirmó algo importante: el layout a dos columnas de las
+facturas de gas es tan ambiguo que ni con las coordenadas x/y exactas de cada línea de
+texto se puede reconstruir con certeza qué valor corresponde a qué concepto -- ni un
+humano con precisión de punto puede desentrañarlo, solo el total y el subtotal quedan
+100% verificables ahí. **B-3 (el prompt reforzado para impuestos con dos montos) sigue sin
+poder verificarse contra la API real**: este entorno de desarrollo no tiene
+`GEMINI_API_KEY`. Es el bloqueante real para avanzar con evidencia -- correr el banco con
+una clave real es el próximo paso concreto.
+
+**Bloque 2 -- capa de proveedores intercambiable** (`core/extraccion/proveedores/`):
+agrega un adaptador genérico para cualquier proveedor compatible con la API de OpenAI
+(`openai_compat.py`, sirve a Groq/Cerebras/SambaNova/OpenRouter con el mismo código) y un
+render de PDF a PNG (`render.py`, PyMuPDF, ver ADR-004) para los que solo aceptan imagen.
+Del `Informe Técnico Semanal de APIs Gratuitas de Modelos de Lenguaje` (18/09/2026): sus
+cinco recomendaciones principales son modelos de **texto**, no pueden leer una factura --
+de los proveedores gratis investigados, **solo Groq tiene modelos multimodales de verdad**
+en el tier gratis (Llama 4 Scout, Qwen 3.6), así que es el único candidato nuevo real para
+`data/extraccion.yaml`. **El pipeline real (`core/pipeline.py::procesar_pdf`) todavía NO
+usa esta cascada** -- sigue llamando a Gemini directo, a propósito: sin una clave de Groq
+para medirlo contra el banco, recablear el camino real de carga sería la misma adivinanza
+que este plan existe para evitar. La cascada (con reintento y backoff) está lista y
+probada con proveedores simulados (21 tests, sin pegarle a ninguna API real) para el día
+que haya una clave.
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver

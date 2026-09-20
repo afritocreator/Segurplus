@@ -45,6 +45,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.analisis.homologacion import normalizar, similitud  # noqa: E402
 from core.extraccion.esquema import FacturaExtraida  # noqa: E402
 from core.extraccion.gemini import ExtraccionError, extraer_con_gemini  # noqa: E402
+from core.extraccion.proveedores import (
+    RUTA_CONFIGURACION as RUTA_CONFIGURACION_EXTRACCION,  # noqa: E402
+)
+from core.extraccion.proveedores import _leer_con_proveedor, leer_configuracion  # noqa: E402
 from core.extraccion.validacion import validar_factura  # noqa: E402
 from core.ingesta.pdf_texto import extraer_texto, total_impreso  # noqa: E402
 
@@ -204,11 +208,12 @@ def comparar_factura(
 
 
 # --- Proveedores ------------------------------------------------------------
-# Registro chico a propósito: el Bloque 2 del plan (capa de proveedores
-# intercambiable, core/extraccion/proveedores/) reemplaza esto por algo más
-# genérico cuando Groq/Cerebras/SambaNova entren en juego. Hasta entonces,
-# un dict alcanza y no hay que inventar una abstracción que todavía no se usa
-# (CLAUDE.md: "sin abstracciones que no se usan todavía").
+# Cada entrada de data/extraccion.yaml se registra acá bajo su propio
+# nombre, para poder correr `--proveedor groq_scout` sin tocar el resto de
+# la cascada (ver core/extraccion/proveedores/, Bloque 2 del plan). Un YAML
+# corrupto o ausente no debe tumbar el import de este script -- solo el
+# proveedor "gemini" (el único ya verificado) queda si `leer_configuracion`
+# falla, para que el banco siga siendo usable con la línea de base de hoy.
 
 
 def _leer_con_gemini(pdf_bytes: bytes, texto_extraido: str) -> FacturaExtraida:
@@ -218,9 +223,25 @@ def _leer_con_gemini(pdf_bytes: bytes, texto_extraido: str) -> FacturaExtraida:
     return extraer_con_gemini(pdf_bytes, api_key=api_key, texto_extraido=texto_extraido)
 
 
-PROVEEDORES = {
-    "gemini": _leer_con_gemini,
-}
+def _registro_proveedores() -> dict:
+    registro = {"gemini": _leer_con_gemini}
+    try:
+        configuraciones = leer_configuracion()
+    except (OSError, ValueError) as exc:
+        print(f"  (aviso) no se pudo leer {RUTA_CONFIGURACION_EXTRACCION}: {exc}", file=sys.stderr)
+        return registro
+    for config in configuraciones:
+        if config.nombre == "gemini":
+            continue  # ya está arriba, con su propio wrapper simple
+
+        def _leer(pdf_bytes: bytes, texto_extraido: str, _config=config) -> FacturaExtraida:
+            return _leer_con_proveedor(_config, pdf_bytes, texto_extraido)
+
+        registro[config.nombre] = _leer
+    return registro
+
+
+PROVEEDORES = _registro_proveedores()
 
 
 @dataclass
