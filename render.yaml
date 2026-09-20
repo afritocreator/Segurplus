@@ -1,0 +1,25 @@
+# Blueprint de Render (render.com) para desplegar web/ en el plan gratuito.
+# Ver docs/decisiones/ADR-005-fastapi-y-render.md para el porqué de esta elección.
+#
+# Uso: en render.com -> New -> Blueprint -> conectar este repo. Render lee este
+# archivo solo y arma el servicio. Las variables marcadas "sync: false" hay que
+# cargarlas a mano en el panel de Render -- nunca van en este archivo ni en el repo.
+services:
+  - type: web
+    name: segurplus-web
+    runtime: python
+    plan: free
+    branch: claude/invoice-analysis-automation-7axk9u
+    buildCommand: pip install -e .
+    startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
