@@ -366,6 +366,17 @@ leer por un 503, esto es indicio, no todavía una medición robusta -- falta cor
 su propia clave para tener la tabla comparativa completa que el Bloque 2 dejó lista, y
 correr el banco varias veces más para separar "gas es difícil" de "gas tuvo mala suerte".
 
+**Groq: clave conseguida, pero sin poder probarla desde este entorno.** El mismo día se
+consiguió una `GROQ_API_KEY` real y se intentó correr el banco contra `groq_scout` y
+`groq_qwen`. Las 8 llamadas (4 facturas × 2 modelos) fallaron con el mismo error de red:
+`Tunnel connection failed: 403 Forbidden` contra `api.groq.com`, del proxy saliente del
+entorno de desarrollo (que sí deja pasar a Gemini/Google, no a Groq). **No es un problema
+de código ni de la clave** -- `core/extraccion/proveedores/openai_compat.py` ya está
+probado con mocks (`tests/extraccion/proveedores/test_openai_compat.py`) y la clave nunca
+llegó a escribirse en ningún archivo. Queda pendiente correr el banco contra Groq desde un
+entorno sin esa restricción de red (una máquina de desarrollo normal, o la propia app ya
+desplegada en Render -- ver `render.yaml` y el paso de deploy documentado más abajo).
+
 **Bloque 2 -- capa de proveedores intercambiable** (`core/extraccion/proveedores/`):
 agrega un adaptador genérico para cualquier proveedor compatible con la API de OpenAI
 (`openai_compat.py`, sirve a Groq/Cerebras/SambaNova/OpenRouter con el mismo código) y un
