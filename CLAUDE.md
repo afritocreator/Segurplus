@@ -12,9 +12,17 @@ reutiliza el circuito de lectura de facturas con IA (Gemini, tier gratuito) y su
 validación aritmética — ver `docs/decisiones/ADR-001-lectura-de-facturas.md`.
 
 ## Stack cerrado — no agregar dependencias nuevas sin un ADR en docs/decisiones/
-Python 3.12 · Streamlit · DuckDB + Parquet · Polars · Plotly · openpyxl · pdfplumber ·
-google-genai · pytest · ruff. Nada de Next.js/React en esta etapa: el análisis ya está
-en Python (heredado de Consultora) y reescribirlo tiraría trabajo hecho.
+Python 3.12 · FastAPI + Jinja2 (`web/`, ver ADR-005) · DuckDB + Parquet · Polars ·
+Plotly · openpyxl · pdfplumber · google-genai · pymupdf (opcional, extra `vision`,
+ver ADR-004) · pytest · ruff. Nada de Next.js/React en esta etapa: el análisis ya está
+en Python (heredado de Consultora) y reescribirlo tiraría trabajo hecho -- y ningún
+framework de JavaScript en `web/`: HTML/CSS plano, mismo criterio que `web/index.html`
+de Consultora.
+
+`apps/segurplus/` (Streamlit) sigue en el repo pero **en proceso de reemplazo** por
+`web/` (rediseño de septiembre 2026, ver `docs/estado.md`) -- no agregar funcionalidad
+nueva ahí, el trabajo nuevo va en `web/`. Se borra una vez que `web/` pase el recorrido
+manual completo con facturas reales.
 
 ## Regla de oro
 Toda fórmula de `core/analisis/` lleva un test con un valor calculado a mano. Un error

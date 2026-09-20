@@ -456,6 +456,23 @@ mano).
 
 ## Falta (siguiente trabajo)
 
+- **El bloqueante real de todo el rediseño de septiembre 2026 sigue siendo el mismo:
+  falta una clave de API.** Sin `GEMINI_API_KEY` ni `GROQ_API_KEY` en este entorno, ni el
+  banco de medición (Bloque 1) corrió una sola vez contra una API real, ni la capa de
+  proveedores (Bloque 2) se probó fuera de mocks, ni la redacción por modelo del relato
+  (Bloque 5) se ejerció. **El primer paso real, antes de cualquier otra cosa, es
+  conseguir al menos una de las dos y correr `scripts/banco_extraccion.py`.**
+- **La app web (`web/`) está probada de punta a punta con datos simulados
+  (`tests/web/`, `TestClient`), pero no contra la API real** (mismo bloqueante de
+  arriba) **ni por una persona que no trabajó en esto** -- los dos pasos de verificación
+  manual que pedía el plan de rediseño (ver "Verificación" del plan original) siguen
+  pendientes en esa parte. Lo que sí se hizo, a mano, con las dos facturas reales de luz
+  de `data/reales/banco/` (Gemini reemplazado por su propia verdad de referencia, ya que
+  no hay clave): **subir → aparecen en Revisar → "la aritmética cierra" (las dos, con sus
+  9 líneas de impuesto reales) → confirmar → aparecen en Ver con el relato correcto
+  ("pagaste $3.684,64... el que más cambió fue 'Cargo fijo': $85,61 más") → Excel se
+  descarga.** Streamlit (`apps/segurplus/`) NO se borra hasta que la parte que falta
+  (contra la API real, y por una persona ajena) también pase.
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver
   `docs/auditoria-2026-09-piloto.md`, con el criterio de cada corrección marcado en el
   propio documento. Los tres bloqueantes ya no lo son: `conectar()` ignora `DATABASE_URL`
