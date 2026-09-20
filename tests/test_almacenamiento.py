@@ -217,6 +217,30 @@ def test_descartar_borrador_sin_evidencia_no_falla(tmp_path):
     con.close()
 
 
+def test_purgar_todo_borra_facturas_aprobadas_y_borradores(tmp_path):
+    from core.almacenamiento import purgar_todo
+
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura(hash_pdf="a1"), estado="aprobada")
+    guardar_factura(con, _factura(hash_pdf="b1"), estado="borrador")
+
+    purgar_todo(con)
+
+    assert con.execute("SELECT count(*) FROM facturas").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM conceptos").fetchone()[0] == 0
+    assert not factura_ya_procesada(con, "a1")
+    assert not factura_ya_procesada(con, "b1")
+    con.close()
+
+
+def test_purgar_todo_sobre_base_vacia_no_falla(tmp_path):
+    from core.almacenamiento import purgar_todo
+
+    con = conectar(tmp_path / "test.duckdb")
+    purgar_todo(con)  # no debe lanzar aunque no haya nada cargado
+    con.close()
+
+
 def test_descartar_borrador_de_algo_que_no_es_borrador_rechaza(tmp_path):
     con = conectar(tmp_path / "test.duckdb")
     guardar_factura(con, _factura(hash_pdf="a1"), estado="aprobada")

@@ -435,3 +435,78 @@ def test_ver_muestra_el_total_pagable_como_numero_principal_no_solo_consumos(
     assert "pagaste $133,10 de energia" in r.text
     # Los consumos siguen visibles, como referencia -- no desaparecen.
     assert "Consumos sin impuestos: $100,00 → $110,00" in r.text
+
+
+def test_purgar_todo_requiere_confirmacion_exacta(cliente_logueado):
+    con = almacenamiento_mod.conectar()
+    try:
+        f1 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-08-01",
+            periodo_hasta="2026-08-31",
+            fecha_emision="2026-09-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 100.0, 100.0)],
+            impuestos=[Impuesto("IVA", 21.0)],
+            subtotal=100.0,
+            total=121.0,
+            hash_pdf="p1",
+        )
+        almacenamiento_mod.guardar_factura(con, f1, estado="borrador")
+        confirmar_factura(con, f1, actor="test")
+    finally:
+        con.close()
+
+    r = cliente_logueado.post("/admin/purgar-todo", data={"confirmacion": "no"})
+    assert "Tenés que escribir BORRAR" in r.text
+
+    con = almacenamiento_mod.conectar()
+    try:
+        assert con.execute("SELECT count(*) FROM facturas").fetchone()[0] == 1
+    finally:
+        con.close()
+
+
+def test_purgar_todo_con_confirmacion_borra_todo(cliente_logueado):
+    con = almacenamiento_mod.conectar()
+    try:
+        f1 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-08-01",
+            periodo_hasta="2026-08-31",
+            fecha_emision="2026-09-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 100.0, 100.0)],
+            impuestos=[Impuesto("IVA", 21.0)],
+            subtotal=100.0,
+            total=121.0,
+            hash_pdf="p1",
+        )
+        almacenamiento_mod.guardar_factura(con, f1, estado="borrador")
+        confirmar_factura(con, f1, actor="test")
+    finally:
+        con.close()
+
+    r = cliente_logueado.post("/admin/purgar-todo", data={"confirmacion": "BORRAR"})
+    assert "se borró todo" in r.text
+
+    con = almacenamiento_mod.conectar()
+    try:
+        assert con.execute("SELECT count(*) FROM facturas").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_purgar_todo_sin_sesion_redirige_a_login():
+    cliente = TestClient(app)
+    r = cliente.get("/admin/purgar-todo", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login"

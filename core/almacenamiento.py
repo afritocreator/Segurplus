@@ -581,6 +581,32 @@ def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_p
         con.execute(f"DELETE FROM {tabla} WHERE hash_pdf = ?", [hash_pdf])
 
 
+_TABLAS_OPERATIVAS = (
+    "conceptos",
+    "recargos",
+    "impuestos",
+    "creditos",
+    "alertas",
+    "cuarentena",
+    "decisiones_factura",
+    "correcciones_factura",
+    "casos_alerta",
+    "intentos_gemini",
+    "facturas",
+)
+
+
+def purgar_todo(con: duckdb.DuckDBPyConnection | ConexionPostgres) -> None:
+    """Borra TODAS las facturas y su historial -- arrancar de cero. Hijas
+    primero y `facturas` al final, mismo orden que `descartar_borrador`,
+    para respetar las foreign keys. No toca `data/reales/` ni ninguna otra
+    base: opera solo sobre las tablas que crea este módulo. Irreversible --
+    pensada para usarse una sola vez desde una pantalla de administración,
+    nunca desde el flujo normal de la app."""
+    for tabla in _TABLAS_OPERATIVAS:
+        con.execute(f"DELETE FROM {tabla}")
+
+
 def listar_facturas_pendientes(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
 ) -> list[tuple[str, str | None, str | None, str | None, float | None, str | None]]:
