@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block titulo %}{{ servicio }}: {{ periodo_0 }} → {{ periodo_1 }} -- Segurplus{% endblock %}
+{% block contenido %}
+<p><a href="/ver">← Cambiar servicio o período</a></p>
+<h1>📊 {{ servicio }}: {{ periodo_0 }} → {{ periodo_1 }}</h1>
+
+{% if borradores_pendientes %}
+<div class="aviso advertencia">
+  Hay {{ borradores_pendientes }} factura(s) de {{ servicio }} esperando confirmación --
+  no están incluidas en este análisis. Ver <a href="/revisar">Revisar</a>.
+</div>
+{% endif %}
+{% for a in avisos_calculo %}
+<div class="aviso info">{{ a }}</div>
+{% endfor %}
+{% if conceptos_sin_clasificar %}
+<div class="aviso advertencia">
+  Hay conceptos sin clasificar en esta comparación -- agregar un alias mejoraría el análisis
+  (ver <code>data/conceptos/{{ servicio }}.yaml</code>).
+</div>
+{% endif %}
+{% if anomalos %}
+<div class="aviso advertencia">
+  Cantidad neta cero o negativa con importe distinto de cero (revisar si hay una nota de
+  crédito o ajuste sin homologar bien): {{ anomalos|join(", ") }}
+</div>
+{% endif %}
+
+<div class="tarjeta">
+  <div class="metricas">
+    <div class="metrica">
+      <div class="valor">{{ total_0 }}</div>
+      <div class="etiqueta">Total período base</div>
+    </div>
+    <div class="metrica">
+      <div class="valor">{{ total_1 }}</div>
+      <div class="etiqueta">Total período comparado ({{ variacion_nominal }})</div>
+    </div>
+    {% if variacion_real is not none %}
+    <div class="metrica">
+      <div class="valor">{{ variacion_real }}</div>
+      <div class="etiqueta">Variación real (descontada la inflación)</div>
+    </div>
+    {% endif %}
+    <div class="metrica">
+      <div class="valor">{{ inflacion_periodo }}</div>
+      <div class="etiqueta">Inflación del período</div>
+    </div>
+  </div>
+  <p style="color:var(--gris);">{{ veredicto }}</p>
+</div>
+
+<div class="tarjeta">
+  <h2>Precio vs. cantidad</h2>
+  <p style="color:var(--gris);">
+    Qué explica el cambio del gasto en cada concepto: ¿subió el precio, subió el consumo, o
+    los dos a la vez? El <strong>efecto combinado</strong> es la parte que no se puede atribuir
+    a uno solo -- precio y cantidad cambiaron juntos.
+  </p>
+  <table>
+    <tr>
+      <th>Concepto</th><th>Por cantidad</th><th>Por precio</th><th>Efecto combinado</th><th>Variación total</th>
+    </tr>
+    {% for d in descomposiciones %}
+    <tr>
+      <td>{{ d.concepto }}</td>
+      <td class="numero">{{ d.efecto_cantidad }}</td>
+      <td class="numero">{{ d.efecto_precio }}</td>
+      <td class="numero">{{ d.efecto_cruzado }}</td>
+      <td class="numero">{{ d.variacion_total }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="tarjeta">
+  <h2>Impuestos y total pagable</h2>
+  <p style="color:var(--gris);">
+    El análisis de arriba usa consumos comparables. Esta tabla explica además impuestos,
+    recargos, créditos y el total pagable de cada período.
+  </p>
+  <table>
+    <tr><th>Componente</th><th>{{ periodo_0 }}</th><th>{{ periodo_1 }}</th><th>Variación</th></tr>
+    {% for fila in composicion %}
+    <tr>
+      <td>{{ fila.etiqueta }}</td>
+      <td class="numero">{{ fila.valor_0 }}</td>
+      <td class="numero">{{ fila.valor_1 }}</td>
+      <td class="numero">{{ fila.variacion }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="tarjeta">
+  <h2>Serie histórica</h2>
+  <p style="color:var(--gris);">
+    Todos los períodos cargados de este servicio, en pesos nominales y en pesos constantes de
+    hoy (descontada la inflación).
+  </p>
+  {% if serie %}
+  <table>
+    <tr><th>Período</th><th>Nominal</th><th>Real (pesos de hoy)</th></tr>
+    {% for p in serie %}
+    <tr>
+      <td>{{ p.periodo }}</td>
+      <td class="numero">{{ p.nominal }}</td>
+      <td class="numero">{{ p.real }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>{{ error_serie }}</p>
+  {% endif %}
+</div>
+
+<div class="tarjeta">
+  <h2>Alertas</h2>
+  {% if alertas %}
+  <p style="color:var(--gris);">
+    🔴 {{ conteo_alertas.alta }} alta(s) · 🟡 {{ conteo_alertas.media }} media(s) ·
+    ⚪ {{ conteo_alertas.baja }} baja(s)
+  </p>
+  {% for a in alertas %}
+  <div class="aviso {{ 'error' if a.severidad == 'alta' else ('advertencia' if a.severidad == 'media' else 'info') }}">
+    <span class="chip {{ a.severidad }}">{{ a.severidad }}</span>
+    <strong>{{ a.tipo_legible }}</strong>: {{ a.mensaje }}
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="aviso exito">Sin alertas para esta comparación.</div>
+  {% endif %}
+</div>
+
+<div class="tarjeta">
+  <h2>Detalle</h2>
+  <table>
+    <tr>
+      <th>Concepto</th><th>Cantidad (base)</th><th>Precio (base)</th>
+      <th>Cantidad (comparado)</th><th>Precio (comparado)</th>
+      <th>Por cantidad</th><th>Por precio</th><th>Efecto combinado</th><th>Variación total</th>
+    </tr>
+    {% for d in detalle %}
+    <tr>
+      <td>{{ d.concepto }}</td>
+      <td class="numero">{{ d.cantidad_0 }}</td>
+      <td class="numero">{{ d.precio_0 }}</td>
+      <td class="numero">{{ d.cantidad_1 }}</td>
+      <td class="numero">{{ d.precio_1 }}</td>
+      <td class="numero">{{ d.efecto_cantidad }}</td>
+      <td class="numero">{{ d.efecto_precio }}</td>
+      <td class="numero">{{ d.efecto_cruzado }}</td>
+      <td class="numero">{{ d.variacion_total }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<a class="boton" href="/ver/excel?servicio={{ servicio }}&periodo_0={{ periodo_0 }}&periodo_1={{ periodo_1 }}">
+  ⬇️ Descargar reporte en Excel
+</a>
+{% endblock %}

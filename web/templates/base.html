@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulo %}Segurplus{% endblock %}</title>
+  <link rel="stylesheet" href="/static/estilo.css">
+</head>
+<body>
+  {% if usuario %}
+  <header class="app">
+    <div>
+      <a href="/subir" class="{{ 'activo' if pagina_activa == 'subir' else '' }}">Subir</a>
+      <a href="/revisar" class="{{ 'activo' if pagina_activa == 'revisar' else '' }}">Revisar</a>
+      <a href="/ver" class="{{ 'activo' if pagina_activa == 'ver' else '' }}">Ver</a>
+    </div>
+    <div class="usuario">
+      {{ usuario }} ·
+      <form action="/logout" method="post" style="display:inline">
+        <button type="submit" style="background:none;color:white;padding:0;font-size:0.85rem;text-decoration:underline;">salir</button>
+      </form>
+    </div>
+  </header>
+  {% endif %}
+  <main>
+    {% for mensaje, tipo in mensajes %}
+      <div class="aviso {{ tipo }}">{{ mensaje }}</div>
+    {% endfor %}
+    {% block contenido %}{% endblock %}
+  </main>
+</body>
+</html>

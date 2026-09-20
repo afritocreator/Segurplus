@@ -1,0 +1,242 @@
+/* Paleta institucional -- mismos colores que apps/segurplus/estilo.py y
+   .streamlit/config.toml, para que la web nueva y (mientras conviva) el
+   tablero viejo se vean como la misma herramienta. */
+:root {
+  --navy: #14324d;
+  --dorado: #b08d3e;
+  --gris: #5a5a5a;
+  --fondo: #f2f5f7;
+  --rojo: #b00020;
+  --verde: #1e6b3a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Helvetica, Arial, sans-serif;
+  color: var(--navy);
+  background: var(--fondo);
+  margin: 0;
+  padding: 0;
+}
+
+header.app {
+  background: var(--navy);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+header.app a {
+  color: white;
+  text-decoration: none;
+  margin-right: 1.25rem;
+  font-weight: 600;
+}
+
+header.app a.activo {
+  border-bottom: 2px solid var(--dorado);
+}
+
+header.app .usuario {
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+h1, h2, h3 {
+  color: var(--navy);
+}
+
+.tarjeta {
+  background: white;
+  border: 1px solid #dfe6ea;
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.aviso {
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.aviso.error {
+  background: #fdecec;
+  border: 1px solid var(--rojo);
+  color: var(--rojo);
+}
+
+.aviso.advertencia {
+  background: #fdf6e3;
+  border: 1px solid var(--dorado);
+  color: #6b5514;
+}
+
+.aviso.exito {
+  background: #e8f5ec;
+  border: 1px solid var(--verde);
+  color: var(--verde);
+}
+
+.aviso.info {
+  background: #eaf1f6;
+  border: 1px solid var(--navy);
+  color: var(--navy);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #e2e8ed;
+  font-size: 0.92rem;
+}
+
+th {
+  background: #eaf1f6;
+  color: var(--navy);
+}
+
+.numero {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.metricas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 1rem 0;
+}
+
+.metrica {
+  min-width: 180px;
+}
+
+.metrica .valor {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--navy);
+}
+
+.metrica .valor.principal {
+  font-size: 2.2rem;
+  color: var(--dorado);
+}
+
+.metrica .etiqueta {
+  font-size: 0.85rem;
+  color: var(--gris);
+}
+
+.relato {
+  font-size: 1.1rem;
+  line-height: 1.5;
+  background: white;
+  border-left: 4px solid var(--dorado);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+form.formulario label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--gris);
+  margin-bottom: 0.2rem;
+}
+
+form.formulario input[type="text"],
+form.formulario select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid #c7d2d8;
+  border-radius: 4px;
+  font-size: 0.95rem;
+}
+
+.fila-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 1rem;
+}
+
+button, .boton {
+  background: var(--navy);
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 0.55rem 1.1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button.primario, .boton.primario {
+  background: var(--dorado);
+  color: var(--navy);
+  font-weight: 700;
+}
+
+button:disabled {
+  background: #b7c2c9;
+  cursor: not-allowed;
+}
+
+button.peligro, .boton.peligro {
+  background: white;
+  color: var(--rojo);
+  border: 1px solid var(--rojo);
+}
+
+.pdf-vista {
+  width: 100%;
+  height: 78vh;
+  border: 1px solid #dfe6ea;
+  border-radius: 6px;
+}
+
+.dos-columnas {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .dos-columnas, .fila-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chip {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.chip.alta { background: #fdecec; color: var(--rojo); }
+.chip.media { background: #fdf6e3; color: #6b5514; }
+.chip.baja { background: #eaf1f6; color: var(--navy); }

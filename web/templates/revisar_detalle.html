@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block titulo %}Revisar {{ hash_pdf[:10] }} -- Segurplus{% endblock %}
+{% block contenido %}
+<p><a href="/revisar">← Volver a la lista</a></p>
+<h1>🧾 Confirmar carga</h1>
+
+{% if motivo_carga %}
+<div class="aviso advertencia">No se pudo leer automáticamente: {{ motivo_carga }}</div>
+{% endif %}
+
+<div class="dos-columnas">
+  <div>
+    {% if pdf_disponible %}
+      <embed src="/pdf/{{ hash_pdf }}" type="application/pdf" class="pdf-vista">
+    {% elif texto_extraido %}
+      <p style="color:var(--gris);">No hay PDF disponible para mostrar -- texto extraído del archivo:</p>
+      <pre style="white-space:pre-wrap;background:white;border:1px solid #dfe6ea;border-radius:6px;padding:1rem;max-height:78vh;overflow:auto;">{{ texto_extraido }}</pre>
+    {% else %}
+      <div class="aviso info">No hay PDF ni texto disponible para esta factura.</div>
+    {% endif %}
+  </div>
+
+  <div>
+    <form class="formulario tarjeta" method="post" action="/revisar/{{ hash_pdf }}/confirmar">
+      <h3>Cabecera</h3>
+      <div class="fila-2">
+        <div>
+          <label>Emisor</label>
+          <input type="text" name="emisor" value="{{ f.emisor or '' }}">
+        </div>
+        <div>
+          <label>CUIT</label>
+          <input type="text" name="cuit" value="{{ f.cuit or '' }}">
+        </div>
+      </div>
+      <div class="fila-2">
+        <div>
+          <label>Servicio</label>
+          <select name="servicio">
+            <option value="">(elegir)</option>
+            {% for s in servicios_conocidos %}
+            <option value="{{ s }}" {{ "selected" if f.servicio == s else "" }}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Moneda</label>
+          <input type="text" name="moneda" value="{{ f.moneda or 'ARS' }}">
+        </div>
+      </div>
+      <div class="fila-2">
+        <div>
+          <label>Período desde</label>
+          <input type="text" name="periodo_desde" value="{{ f.periodo_desde or '' }}" placeholder="AAAA-MM-DD">
+        </div>
+        <div>
+          <label>Período hasta</label>
+          <input type="text" name="periodo_hasta" value="{{ f.periodo_hasta or '' }}" placeholder="AAAA-MM-DD">
+        </div>
+      </div>
+      <div class="fila-2">
+        <div>
+          <label>Fecha de emisión</label>
+          <input type="text" name="fecha_emision" value="{{ f.fecha_emision or '' }}" placeholder="AAAA-MM-DD">
+        </div>
+        <div>
+          <label>Fecha de vencimiento</label>
+          <input type="text" name="fecha_vencimiento" value="{{ f.fecha_vencimiento or '' }}" placeholder="AAAA-MM-DD">
+        </div>
+      </div>
+      <label>Número de comprobante</label>
+      <input type="text" name="numero_comprobante" value="{{ f.numero_comprobante or '' }}">
+
+      <h3>Conceptos</h3>
+      <table>
+        <tr><th>Descripción</th><th>Cantidad</th><th>Unidad</th><th>Precio unit.</th><th>Importe</th></tr>
+        {% for fila in filas_conceptos %}
+        <tr>
+          <td><input type="text" name="concepto_descripcion" value="{{ fila.descripcion }}"></td>
+          <td><input type="text" name="concepto_cantidad" value="{{ fila.cantidad }}" style="width:5rem;"></td>
+          <td><input type="text" name="concepto_unidad" value="{{ fila.unidad }}" style="width:5rem;"></td>
+          <td><input type="text" name="concepto_precio_unitario" value="{{ fila.precio_unitario }}" style="width:6rem;"></td>
+          <td><input type="text" name="concepto_importe" value="{{ fila.importe }}" style="width:6rem;"></td>
+        </tr>
+        {% endfor %}
+      </table>
+
+      <h3>Impuestos</h3>
+      <table>
+        <tr><th>Impuesto</th><th>Importe</th></tr>
+        {% for fila in filas_impuestos %}
+        <tr>
+          <td><input type="text" name="impuesto_nombre" value="{{ fila.nombre }}"></td>
+          <td><input type="text" name="impuesto_importe" value="{{ fila.importe }}" style="width:6rem;"></td>
+        </tr>
+        {% endfor %}
+      </table>
+
+      <h3>Recargos</h3>
+      <p style="color:var(--gris);font-size:0.85rem;">Mora, intereses, refacturación -- nunca consumo normal.</p>
+      <table>
+        <tr><th>Recargo</th><th>Importe</th></tr>
+        {% for fila in filas_recargos %}
+        <tr>
+          <td><input type="text" name="recargo_nombre" value="{{ fila.nombre }}"></td>
+          <td><input type="text" name="recargo_importe" value="{{ fila.importe }}" style="width:6rem;"></td>
+        </tr>
+        {% endfor %}
+      </table>
+
+      <h3>Créditos</h3>
+      <p style="color:var(--gris);font-size:0.85rem;">Bonificaciones, descuentos, notas de crédito -- reducen el total.</p>
+      <table>
+        <tr><th>Crédito</th><th>Importe</th></tr>
+        {% for fila in filas_creditos %}
+        <tr>
+          <td><input type="text" name="credito_nombre" value="{{ fila.nombre }}"></td>
+          <td><input type="text" name="credito_importe" value="{{ fila.importe }}" style="width:6rem;"></td>
+        </tr>
+        {% endfor %}
+      </table>
+
+      <div class="fila-2">
+        <div>
+          <label>Subtotal</label>
+          <input type="text" name="subtotal" value="{{ f.subtotal_texto }}">
+        </div>
+        <div>
+          <label>Total</label>
+          <input type="text" name="total" value="{{ f.total_texto }}">
+        </div>
+      </div>
+
+      <h3>Control aritmético</h3>
+      {% for e in errores_aritmetica %}
+        <div class="aviso error">{{ e }}</div>
+      {% endfor %}
+      {% if aritmetica_ok %}
+        <div class="aviso exito">La aritmética cierra.</div>
+      {% endif %}
+
+      <div style="display:flex;gap:0.75rem;margin-top:1rem;">
+        <button type="submit" class="primario">Confirmar factura</button>
+        <button type="submit" formaction="/revisar/{{ hash_pdf }}/guardar">Guardar cambios sin confirmar</button>
+      </div>
+    </form>
+
+    <form method="post" action="/revisar/{{ hash_pdf }}/descartar" style="margin-top:0.75rem;"
+          onsubmit="return confirm('¿Borrar este borrador por completo?');">
+      <button type="submit" class="peligro">Descartar borrador</button>
+      <span style="color:var(--gris);font-size:0.85rem;">
+        Si Gemini no pudo leerla bien, esta es la forma de que la vuelva a intentar:
+        después de descartar, subí el mismo PDF de nuevo en Subir.
+      </span>
+    </form>
+  </div>
+</div>
+{% endblock %}

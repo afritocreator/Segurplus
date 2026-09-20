@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block titulo %}Segurplus -- Entrar{% endblock %}
+{% block contenido %}
+<div class="tarjeta" style="max-width:360px;margin:3rem auto;">
+  <h1>🧾 Segurplus</h1>
+  <p style="color:var(--gris);font-size:0.9rem;">
+    Acceso restringido -- pedile la contraseña a quien administra la herramienta.
+  </p>
+  <form class="formulario" method="post" action="/login">
+    <label for="contrasena">Contraseña</label>
+    <input type="password" id="contrasena" name="contrasena" autofocus>
+    <button type="submit" class="primario">Entrar</button>
+  </form>
+</div>
+{% endblock %}

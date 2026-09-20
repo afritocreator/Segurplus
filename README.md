@@ -53,7 +53,20 @@ TEST_DATABASE_URL="postgresql://..." pytest tests/test_conexion_postgres_real.py
 
 Sin `TEST_DATABASE_URL` configurada (o sin `psycopg` instalado), se skipea solo.
 
-## Correr el tablero localmente
+## Correr la web nueva localmente (FastAPI, ver ADR-005)
+
+```bash
+export APP_PASSWORD=lo-que-quieras       # o SEGURPLUS_DEV=1 para saltear el login
+export SECRET_KEY=cualquier-cosa-larga   # firma la cookie de sesión
+export GEMINI_API_KEY=...                # para poder leer facturas nuevas
+uvicorn web.app:app --reload
+```
+
+Abrí `http://localhost:8000`. Reemplaza al tablero Streamlit (ver
+`docs/decisiones/ADR-005-fastapi-y-render.md`) -- Streamlit sigue andando en paralelo
+hasta que esta versión pase el recorrido manual completo.
+
+## Correr el tablero Streamlit (versión anterior, en proceso de reemplazo)
 
 ```bash
 streamlit run streamlit_app.py

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block titulo %}Ver -- Segurplus{% endblock %}
+{% block contenido %}
+<h1>📊 Evolución por servicio</h1>
+{% if not servicios %}
+<div class="aviso info">Todavía no hay facturas cargadas. Empezá por <a href="/subir">Subir facturas</a>.</div>
+{% else %}
+<form class="formulario tarjeta" method="get" action="/ver">
+  <label>Servicio</label>
+  <select name="servicio" onchange="this.form.submit()">
+    {% for s in servicios %}
+    <option value="{{ s }}" {{ "selected" if s == servicio_elegido else "" }}>{{ s }}</option>
+    {% endfor %}
+  </select>
+
+  {% if periodos %}
+  <div class="fila-2">
+    <div>
+      <label>Período base</label>
+      <select name="periodo_0">
+        {% for p in periodos[:-1] %}
+        <option value="{{ p }}" {{ "selected" if p == periodo_0_elegido else "" }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Período de comparación</label>
+      <select name="periodo_1">
+        {% for p in periodos_posteriores %}
+        <option value="{{ p }}" {{ "selected" if p == periodo_1_elegido else "" }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <button type="submit" class="primario">Ver</button>
+  {% else %}
+  <div class="aviso info">Hay menos de dos períodos cargados para {{ servicio_elegido }}. Cargá al menos dos meses.</div>
+  {% endif %}
+</form>
+{% endif %}
+{% endblock %}

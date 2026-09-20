@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block titulo %}Subir facturas -- Segurplus{% endblock %}
+{% block contenido %}
+<h1>📥 Subir facturas</h1>
+<p style="color:var(--gris);">
+  Subí los PDFs de facturas del mes. Cada una queda como un <strong>borrador</strong> --
+  ninguna entra al análisis todavía, se revisa y confirma después en
+  <a href="/revisar">Revisar</a>, con el PDF al lado.
+</p>
+
+{% if not api_key_configurada %}
+<div class="aviso advertencia">
+  No hay ninguna clave de extracción configurada (ver <code>data/extraccion.yaml</code>
+  y las variables de entorno que pide, por ejemplo <code>GEMINI_API_KEY</code>).
+  Sin esto no se puede leer ninguna factura nueva.
+</div>
+{% endif %}
+
+<form class="tarjeta" method="post" action="/subir" enctype="multipart/form-data">
+  <input type="file" name="archivos" accept="application/pdf" multiple required>
+  <br><br>
+  <button type="submit" class="primario" {{ "disabled" if not api_key_configurada else "" }}>
+    Procesar
+  </button>
+</form>
+
+{% if resultados %}
+<div class="tarjeta">
+  <div class="metricas">
+    <div class="metrica">
+      <div class="valor">{{ resultados.borradores|length }}</div>
+      <div class="etiqueta">Listas para confirmar</div>
+    </div>
+    <div class="metrica">
+      <div class="valor">{{ resultados.repetidas|length }}</div>
+      <div class="etiqueta">Ya procesadas</div>
+    </div>
+    <div class="metrica">
+      <div class="valor">{{ resultados.errores|length }}</div>
+      <div class="etiqueta">Errores</div>
+    </div>
+  </div>
+
+  {% if resultados.borradores %}
+    <div class="aviso exito">
+      {{ resultados.borradores|length }} factura(s) lista(s) para confirmar.
+      <a href="/revisar">Ir a Revisar</a>
+    </div>
+  {% endif %}
+  {% if resultados.con_problema %}
+    <div class="aviso advertencia">
+      {{ resultados.con_problema|length }} factura(s) tuvieron un problema al cargar
+      (quedaron como borrador, revisalas en Revisar):
+      <ul>
+        {% for r in resultados.con_problema %}
+        <li><strong>{{ r.nombre }}</strong>: {{ r.detalle }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+  {% if resultados.repetidas %}
+    <div class="aviso info">{{ resultados.repetidas|length }} factura(s) ya estaban procesadas (se ignoraron).</div>
+  {% endif %}
+  {% if resultados.errores %}
+    <div class="aviso error">
+      {{ resultados.errores|length }} factura(s) no se pudieron leer:
+      <ul>
+        {% for r in resultados.errores %}
+        <li><strong>{{ r.nombre }}</strong>: {{ r.detalle }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

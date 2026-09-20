@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block titulo %}Revisar -- Segurplus{% endblock %}
+{% block contenido %}
+<h1>🧾 Revisar</h1>
+{% if not borradores %}
+<div class="aviso exito">No hay facturas esperando confirmación.</div>
+{% else %}
+<p style="color:var(--gris);">{{ borradores|length }} borrador(es) por confirmar.</p>
+<table>
+  <tr><th>Emisor</th><th>Servicio</th><th>Período</th><th>Total</th><th></th></tr>
+  {% for b in borradores %}
+  <tr>
+    <td>{{ b.emisor or "(sin emisor)" }}</td>
+    <td>{{ b.servicio or "(sin servicio)" }}</td>
+    <td>{{ b.periodo_desde or "(sin período)" }}</td>
+    <td class="numero">{{ b.total_formateado }}</td>
+    <td><a class="boton" href="/revisar/{{ b.hash_pdf }}">Revisar</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

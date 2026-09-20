@@ -16,6 +16,11 @@ dependencies = [
     "google-genai>=0.3",
     "psycopg[binary]>=3.2",  # Postgres gratis (Neon/Supabase), ver ADR-003
     "pandas>=2.0",  # solo para st.data_editor en apps/segurplus/paginas/confirmar.py
+    "fastapi>=0.115",  # web/ -- ver ADR-005, Bloque 4 del plan de rediseño
+    "jinja2>=3.1",  # plantillas de web/, ya era dependencia transitiva de Streamlit
+    "python-multipart>=0.0.9",  # FastAPI lo necesita para los formularios de web/subir
+    "itsdangerous>=2.2",  # cookie de sesión firmada, web/auth.py
+    "uvicorn>=0.30",  # servidor ASGI para correr web/app.py
 ]
 
 [project.optional-dependencies]

@@ -384,6 +384,31 @@ dos formas es segura de hacer bien sin las pantallas nuevas del Bloque 4, que va
 reemplazar `confirmar.py` de todos modos. Construir esa plomería sobre una pantalla que
 se va a borrar sería trabajo tirado.
 
+**Bloque 4 -- la app web nueva** (`web/`, ver `docs/decisiones/ADR-005-fastapi-y-render.md`):
+FastAPI + plantillas Jinja2 + HTML/CSS plano, sin ningún framework de JavaScript, tres
+pantallas (Subir, Revisar, Ver) que reemplazan a `apps/segurplus/`. Reusa `core/` tal cual
+-- ningún cálculo nuevo, mismo criterio de "cáscara fina". La pantalla "Ver" ya es **una
+sola pantalla sin pestañas**, con las secciones apiladas en orden (cabecera con las
+métricas, precio vs. cantidad, impuestos y total pagable, serie histórica, alertas,
+detalle) en vez de los 5 tabs de `evolucion.py`. Auth con el mismo esquema que el piloto
+Streamlit (contraseña compartida, `web/auth.py`), ahora con una cookie de sesión firmada
+(`itsdangerous`) en vez de `st.session_state`.
+
+Probado de punta a punta con `TestClient` (`tests/web/test_app.py`, 19 tests): a
+diferencia de `AppTest` de Streamlit, que no podía simular un upload de archivo real,
+acá se prueba el flujo completo subir → revisar (con el error de aritmética rechazado y
+el formulario repoblado con lo tipeado, no perdido) → confirmar → aparece en Ver → se
+puede descargar el Excel. Recorrido manual a mano (con `uvicorn web.app:app`, ver
+README) pendiente antes de borrar Streamlit -- ver "Falta" abajo.
+
+**Reducción de alcance deliberada** (documentada en el ADR): las tablas "Precio vs.
+cantidad" y "Serie histórica" se muestran como `<table>` en vez de gráficos Plotly (agregar
+gráficos sin un framework de JS exigiría sumar Plotly.js por CDN, justo la complejidad
+que este bloque decide no sumar todavía); las pantallas "Casos" y "Conceptos sin
+clasificar" quedan fuera de esta primera versión (administración interna, no el camino
+principal); y `core/pipeline.py::procesar_pdf` sigue llamando a Gemini directo, no a la
+cascada del Bloque 2 (ver esa sección arriba).
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver
