@@ -39,7 +39,6 @@ from core.almacenamiento import (
     guardar_factura,
     leer_borrador,
     listar_borradores,
-    purgar_todo,
     recargos_del_periodo,
     sincronizar_casos_alertas,
     totales_por_periodo,
@@ -185,36 +184,6 @@ def post_logout():
 @app.get("/", response_class=HTMLResponse)
 def raiz(request: Request):
     return RedirectResponse("/subir", status_code=303)
-
-
-# --- Administración --------------------------------------------------------
-# Ruta temporal para el primer despliegue en Render: borrar todo lo cargado
-# durante las pruebas y arrancar de cero. Protegida por la misma sesión de
-# todas las demás rutas (ver `_gate_de_sesion`) más una confirmación escrita
-# a mano, porque `purgar_todo` es irreversible. Se saca del código una vez
-# usada -- no es una función que la app deba ofrecer de forma permanente.
-
-
-@app.get("/admin/purgar-todo", response_class=HTMLResponse)
-def get_purgar_todo(request: Request):
-    return _render(request, "purgar_todo.html", {})
-
-
-@app.post("/admin/purgar-todo", response_class=HTMLResponse)
-def post_purgar_todo(request: Request, confirmacion: str = Form(...)):
-    if confirmacion.strip().upper() != "BORRAR":
-        return _render(
-            request,
-            "purgar_todo.html",
-            {"mensajes": [("Tenés que escribir BORRAR, tal cual, para confirmar.", "error")]},
-        )
-    con = conectar()
-    purgar_todo(con)
-    return _render(
-        request,
-        "purgar_todo.html",
-        {"mensajes": [("Listo, se borró todo. La herramienta arranca de cero.", "ok")]},
-    )
 
 
 # --- Subir ---------------------------------------------------------------
