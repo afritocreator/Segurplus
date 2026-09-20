@@ -361,6 +361,29 @@ que este plan existe para evitar. La cascada (con reintento y backoff) está lis
 probada con proveedores simulados (21 tests, sin pegarle a ninguna API real) para el día
 que haya una clave.
 
+**Bloque 3 -- que el modelo también clasifique el concepto**: cada línea de concepto del
+JSON Schema ganó `concepto_sugerido`, con el mismo mecanismo de `enum` que ya usa
+`servicio` -- la lista de conceptos normalizados conocidos (`cargar_diccionario()` de
+TODOS los servicios, ya que el modelo todavía no sabe con certeza de qué servicio es la
+factura). El modelo elige uno de esos valores o `null` si no está seguro; nunca decide
+nada por sí solo -- la homologación por similitud de texto
+(`core/analisis/homologacion.py`) sigue siendo la que corre en `confirmar_factura`, sin
+tocar. Defensivo: un `concepto_sugerido` fuera del enum conocido (un proveedor que no
+respete el schema tan estricto como Gemini) se descarta a `None` en `factura_desde_json`,
+en vez de dejar pasar un slug inventado. El banco (Bloque 1) ahora también mide esto:
+`data/reales/banco/*.yaml` ganó un campo opcional `concepto_correcto` por línea (solo
+donde es inequívoco -- las líneas ambiguas de gas, ver Bloque 1, se dejan sin él a
+propósito) y `comparar_factura` reporta qué % de esas líneas el proveedor clasificó bien.
+**Deliberadamente fuera de este bloque**: usar `concepto_sugerido` como respaldo dentro
+de `confirmar_factura` cuando Dice no encuentra nada, y mostrar un aviso cuando Dice y el
+modelo no coinciden. Preservar la sugerencia del modelo a través del editor de
+"Confirmar carga" (donde el usuario puede corregir la descripción, agregar o borrar
+líneas) necesita o una columna nueva en la base para guardarla desde el borrador, o un
+emparejamiento por descripción/importe entre el borrador y lo editado -- ninguna de las
+dos formas es segura de hacer bien sin las pantallas nuevas del Bloque 4, que van a
+reemplazar `confirmar.py` de todos modos. Construir esa plomería sobre una pantalla que
+se va a borrar sería trabajo tirado.
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver

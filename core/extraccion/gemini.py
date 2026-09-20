@@ -39,7 +39,12 @@ MODELO = "gemini-3.6-flash"  # fijo, no "latest" -- ver docstring del módulo
 # columnas) y ahora también recibe el texto plano del PDF -- subir la
 # versión documenta que una extracción vieja se hizo con reglas distintas.
 VERSION_PROMPT = "2026-09-piloto-2"
-VERSION_ESQUEMA = "2026-09-operacion-1"
+# Bloque 3 del plan de rediseño de septiembre 2026 (docs/estado.md): el
+# esquema JSON ganó el campo "concepto_sugerido" por línea de concepto --
+# subir la versión documenta que una extracción vieja nunca tuvo esa
+# oportunidad, para no confundir "el modelo no supo clasificar" con "el
+# modelo nunca pudo".
+VERSION_ESQUEMA = "2026-09-concepto-sugerido-1"
 
 PROMPT_EXTRACCION = """\
 Sos un asistente que lee facturas de proveedores de servicios (telefonía, energía, \
@@ -73,6 +78,10 @@ formato pedido. Reglas importantes:
 - Si un dato no está en la factura, usá null en vez de inventarlo.
 - Los montos van en pesos argentinos, sin separador de miles, con punto decimal \
   (ej: 1234.50).
+- Cada concepto tiene un campo "concepto_sugerido", con una lista fija de valores \
+  permitidos: si la descripción corresponde CLARAMENTE a uno de esos conceptos \
+  conocidos, elegilo; si no estás seguro, o es un tipo de cargo que no está en la \
+  lista, usá null -- no elijas el más parecido "por las dudas".
 """
 
 

@@ -9,6 +9,7 @@ from core.extraccion.esquema import (
     Recargo,
     _normalizar_fecha,
     conceptos_desde_filas,
+    esquema_json_para_modelo,
     factura_desde_json,
     montos_desde_filas,
 )
@@ -231,3 +232,57 @@ def test_montos_desde_filas_funciona_para_recargos_y_creditos():
     assert montos_desde_filas([{"nombre": "Bonificación", "importe": 100.0}], Credito) == [
         Credito("Bonificación", importe=100.0)
     ]
+
+
+# --- concepto_sugerido (Bloque 3 del plan de rediseño de septiembre 2026) ---
+
+
+def test_esquema_json_incluye_concepto_sugerido_con_enum_de_slugs_conocidos():
+    item_concepto = esquema_json_para_modelo()["properties"]["conceptos"]["items"]
+    propiedades = item_concepto["properties"]
+    assert "concepto_sugerido" in propiedades
+    enum = propiedades["concepto_sugerido"]["enum"]
+    assert "cargo_fijo" in enum  # data/conceptos/comunes.yaml
+    assert None in enum
+    # Opcional a propósito: no todas las líneas son clasificables (D-1 y
+    # D-17 ya mostraron que una línea puede venir incompleta o ambigua).
+    assert "concepto_sugerido" not in item_concepto["required"]
+
+
+def test_concepto_sugerido_valido_se_conserva():
+    datos = _datos_minimos(
+        conceptos=[
+            {
+                "descripcion": "Cargo fijo",
+                "cantidad": 1,
+                "precio_unitario": 100.0,
+                "importe": 100.0,
+                "concepto_sugerido": "cargo_fijo",
+            }
+        ]
+    )
+    factura = factura_desde_json(datos)
+    assert factura.conceptos[0].concepto_sugerido == "cargo_fijo"
+
+
+def test_concepto_sugerido_fuera_del_enum_se_descarta_a_none():
+    """Defensivo: no todos los proveedores hacen cumplir el JSON Schema tan
+    estricto como Gemini -- un slug inventado no debe colarse."""
+    datos = _datos_minimos(
+        conceptos=[
+            {
+                "descripcion": "Cargo fijo",
+                "cantidad": 1,
+                "precio_unitario": 100.0,
+                "importe": 100.0,
+                "concepto_sugerido": "esto_no_existe",
+            }
+        ]
+    )
+    factura = factura_desde_json(datos)
+    assert factura.conceptos[0].concepto_sugerido is None
+
+
+def test_sin_concepto_sugerido_queda_en_none():
+    factura = factura_desde_json(_datos_minimos())
+    assert factura.conceptos[0].concepto_sugerido is None

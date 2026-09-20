@@ -23,8 +23,8 @@ def _verdad(**overrides) -> dict:
         "numero_comprobante": "A101-00295837",
         "moneda": "ARS",
         "conceptos": [
-            {"descripcion": "Cargo Fijo", "importe": 108.71},
-            {"descripcion": "Energía", "importe": 420.85},
+            {"descripcion": "Cargo Fijo", "importe": 108.71, "concepto_correcto": "cargo_fijo"},
+            {"descripcion": "Energía", "importe": 420.85, "concepto_correcto": "consumo_energia"},
         ],
         "impuestos": [
             {"nombre": "I.V.A. (27,000%)", "importe": 621.51},
@@ -48,8 +48,8 @@ def _factura(**overrides) -> FacturaExtraida:
         numero_comprobante="A101-00295837",
         moneda="ARS",
         conceptos=[
-            Concepto("Cargo Fijo", 1, None, 108.71, 108.71),
-            Concepto("Energía", 56, "kWh", 7.5151, 420.85),
+            Concepto("Cargo Fijo", 1, None, 108.71, 108.71, concepto_sugerido="cargo_fijo"),
+            Concepto("Energía", 56, "kWh", 7.5151, 420.85, concepto_sugerido="consumo_energia"),
         ],
         impuestos=[Impuesto("I.V.A. (27,000%)", 621.51)],
         subtotal=529.56,
@@ -71,6 +71,8 @@ def test_lectura_perfecta_da_100_por_ciento_en_todo():
         subtotal_ok,
         total_ok,
         cierra,
+        sugerido_ok,
+        sugerido_total,
     ) = resultado
 
     assert cab_ok == cab_total  # los 9 campos de cabecera coinciden
@@ -79,6 +81,7 @@ def test_lectura_perfecta_da_100_por_ciento_en_todo():
     assert subtotal_ok
     assert total_ok
     assert cierra
+    assert sugerido_ok == sugerido_total == 2
 
 
 def test_impuesto_con_la_base_imponible_en_vez_del_importe_no_matchea():
@@ -87,16 +90,23 @@ def test_impuesto_con_la_base_imponible_en_vez_del_importe_no_matchea():
     621.51) -- el banco tiene que marcarlo como impuesto MAL leído, no
     como un simple redondeo."""
     factura = _factura(impuestos=[Impuesto("I.V.A. (27,000%)", 2301.90)])
-    _, _, _, _, imp_ok, imp_total, _, _, _ = comparar_factura(factura, _verdad())
+    _, _, _, _, imp_ok, imp_total, _, _, _, _, _ = comparar_factura(factura, _verdad())
     assert imp_total == 1
     assert imp_ok == 0
 
 
 def test_una_linea_de_concepto_de_menos_no_cuenta_como_correcta():
-    factura = _factura(conceptos=[Concepto("Cargo Fijo", 1, None, 108.71, 108.71)])
-    _, _, con_ok, con_total, _, _, _, _, _ = comparar_factura(factura, _verdad())
+    factura = _factura(
+        conceptos=[Concepto("Cargo Fijo", 1, None, 108.71, 108.71, concepto_sugerido="cargo_fijo")]
+    )
+    _, _, con_ok, con_total, _, _, _, _, _, sugerido_ok, sugerido_total = comparar_factura(
+        factura, _verdad()
+    )
     assert con_total == 2
     assert con_ok == 1
+    # La línea que falta también deja de contar para concepto_sugerido.
+    assert sugerido_total == 2
+    assert sugerido_ok == 1
 
 
 def test_descripcion_distinta_pero_importe_igual_igual_matchea():
@@ -105,11 +115,18 @@ def test_descripcion_distinta_pero_importe_igual_igual_matchea():
     coincida y la descripción sea razonablemente parecida."""
     factura = _factura(
         conceptos=[
-            Concepto("Cargo fijo mensual", 1, None, 108.71, 108.71),
-            Concepto("Consumo de energía eléctrica", 56, "kWh", 7.5151, 420.85),
+            Concepto("Cargo fijo mensual", 1, None, 108.71, 108.71, concepto_sugerido="cargo_fijo"),
+            Concepto(
+                "Consumo de energía eléctrica",
+                56,
+                "kWh",
+                7.5151,
+                420.85,
+                concepto_sugerido="consumo_energia",
+            ),
         ]
     )
-    _, _, con_ok, con_total, _, _, _, _, _ = comparar_factura(factura, _verdad())
+    _, _, con_ok, con_total, _, _, _, _, _, _, _ = comparar_factura(factura, _verdad())
     assert con_ok == con_total == 2
 
 
@@ -138,7 +155,7 @@ def test_cabecera_tolera_mayusculas_y_acentos_pero_no_un_valor_distinto():
 
 def test_subtotal_y_total_fuera_de_tolerancia_no_pasan():
     factura = _factura(subtotal=1000.00, total=1500.00)
-    _, _, _, _, _, _, subtotal_ok, total_ok, _ = comparar_factura(factura, _verdad())
+    _, _, _, _, _, _, subtotal_ok, total_ok, _, _, _ = comparar_factura(factura, _verdad())
     assert not subtotal_ok
     assert not total_ok
 
@@ -151,3 +168,51 @@ def test_factura_sin_conceptos_de_verdad_no_divide_por_cero():
     _, _, con_ok, con_total, *_ = comparar_factura(_factura(), verdad)
     assert con_total == 0
     assert con_ok == 0
+
+
+# --- concepto_sugerido (Bloque 3 del plan de rediseño de septiembre 2026) ---
+
+
+def test_concepto_sugerido_incorrecto_no_cuenta():
+    factura = _factura(
+        conceptos=[
+            Concepto("Cargo Fijo", 1, None, 108.71, 108.71, concepto_sugerido="consumo_energia"),
+            Concepto("Energía", 56, "kWh", 7.5151, 420.85, concepto_sugerido="consumo_energia"),
+        ]
+    )
+    *_, sugerido_ok, sugerido_total = comparar_factura(factura, _verdad())
+    assert sugerido_total == 2
+    assert sugerido_ok == 1  # solo "Energía" acertó
+
+
+def test_concepto_sugerido_none_no_cuenta_como_correcto():
+    factura = _factura(
+        conceptos=[
+            Concepto("Cargo Fijo", 1, None, 108.71, 108.71, concepto_sugerido=None),
+            Concepto("Energía", 56, "kWh", 7.5151, 420.85, concepto_sugerido=None),
+        ]
+    )
+    *_, sugerido_ok, sugerido_total = comparar_factura(factura, _verdad())
+    assert sugerido_total == 2
+    assert sugerido_ok == 0
+
+
+def test_lineas_de_verdad_sin_concepto_correcto_no_cuentan_para_el_total():
+    """El caso real de data/reales/banco/gas_1.yaml: una línea ambigua se
+    deja sin `concepto_correcto` a propósito -- no debe penalizar ni
+    premiar a ningún proveedor."""
+    verdad = _verdad(
+        conceptos=[
+            {"descripcion": "Cargo Fijo", "importe": 108.71, "concepto_correcto": "cargo_fijo"},
+            {"descripcion": "Algo ambiguo", "importe": 420.85},  # sin concepto_correcto
+        ]
+    )
+    factura = _factura(
+        conceptos=[
+            Concepto("Cargo Fijo", 1, None, 108.71, 108.71, concepto_sugerido="cargo_fijo"),
+            Concepto("Algo ambiguo", 1, None, 420.85, 420.85, concepto_sugerido=None),
+        ]
+    )
+    *_, sugerido_ok, sugerido_total = comparar_factura(factura, verdad)
+    assert sugerido_total == 1  # solo la línea con concepto_correcto cuenta
+    assert sugerido_ok == 1

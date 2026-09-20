@@ -96,6 +96,8 @@ class ResultadoComparacion:
     total_ok: bool
     aritmetica_cierra: bool | None  # None = no se pudo evaluar (ver error)
     segundos: float
+    concepto_sugerido_correctos: int = 0
+    concepto_sugerido_total: int = 0
     error: str | None = None
 
     @property
@@ -109,6 +111,17 @@ class ResultadoComparacion:
     @property
     def score_impuestos(self) -> float:
         return _porcentaje(self.impuestos_correctos, self.impuestos_total)
+
+    @property
+    def score_concepto_sugerido(self) -> float | None:
+        """`None` (no `1.0`) cuando la verdad de esta factura no tiene
+        ningún `concepto_correcto` marcado -- a diferencia de cabecera/
+        conceptos/impuestos, acá "no hay nada que medir" es un caso real y
+        frecuente (ver data/reales/banco/gas_1.yaml), no debería promediar
+        como si el proveedor hubiera acertado todo."""
+        if self.concepto_sugerido_total == 0:
+            return None
+        return _porcentaje(self.concepto_sugerido_correctos, self.concepto_sugerido_total)
 
 
 def _porcentaje(correctos: int, total: int) -> float:
@@ -158,9 +171,44 @@ def _emparejar_lineas(extraidas: list[tuple[str, float]], verdad: list[tuple[str
     return correctos
 
 
+def _contar_concepto_sugerido(
+    extraidas: list[tuple[str, float, str | None]],
+    verdad: list[tuple[str, float, str | None]],
+) -> tuple[int, int]:
+    """De las líneas de `verdad` que tienen `concepto_correcto` (no todas lo
+    tienen -- una línea ambigua, como las de `data/reales/banco/gas_1.yaml`,
+    se deja deliberadamente sin uno), cuenta cuántas: (a) el proveedor
+    emparejó por importe+descripción (mismo criterio que `_emparejar_lineas`)
+    y (b) el `concepto_sugerido` de esa línea coincide con el
+    `concepto_correcto` de la verdad. Bloque 3 del plan de rediseño de
+    septiembre 2026."""
+    disponibles = list(extraidas)
+    correctos = 0
+    total = 0
+    for descripcion_v, importe_v, concepto_correcto in verdad:
+        if concepto_correcto is None:
+            continue
+        total += 1
+        mejor_idx = None
+        mejor_score = 0.0
+        for idx, (descripcion_e, importe_e, _sugerido) in enumerate(disponibles):
+            if not _numero_cerca(importe_e, importe_v):
+                continue
+            score = similitud(descripcion_e, descripcion_v)
+            if score > mejor_score:
+                mejor_score = score
+                mejor_idx = idx
+        if mejor_idx is None or mejor_score < _UMBRAL_SIMILITUD_DESCRIPCION:
+            continue
+        _descripcion_e, _importe_e, sugerido_e = disponibles.pop(mejor_idx)
+        if sugerido_e == concepto_correcto:
+            correctos += 1
+    return correctos, total
+
+
 def comparar_factura(
     extraida: FacturaExtraida, verdad: dict, *, total_impreso_pdf: float | None = None
-) -> tuple[int, int, int, int, int, int, bool, bool, bool | None]:
+) -> tuple[int, int, int, int, int, int, bool, bool, bool | None, int, int]:
     """Compara una `FacturaExtraida` contra su verdad de referencia (el dict
     parseado de un YAML de `data/reales/banco/`). Devuelve las cuentas
     crudas -- `comparar_factura_resultado` arma el dataclass completo, esta
@@ -184,6 +232,17 @@ def comparar_factura(
     impuestos_extraidos = [(i.nombre, i.importe) for i in extraida.impuestos]
     impuestos_correctos = _emparejar_lineas(impuestos_extraidos, impuestos_verdad)
 
+    conceptos_verdad_sugerido = [
+        (c["descripcion"], float(c["importe"]), c.get("concepto_correcto"))
+        for c in verdad.get("conceptos", [])
+    ]
+    conceptos_extraidos_sugerido = [
+        (c.descripcion, c.importe, c.concepto_sugerido) for c in extraida.conceptos
+    ]
+    concepto_sugerido_correctos, concepto_sugerido_total = _contar_concepto_sugerido(
+        conceptos_extraidos_sugerido, conceptos_verdad_sugerido
+    )
+
     subtotal_ok = _numero_cerca(extraida.subtotal, verdad.get("subtotal"))
     total_ok = _numero_cerca(extraida.total, verdad.get("total"))
 
@@ -204,6 +263,8 @@ def comparar_factura(
         subtotal_ok,
         total_ok,
         aritmetica_cierra,
+        concepto_sugerido_correctos,
+        concepto_sugerido_total,
     )
 
 
@@ -297,6 +358,12 @@ def correr_banco(
                         total_ok=False,
                         aritmetica_cierra=None,
                         segundos=segundos,
+                        concepto_sugerido_correctos=0,
+                        concepto_sugerido_total=sum(
+                            1
+                            for c in fx.verdad.get("conceptos", [])
+                            if c.get("concepto_correcto") is not None
+                        ),
                         error=error,
                     )
                 )
@@ -313,6 +380,8 @@ def correr_banco(
                 subtotal_ok,
                 total_ok,
                 cierra,
+                sugerido_ok,
+                sugerido_total,
             ) = comparar_factura(extraida, fx.verdad, total_impreso_pdf=total_pdf)
             resultados.append(
                 ResultadoComparacion(
@@ -328,15 +397,22 @@ def correr_banco(
                     total_ok=total_ok,
                     aritmetica_cierra=cierra,
                     segundos=segundos,
+                    concepto_sugerido_correctos=sugerido_ok,
+                    concepto_sugerido_total=sugerido_total,
                 )
             )
     return resultados
 
 
+def _formato_score_opcional(score: float | None) -> str:
+    return "n/a" if score is None else f"{score:.0%}"
+
+
 def imprimir_tabla(resultados: list[ResultadoComparacion]) -> None:
     encabezado = (
         f"{'Proveedor':12s} {'Factura':10s} {'Cabecera':>10s} {'Conceptos':>10s} "
-        f"{'Impuestos':>10s} {'Subtot.':>8s} {'Total':>6s} {'Cierra':>7s} {'Seg.':>6s}"
+        f"{'Impuestos':>10s} {'Concepto*':>10s} {'Subtot.':>8s} {'Total':>6s} "
+        f"{'Cierra':>7s} {'Seg.':>6s}"
     )
     print(encabezado)
     print("-" * len(encabezado))
@@ -351,9 +427,14 @@ def imprimir_tabla(resultados: list[ResultadoComparacion]) -> None:
         print(
             f"{r.proveedor:12s} {r.factura:10s} "
             f"{r.score_cabecera:>9.0%} {r.score_conceptos:>9.0%} {r.score_impuestos:>9.0%} "
+            f"{_formato_score_opcional(r.score_concepto_sugerido):>10s} "
             f"{'sí' if r.subtotal_ok else 'NO':>8s} {'sí' if r.total_ok else 'NO':>6s} "
             f"{cierra:>7s} {r.segundos:>5.1f}s"
         )
+    print(
+        "* Concepto: % de concepto_sugerido correcto, solo sobre líneas con "
+        "concepto_correcto en la verdad."
+    )
 
     print()
     proveedores_vistos = list(dict.fromkeys(r.proveedor for r in resultados))
@@ -365,9 +446,18 @@ def imprimir_tabla(resultados: list[ResultadoComparacion]) -> None:
         promedio_cabecera = sum(r.score_cabecera for r in filas) / len(filas)
         promedio_conceptos = sum(r.score_conceptos for r in filas) / len(filas)
         promedio_impuestos = sum(r.score_impuestos for r in filas) / len(filas)
+        scores_sugerido = [
+            r.score_concepto_sugerido for r in filas if r.score_concepto_sugerido is not None
+        ]
+        promedio_sugerido = (
+            _formato_score_opcional(sum(scores_sugerido) / len(scores_sugerido))
+            if scores_sugerido
+            else "n/a"
+        )
         print(
             f"{proveedor}: promedio cabecera {promedio_cabecera:.0%}, "
-            f"conceptos {promedio_conceptos:.0%}, impuestos {promedio_impuestos:.0%} "
+            f"conceptos {promedio_conceptos:.0%}, impuestos {promedio_impuestos:.0%}, "
+            f"concepto_sugerido {promedio_sugerido} "
             f"({len(filas)}/{len(filas) + con_error} facturas leídas sin error)"
         )
 

@@ -22,6 +22,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from core.analisis.diccionario import cargar_diccionario
+
 # Mismos nombres que los archivos data/conceptos/*.yaml (docs/auditoria-2026-09.md,
 # hallazgo A-3) -- "otro" es el catch-all deliberado sin YAML propio: una factura
 # de un servicio no contemplado todavía homologa solo contra comunes.yaml, en vez
@@ -38,6 +40,17 @@ class Concepto:
     unidad: str | None  # "chip", "línea", "kWh", "m³", None si no aplica
     precio_unitario: float
     importe: float
+    # Bloque 3 del plan de rediseño de septiembre 2026 (ver docs/estado.md):
+    # el modelo propone directamente un concepto_normalizado conocido, en
+    # vez de que la homologación posterior por similitud de texto
+    # (core/analisis/homologacion.py) sea la ÚNICA fuente. Nunca decide por
+    # sí solo -- core/pipeline.py::confirmar_factura sigue corriendo la
+    # homologación por Dice como siempre; esto queda como dato adicional
+    # para medir con el banco (docs/banco_extraccion.md) si el slug del
+    # modelo es mejor, antes de usarlo para algo más que medir. `None` si el
+    # modelo no propuso nada o propuso algo fuera del enum conocido (ver
+    # `esquema_json_para_modelo`).
+    concepto_sugerido: str | None = None
 
 
 @dataclass
@@ -105,6 +118,14 @@ def esquema_json_para_modelo() -> dict:
         "1 si el concepto no tiene cantidad explícita"
     )
     desc_recargos = "Intereses por mora, refacturaciones u otros cargos que no son consumo normal"
+    # Bloque 3 del plan de rediseño de septiembre 2026: mismo mecanismo que
+    # ya usa "servicio" -- un `enum` con TODOS los conceptos normalizados
+    # conocidos (de todos los servicios, no solo el de esta factura: acá
+    # todavía no se sabe con certeza qué servicio es) le da al modelo la
+    # oportunidad de clasificar directamente, en vez de que la homologación
+    # por similitud de texto sea la única fuente. `cargar_diccionario()` sin
+    # argumento combina TODOS los `data/conceptos/*.yaml` -- no hardcodeado.
+    slugs_conocidos = sorted(cargar_diccionario())
 
     return {
         "type": "object",
@@ -153,6 +174,16 @@ def esquema_json_para_modelo() -> dict:
                         },
                         "precio_unitario": {"type": "number", "description": "Importe / cantidad"},
                         "importe": {"type": "number", "description": "Importe total de la línea"},
+                        "concepto_sugerido": {
+                            "type": ["string", "null"],
+                            "enum": slugs_conocidos + [None],
+                            "description": (
+                                "Si esta línea corresponde claramente a uno de estos "
+                                "conceptos normalizados conocidos, cuál -- null si no "
+                                "estás seguro o es un concepto nuevo que no está en "
+                                "la lista. No inventes un valor fuera de esta lista."
+                            ),
+                        },
                     },
                     "required": ["descripcion", "cantidad", "precio_unitario", "importe"],
                 },
@@ -278,6 +309,7 @@ def factura_desde_json(
     """Convierte el JSON que devuelve el modelo (o un motor por reglas, a
     futuro) en un `FacturaExtraida`. No valida nada aritméticamente — eso es
     trabajo de `core/extraccion/validacion.py`, a propósito separado."""
+    slugs_conocidos = cargar_diccionario()
     conceptos = [
         Concepto(
             descripcion=c["descripcion"],
@@ -285,6 +317,17 @@ def factura_desde_json(
             unidad=c.get("unidad"),
             precio_unitario=float(c["precio_unitario"]),
             importe=float(c["importe"]),
+            # Defensivo: el `enum` del JSON Schema ya restringe al modelo,
+            # pero no todos los proveedores de `core/extraccion/proveedores/`
+            # hacen cumplir el schema tan estrictamente como Gemini -- un
+            # valor fuera de la lista conocida se descarta a None en vez de
+            # dejar pasar un slug inventado que después rompería la
+            # homologación en silencio.
+            concepto_sugerido=(
+                c.get("concepto_sugerido")
+                if c.get("concepto_sugerido") in slugs_conocidos
+                else None
+            ),
         )
         for c in datos.get("conceptos", [])
     ]
