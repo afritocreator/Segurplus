@@ -729,18 +729,37 @@ def _analisis(
         ) + conceptos_con_cantidad_neta_negativa(filas_1, acumulado=acumulado_1)
         anomalos = sorted({etiqueta_legible(a) for a in anomalos_0 + anomalos_1})
 
-        total_0 = sum(d.total_0 for d in descomposiciones)
+        total_0 = sum(d.total_0 for d in descomposiciones)  # consumos, sin impuestos
         total_1 = sum(d.total_1 for d in descomposiciones)
 
-        ipc_periodo_pct = 0.0
+        # Bloque 6 del plan de rediseño de septiembre 2026: el número
+        # grande de la pantalla pasa a ser el TOTAL PAGABLE (consumos +
+        # impuestos + recargos - créditos), no solo los consumos -- antes
+        # `total_0`/`total_1` (arriba) eran el único número mostrado en
+        # grande, y esa suma NO es lo que la factura cobra de verdad. Se
+        # calcula acá (antes que la variación real e inflación) porque
+        # "cuánto cambió en plata real" tiene que hablar del mismo total
+        # que se muestra, no de los consumos solos.
+        componentes_0 = componentes_financieros_periodo(
+            con, servicio=servicio, periodo_desde=periodo_0
+        )
+        componentes_1 = componentes_financieros_periodo(
+            con, servicio=servicio, periodo_desde=periodo_1
+        )
+        total_pagable_0 = componentes_0["total_pagable"]
+        total_pagable_1 = componentes_1["total_pagable"]
+
+        ipc_periodo_pct = None
         vr = None
         try:
             fecha_0 = date.fromisoformat(periodo_0)
             fecha_1 = date.fromisoformat(periodo_1)
             df_ipc = leer_ipc()
             ipc_periodo_pct = inflacion_del_periodo(fecha_0, fecha_1, df_ipc=df_ipc)
-            if total_0 != 0:
-                vr = variacion_real(total_0, fecha_0, total_1, fecha_1, df_ipc=df_ipc)
+            if total_pagable_0 != 0:
+                vr = variacion_real(
+                    total_pagable_0, fecha_0, total_pagable_1, fecha_1, df_ipc=df_ipc
+                )
         except requests.exceptions.RequestException as exc:
             avisos_calculo.append(f"No se pudo descargar el IPC (problema de red): {exc}")
         except ValueError as exc:
@@ -766,7 +785,12 @@ def _analisis(
             generar_alertas(
                 factura_agregada,
                 descomposiciones,
-                ipc_periodo_pct=ipc_periodo_pct,
+                # Sin IPC real no se puede saber si un precio subió "por
+                # encima de la inflación" -- 0.0 es el mismo default que ya
+                # usaba generar_alertas, explícito acá para no confundirlo
+                # con una inflación real de cero (ver "avisos_calculo" de
+                # arriba, que ya avisa que el IPC falló).
+                ipc_periodo_pct=ipc_periodo_pct if ipc_periodo_pct is not None else 0.0,
                 conceptos_con_cantidad_sintetica=frozenset(anomalos_0 + anomalos_1),
             )
             + alertas_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
@@ -780,16 +804,21 @@ def _analisis(
 
         tipo_dominante, proporcion_dominante = efecto_dominante(descomposiciones)
         cambio_formateado = pesos_ars(total_1 - total_0, signo=True)
-        proporcion_formateada = f"{abs(proporcion_dominante):.0%}"
+        # Bloque 6 del plan de rediseño: "(73%)" a secas se leía como si
+        # $73 de cada $100 de la variación fueran por precio -- en
+        # realidad es la fracción del MOVIMIENTO total (incluye el efecto
+        # cruzado), no de la variación neta. "del movimiento" lo aclara
+        # sin volverse un párrafo aparte.
+        proporcion_formateada = f"{abs(proporcion_dominante):.0%} del movimiento"
         if tipo_dominante == "precio":
             veredicto = (
-                f"El cambio de {cambio_formateado} fue mayormente por PRECIO "
-                f"({proporcion_formateada})."
+                f"El cambio de {cambio_formateado} en los consumos fue mayormente por "
+                f"PRECIO ({proporcion_formateada})."
             )
         elif tipo_dominante == "cantidad":
             veredicto = (
-                f"El cambio de {cambio_formateado} fue mayormente por CANTIDAD "
-                f"({proporcion_formateada})."
+                f"El cambio de {cambio_formateado} en los consumos fue mayormente por "
+                f"CANTIDAD ({proporcion_formateada})."
             )
         elif tipo_dominante == "mixto":
             veredicto = (
@@ -809,29 +838,26 @@ def _analisis(
         # Bloque 5 del plan de rediseño: el párrafo en castellano de arriba
         # de todo -- se arma con los MISMOS números que las métricas y la
         # tabla de abajo, nunca un cálculo aparte (ver core/relato.py).
+        # Bloque 6: el relato habla del TOTAL PAGABLE ("lo que pagaste"),
+        # no de los consumos solos -- son los mismos números que ahora se
+        # muestran como número grande, más abajo.
         relato = redactar_con_modelo(
             generar_relato_determinista(
                 DatosRelato(
                     servicio=servicio,
                     periodo_0=periodo_0,
                     periodo_1=periodo_1,
-                    total_0=total_0,
-                    total_1=total_1,
+                    total_0=total_pagable_0,
+                    total_1=total_pagable_1,
                     tipo_dominante=tipo_dominante,
                     proporcion_dominante=abs(proporcion_dominante),
                     variacion_real_pct=vr.variacion_real_pct if vr is not None else None,
-                    inflacion_pct=ipc_periodo_pct,
+                    inflacion_pct=ipc_periodo_pct if ipc_periodo_pct is not None else 0.0,
                     concepto_destacado=principales[0] if principales else None,
                 )
             )
         )
 
-        componentes_0 = componentes_financieros_periodo(
-            con, servicio=servicio, periodo_desde=periodo_0
-        )
-        componentes_1 = componentes_financieros_periodo(
-            con, servicio=servicio, periodo_desde=periodo_1
-        )
         composicion = [
             {
                 "etiqueta": etiqueta,
@@ -888,11 +914,20 @@ def _analisis(
         "avisos_calculo": avisos_calculo,
         "conceptos_sin_clasificar": conceptos_sin_clasificar,
         "anomalos": anomalos,
-        "total_0": pesos_ars(total_0),
-        "total_1": pesos_ars(total_1),
-        "variacion_nominal": f"{pesos_ars(total_1 - total_0, signo=True)} nominal",
+        # Bloque 6: el número grande es el TOTAL PAGABLE (consumos +
+        # impuestos + recargos - créditos) -- antes era solo la suma de
+        # consumos, que no es lo que la factura cobra de verdad. Los
+        # consumos siguen mostrándose, como referencia secundaria.
+        "total_0": pesos_ars(total_pagable_0),
+        "total_1": pesos_ars(total_pagable_1),
+        "consumos_0": pesos_ars(total_0),
+        "consumos_1": pesos_ars(total_1),
+        "variacion_nominal": f"{pesos_ars(total_pagable_1 - total_pagable_0, signo=True)} nominal",
         "variacion_real": f"{vr.variacion_real_pct:+.1%}" if vr is not None else None,
-        "inflacion_periodo": f"{ipc_periodo_pct:+.1%}",
+        # None (no "+0,0%") cuando el IPC no se pudo descargar/calcular --
+        # ver "avisos_calculo" arriba, que ya explica por qué. +0,0% sería
+        # indistinguible de una inflación real de cero.
+        "inflacion_periodo": f"{ipc_periodo_pct:+.1%}" if ipc_periodo_pct is not None else None,
         "veredicto": veredicto,
         "relato": relato,
         "descomposiciones": [

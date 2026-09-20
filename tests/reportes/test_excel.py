@@ -78,6 +78,69 @@ def test_sin_alertas_ni_cuarentena_dice_explicitamente_que_no_hay():
     )
 
 
+def test_columnas_de_cantidad_no_llevan_formato_moneda():
+    """Bloque 6 del plan de rediseño de septiembre 2026: un "7" de líneas
+    telefónicas no debería mostrarse como "$7,00"."""
+    d = descomponer_variacion(
+        "abono_movil", cantidad_0=4, precio_0=2500, cantidad_1=6, precio_1=2800
+    )
+    buffer = BytesIO()
+    generar_reporte_excel(
+        servicio="telefonia",
+        periodo_0="2026-07-01",
+        periodo_1="2026-08-01",
+        descomposiciones=[d],
+        alertas=[],
+        cuarentena=[],
+        ruta_salida=buffer,
+    )
+    ws = load_workbook(buffer)["Precio vs. cantidad"]
+    assert ws.cell(row=4, column=2).number_format != "#,##0.00"  # Cantidad (base)
+    assert ws.cell(row=4, column=4).number_format != "#,##0.00"  # Cantidad (comparado)
+    assert ws.cell(row=4, column=3).number_format == "#,##0.00"  # Precio (base) sí es plata
+
+
+def test_alertas_se_ordenan_por_severidad():
+    """Bloque 6: la pantalla ya ordena por severidad -- el Excel las
+    mostraba en el orden en que llegaban."""
+    alertas = [
+        Alerta(tipo="concepto_nuevo", severidad="baja", mensaje="baja", concepto=None),
+        Alerta(tipo="recargo", severidad="alta", mensaje="alta", concepto=None),
+        Alerta(tipo="salto_de_cantidad", severidad="media", mensaje="media", concepto=None),
+    ]
+    buffer = BytesIO()
+    generar_reporte_excel(
+        servicio="energia",
+        periodo_0="2026-07-01",
+        periodo_1="2026-08-01",
+        descomposiciones=[],
+        alertas=alertas,
+        cuarentena=[],
+        ruta_salida=buffer,
+    )
+    ws = load_workbook(buffer)["Alertas"]
+    severidades = [ws.cell(row=r, column=1).value for r in (4, 5, 6)]
+    assert severidades == ["ALTA", "MEDIA", "BAJA"]
+
+
+def test_alertas_traducen_el_concepto_a_etiqueta_legible():
+    alertas = [
+        Alerta(tipo="recargo", severidad="alta", mensaje="x", concepto="abono_movil"),
+    ]
+    buffer = BytesIO()
+    generar_reporte_excel(
+        servicio="telefonia",
+        periodo_0="2026-07-01",
+        periodo_1="2026-08-01",
+        descomposiciones=[],
+        alertas=alertas,
+        cuarentena=[],
+        ruta_salida=buffer,
+    )
+    ws = load_workbook(buffer)["Alertas"]
+    assert ws.cell(row=4, column=3).value == "Abono móvil"
+
+
 def test_escribe_a_ruta_de_archivo(tmp_path):
     ruta = tmp_path / "sub" / "reporte.xlsx"
     resultado = generar_reporte_excel(

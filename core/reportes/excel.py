@@ -18,7 +18,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from core.analisis.agregacion import etiqueta_legible
-from core.analisis.alertas import Alerta, etiqueta_tipo
+from core.analisis.alertas import Alerta, etiqueta_tipo, ordenar_por_severidad
 from core.analisis.variacion import (
     ETIQUETA_EFECTO_CANTIDAD,
     ETIQUETA_EFECTO_CRUZADO,
@@ -70,9 +70,14 @@ def _hoja_descomposicion(wb: Workbook, descomposiciones: list[DescomposicionVari
             d.efecto_cruzado,
             d.variacion_total,
         ]
+        # Bloque 6 del plan de rediseño de septiembre 2026: las columnas de
+        # CANTIDAD (2 y 4 -- "Cantidad (base)"/"Cantidad (comparado)") no
+        # son plata, aunque estén al lado de columnas que sí lo son -- un
+        # "7" de líneas telefónicas no debería mostrarse como "$7,00".
+        columnas_cantidad = {2, 4}
         for col, valor in enumerate(valores, start=1):
             celda = ws.cell(row=fila, column=col, value=valor)
-            if col >= 2:
+            if col >= 2 and col not in columnas_cantidad:
                 celda.number_format = _MONEDA
         fila += 1
 
@@ -86,11 +91,17 @@ def _hoja_alertas(wb: Workbook, alertas: list[Alerta]) -> None:
     ws.cell(row=1, column=1, value="Alertas").font = _TITULO_FONT
     _encabezado(ws, 3, ["Severidad", "Tipo", "Concepto", "Mensaje"])
 
+    # Bloque 6 del plan de rediseño de septiembre 2026: la pantalla ya
+    # ordena por severidad (ordenar_por_severidad) -- el Excel las
+    # mostraba en el orden en que llegaban, un orden distinto entre los
+    # dos sin ningún motivo.
     fila = 4
-    for a in alertas:
+    for a in ordenar_por_severidad(alertas):
         ws.cell(row=fila, column=1, value=a.severidad.upper())
         ws.cell(row=fila, column=2, value=etiqueta_tipo(a.tipo))
-        ws.cell(row=fila, column=3, value=a.concepto or "")
+        # etiqueta_legible, no la clave interna cruda -- mismo criterio
+        # que ya se aplica en la hoja "Precio vs. cantidad".
+        ws.cell(row=fila, column=3, value=etiqueta_legible(a.concepto) if a.concepto else "")
         celda_mensaje = ws.cell(row=fila, column=4, value=a.mensaje)
         if a.severidad == "alta":
             celda_mensaje.font = _ADVERTENCIA_FONT

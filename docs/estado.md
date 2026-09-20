@@ -423,6 +423,37 @@ la redacción por modelo contra la API real** -- el párrafo determinístico sí
 se ve en la pantalla "Ver" (`tests/test_relato.py`, 14 tests con valores calculados a
 mano).
 
+**Bloque 6 -- sacar la jerga, número grande = total pagable**:
+
+- **El número grande de "Ver" pasa a ser el total pagable** (consumos + impuestos +
+  recargos − créditos), calculado con `componentes_financieros_periodo` (ya existía, solo
+  se usaba en una tabla secundaria). Los consumos siguen visibles, ahora como referencia
+  chica debajo -- antes eran el único número mostrado en grande, y esa suma no es lo que
+  la factura cobra de verdad. El relato del Bloque 5 también pasa a hablar de este total,
+  no de los consumos: la frase "pagaste $X" ahora significa lo que de verdad salió del
+  bolsillo. La variación real (deflactada por IPC) también se recalculó sobre este total.
+- **`etiqueta_legible` deja de mostrar `"(sin_homologar) "`** (sintaxis de código) --
+  ahora dice `"Sin clasificar: "`. La CLAVE interna (`PREFIJO_SIN_HOMOLOGAR`, usada para
+  agrupar) no cambió, solo lo que se muestra.
+- **"X puntos reales por encima de la inflación" reescrito**: era jerga y además impreciso
+  (es un porcentaje de exceso real, no puntos porcentuales) -- ahora dice "un X% más que
+  la inflación del período, ya descontada esta".
+- **El veredicto de precio/cantidad aclara "del movimiento"**: "(73%)" a secas se leía
+  como si $73 de cada $100 de la variación fueran por precio; en realidad es la fracción
+  del movimiento total (el efecto cruzado incluido), no de la variación neta.
+- **Tres bugs de Excel corregidos** (`core/reportes/excel.py`, comparten código con el
+  tablero Streamlit viejo, así que se arreglan para los dos): las columnas de CANTIDAD ya
+  no llevan formato de moneda (un "7" de líneas ya no se ve "$7,00"); las alertas se
+  ordenan por severidad (antes salían en el orden en que llegaban, distinto del que ya
+  usa la pantalla); la columna "Concepto" de la hoja Alertas usa `etiqueta_legible`, no
+  la clave interna cruda.
+- **Inflación "sin datos" en vez de "+0,0%"** cuando el IPC no se pudo descargar/calcular
+  -- antes era indistinguible de una inflación real de cero.
+- **Deliberadamente fuera de este bloque**: la columna "Clave" con el hash SHA-256 en la
+  pantalla "Casos" -- esa pantalla no se portó a `web/` (ver Bloque 4, fuera de alcance a
+  propósito) y sigue existiendo solo en el tablero Streamlit que se va a borrar; invertir
+  en arreglarla ahí sería trabajo tirado.
+
 ## Falta (siguiente trabajo)
 
 - **Auditoría del piloto operativo (A-49 a A-59) — resuelta**: ver

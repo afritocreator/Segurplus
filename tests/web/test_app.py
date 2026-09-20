@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 import core.almacenamiento as almacenamiento_mod
 import core.pipeline as pipeline_mod
-from core.extraccion.esquema import Concepto, FacturaExtraida
+from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto
 from core.pipeline import confirmar_factura
 from web.app import app
 
@@ -378,3 +378,60 @@ def test_ver_con_dos_periodos_muestra_el_analisis(cliente_logueado):
     assert r.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+
+def test_ver_muestra_el_total_pagable_como_numero_principal_no_solo_consumos(
+    cliente_logueado,
+):
+    """Bloque 6 del plan de rediseño de septiembre 2026: el número grande
+    tiene que ser lo que la factura cobra de verdad (consumos + impuestos),
+    no solo la suma de consumos -- antes eran la misma cosa mostrada como
+    si fuera el total."""
+    con = almacenamiento_mod.conectar()
+    try:
+        f1 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 100.0, 100.0)],
+            impuestos=[Impuesto("IVA", 21.0)],
+            subtotal=100.0,
+            total=121.0,
+            hash_pdf="h1",
+        )
+        almacenamiento_mod.guardar_factura(con, f1, estado="borrador")
+        confirmar_factura(con, f1, actor="test")
+        f2 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-08-01",
+            periodo_hasta="2026-08-31",
+            fecha_emision="2026-09-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-2",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 110.0, 110.0)],
+            impuestos=[Impuesto("IVA", 23.1)],
+            subtotal=110.0,
+            total=133.1,
+            hash_pdf="h2",
+        )
+        almacenamiento_mod.guardar_factura(con, f2, estado="borrador")
+        confirmar_factura(con, f2, actor="test")
+    finally:
+        con.close()
+
+    r = cliente_logueado.get("/ver")
+    assert r.status_code == 200
+    # Total pagable (110 + 23,10 = 133,10), no los consumos solos (110,00).
+    assert "$133,10" in r.text
+    assert "pagaste $133,10 de energia" in r.text
+    # Los consumos siguen visibles, como referencia -- no desaparecen.
+    assert "Consumos sin impuestos: $100,00 → $110,00" in r.text

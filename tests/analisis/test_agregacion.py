@@ -232,8 +232,12 @@ def test_etiqueta_legible_traduce_concepto_homologado():
     assert etiqueta_legible("abono_movil") == "Abono móvil"
 
 
-def test_etiqueta_legible_sigue_capitalizando_lo_sin_homologar():
-    assert etiqueta_legible("(sin_homologar) cargo raro") == "(sin_homologar) Cargo raro"
+def test_etiqueta_legible_sin_homologar_usa_prefijo_legible_y_capitaliza():
+    """Bloque 6 del plan de rediseño de septiembre 2026: el prefijo interno
+    `(sin_homologar) ` (sintaxis de código) no debe llegar a pantalla --
+    `etiqueta_legible` lo cambia por "Sin clasificar: ", nunca la CLAVE
+    interna (`PREFIJO_SIN_HOMOLOGAR`), que sigue igual para agrupar."""
+    assert etiqueta_legible("(sin_homologar) cargo raro") == "Sin clasificar: Cargo raro"
 
 
 def test_etiqueta_legible_devuelve_el_slug_si_no_esta_mapeado():
@@ -275,7 +279,7 @@ def test_etiqueta_legible_con_unidad_y_slug_desconocido_no_rompe():
 
 def test_etiqueta_legible_sin_homologar_con_unidad_sigue_capitalizando():
     assert (
-        etiqueta_legible("(sin_homologar) cargo raro [kwh]") == "(sin_homologar) Cargo raro [kwh]"
+        etiqueta_legible("(sin_homologar) cargo raro [kwh]") == "Sin clasificar: Cargo raro [kwh]"
     )
 
 

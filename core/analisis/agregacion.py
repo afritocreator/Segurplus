@@ -118,9 +118,13 @@ def _etiqueta(concepto: str, unidad: str | None) -> str:
 
 def etiqueta_legible(etiqueta: str) -> str:
     """SOLO para mostrar (tablero, Excel) -- NUNCA usar como clave de
-    agrupamiento ni de unión entre períodos. Capitaliza la primera letra del
-    texto sin homologar; el resto de la etiqueta (conceptos ya homologados,
-    como "abono_movil") queda igual.
+    agrupamiento ni de unión entre períodos. Para un concepto sin
+    homologar, cambia el prefijo interno `PREFIJO_SIN_HOMOLOGAR`
+    (`"(sin_homologar) "`, sintaxis de código, ver docs/estado.md, Bloque 6
+    del plan de rediseño de septiembre 2026: sacar la jerga que quedaba
+    visible en pantalla) por `"Sin clasificar: "` y capitaliza la
+    descripción; el resto de la etiqueta (conceptos ya homologados, como
+    "abono_movil") queda igual.
 
     Es función pura de la ETIQUETA YA NORMALIZADA, nunca de "la primera
     descripción cruda vista" -- si lo fuera, dos períodos del mismo concepto
@@ -137,7 +141,7 @@ def etiqueta_legible(etiqueta: str) -> str:
     El sufijo se separa antes de buscar y se reatacha tal cual."""
     if etiqueta.startswith(PREFIJO_SIN_HOMOLOGAR):
         resto = etiqueta[len(PREFIJO_SIN_HOMOLOGAR) :]
-        return PREFIJO_SIN_HOMOLOGAR + (resto[:1].upper() + resto[1:] if resto else resto)
+        return "Sin clasificar: " + (resto[:1].upper() + resto[1:] if resto else resto)
     if etiqueta.endswith("]") and " [" in etiqueta:
         concepto, _, resto_unidad = etiqueta.rpartition(" [")
         return f"{_leer_etiquetas_concepto().get(concepto, concepto)} [{resto_unidad}"

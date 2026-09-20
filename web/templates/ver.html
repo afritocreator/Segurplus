@@ -31,12 +31,8 @@
 <div class="tarjeta">
   <div class="metricas">
     <div class="metrica">
-      <div class="valor">{{ total_0 }}</div>
-      <div class="etiqueta">Total período base</div>
-    </div>
-    <div class="metrica">
-      <div class="valor">{{ total_1 }}</div>
-      <div class="etiqueta">Total período comparado ({{ variacion_nominal }})</div>
+      <div class="valor principal">{{ total_1 }}</div>
+      <div class="etiqueta">Pagaste en {{ periodo_1 }} ({{ variacion_nominal }} vs. {{ total_0 }} en {{ periodo_0 }})</div>
     </div>
     {% if variacion_real is not none %}
     <div class="metrica">
@@ -45,10 +41,14 @@
     </div>
     {% endif %}
     <div class="metrica">
-      <div class="valor">{{ inflacion_periodo }}</div>
+      <div class="valor">{{ inflacion_periodo if inflacion_periodo is not none else "sin datos" }}</div>
       <div class="etiqueta">Inflación del período</div>
     </div>
   </div>
+  <p style="color:var(--gris);font-size:0.85rem;">
+    Consumos sin impuestos: {{ consumos_0 }} → {{ consumos_1 }} (lo que se descompone en precio y
+    cantidad más abajo).
+  </p>
   <p style="color:var(--gris);">{{ veredicto }}</p>
 </div>
 

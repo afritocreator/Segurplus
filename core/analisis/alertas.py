@@ -177,9 +177,9 @@ def alertas_por_precio_sobre_ipc(
                     tipo="precio_sobre_ipc",
                     severidad="alta",
                     mensaje=(
-                        f'"{etiqueta_legible(d.concepto)}": precio unitario subió '
-                        f"{variacion_precio_pct:.1%}, {exceso_pp:.1f} puntos reales por "
-                        "encima de la inflación del período"
+                        f'"{etiqueta_legible(d.concepto)}": el precio subió '
+                        f"{variacion_precio_pct:.1%} -- un {exceso_pp:.1f}% más que la "
+                        "inflación del período, ya descontada esta"
                     ),
                     concepto=d.concepto,
                 )
