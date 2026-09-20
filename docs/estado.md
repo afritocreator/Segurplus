@@ -341,10 +341,30 @@ armarla (2 de luz, 2 de gas), confirmó algo importante: el layout a dos columna
 facturas de gas es tan ambiguo que ni con las coordenadas x/y exactas de cada línea de
 texto se puede reconstruir con certeza qué valor corresponde a qué concepto -- ni un
 humano con precisión de punto puede desentrañarlo, solo el total y el subtotal quedan
-100% verificables ahí. **B-3 (el prompt reforzado para impuestos con dos montos) sigue sin
-poder verificarse contra la API real**: este entorno de desarrollo no tiene
-`GEMINI_API_KEY`. Es el bloqueante real para avanzar con evidencia -- correr el banco con
-una clave real es el próximo paso concreto.
+100% verificables ahí.
+
+**Actualización 2026-09-20 -- primer corrida real, con `GEMINI_API_KEY`.** El banco corrió
+por primera vez contra la API de Gemini de verdad (antes de esto, cero llamadas reales
+desde que existe el proyecto). Resultado sobre las 4 facturas reales, 3 de las 4 leídas
+sin error (la cuarta, `gas_2`, pegó un 503 "high demand" transitorio de Google, no un
+bug propio -- reintentar más tarde):
+
+| Factura | Cabecera | Conceptos | Impuestos | `concepto_sugerido` | Aritmética cierra |
+|---|---|---|---|---|---|
+| luz_1 | 100% | 100% | 100% | 100% | sí |
+| luz_2 | 89% | 100% | 100% | 100% | sí |
+| gas_1 | 89% | 50% | 75% | 100% | **no** |
+| gas_2 | -- | -- | -- | -- | error 503, sin leer |
+
+Promedio sobre las 3 leídas: cabecera 93%, conceptos 83%, impuestos 92%, `concepto_sugerido`
+100%. **Conclusión: B-3 (el prompt reforzado para impuestos con dos montos) queda
+confirmado en luz** -- las dos facturas de luz leen perfecto y cierran. **Gas sigue siendo
+el problema real**, y no es un problema de prompt: coincide exactamente con la ambigüedad
+de layout ya documentada a mano en `data/reales/banco/gas_1.yaml` (ni un humano puede
+asignar cada línea con certeza en ese diseño a dos columnas). Con solo 4 facturas y 1 sin
+leer por un 503, esto es indicio, no todavía una medición robusta -- falta correr Groq con
+su propia clave para tener la tabla comparativa completa que el Bloque 2 dejó lista, y
+correr el banco varias veces más para separar "gas es difícil" de "gas tuvo mala suerte".
 
 **Bloque 2 -- capa de proveedores intercambiable** (`core/extraccion/proveedores/`):
 agrega un adaptador genérico para cualquier proveedor compatible con la API de OpenAI
@@ -456,12 +476,14 @@ mano).
 
 ## Falta (siguiente trabajo)
 
-- **El bloqueante real de todo el rediseño de septiembre 2026 sigue siendo el mismo:
-  falta una clave de API.** Sin `GEMINI_API_KEY` ni `GROQ_API_KEY` en este entorno, ni el
-  banco de medición (Bloque 1) corrió una sola vez contra una API real, ni la capa de
-  proveedores (Bloque 2) se probó fuera de mocks, ni la redacción por modelo del relato
-  (Bloque 5) se ejerció. **El primer paso real, antes de cualquier otra cosa, es
-  conseguir al menos una de las dos y correr `scripts/banco_extraccion.py`.**
+- **Actualización 2026-09-20: ya se consiguió `GEMINI_API_KEY` y el banco corrió contra la
+  API real** (ver resultado en el Bloque 1 más arriba: luz al 93-100%, gas con problemas
+  de layout ya conocidos, `concepto_sugerido` al 100%). Sigue faltando `GROQ_API_KEY` --
+  sin eso la capa de proveedores (Bloque 2) sigue sin probarse fuera de mocks y la
+  redacción por modelo del relato (Bloque 5, que usa Groq) tampoco se ejerció contra la
+  API real. La clave de Gemini usada para correr el banco **no se guardó en ningún
+  archivo del repo ni en variables de entorno persistentes** -- para repetir la corrida
+  hay que volver a exportarla.
 - **La app web (`web/`) está probada de punta a punta con datos simulados
   (`tests/web/`, `TestClient`), pero no contra la API real** (mismo bloqueante de
   arriba) **ni por una persona que no trabajó en esto** -- los dos pasos de verificación

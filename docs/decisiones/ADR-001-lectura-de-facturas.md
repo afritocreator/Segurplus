@@ -37,19 +37,24 @@ Ningún número que devuelve el modelo se muestra sin pasar antes por
 PDF (`core/ingesta/pdf_texto.py::total_impreso`). Si algo no cierra, la factura va a
 cuarentena y no entra al análisis.
 
-## Addendum (2026-09-20): banco de medición, todavía sin resultado
+## Addendum (2026-09-20): banco de medición, primer resultado real (solo Gemini)
 
 El plan de rediseño de septiembre 2026 (ver `docs/estado.md`) agregó
 `scripts/banco_extraccion.py` y `core/extraccion/proveedores/` para medir, con datos y
 no por opinión, si Gemini sigue siendo la mejor opción o si conviene reordenar la
 cascada de `data/extraccion.yaml` (candidato evaluado: Groq, único proveedor gratis del
 `Informe Técnico Semanal de APIs Gratuitas de Modelos de Lenguaje` del 18/09/2026 con
-modelos multimodales de verdad). **Esta decisión sigue sin poder tomarse con evidencia**:
-el entorno de desarrollo no tiene `GEMINI_API_KEY` ni `GROQ_API_KEY`, así que el banco
-nunca corrió contra una API real -- ver `docs/banco_extraccion.md`. Gemini sigue siendo
-el único proveedor en producción (`core/pipeline.py::procesar_pdf` no cambió). Cuando el
-banco corra con claves reales, el resultado se publica en `docs/estado.md` y, si cambia
-la cascada, se actualiza acá.
+modelos multimodales de verdad). El mismo día se consiguió una `GEMINI_API_KEY` real y el
+banco corrió por primera vez: sobre las 4 facturas reales (2 luz, 2 gas), 3 se leyeron sin
+error -- promedio cabecera 93%, conceptos 83%, impuestos 92%, `concepto_sugerido` 100%. Las
+dos facturas de luz cerraron perfecto; la de gas leída no cerró, coincidiendo con la
+ambigüedad de layout ya documentada a mano en `data/reales/banco/gas_1.yaml` (detalle en
+`docs/estado.md`). **Todavía no alcanza para decidir la cascada**: falta `GROQ_API_KEY`
+para tener el otro lado de la comparación, y la muestra (3 facturas leídas, 1 con error de
+servidor transitorio) es chica para separar "gas es difícil para cualquier proveedor" de
+"esta corrida tuvo mala suerte". Gemini sigue siendo el único proveedor en producción
+(`core/pipeline.py::procesar_pdf` no cambió). Cuando el banco corra también con Groq, el
+resultado se publica en `docs/estado.md` y, si cambia la cascada, se actualiza acá.
 
 ## Consecuencias
 
