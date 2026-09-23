@@ -392,3 +392,46 @@ verde se reportó como evidencia de "terminado" en cada bloque del rediseño.
 - No se revisó el tablero Streamlit (`apps/segurplus/`), en proceso de reemplazo.
 - El criterio 4 del plan (que alguien ajeno entienda la pantalla "Ver") sigue sin hacerse;
   E-2 y E-3 sugieren que conviene arreglarlos antes de esa prueba.
+
+---
+
+## Cierre: hallazgo → commit que lo resolvió
+
+Plan de arreglos en `docs/estado.md` ("Actualización 2026-09-23"), 7 commits, uno por
+bloque, en la rama `claude/invoice-analysis-automation-7axk9u`. Mismo criterio que la
+tabla de cierre de `docs/auditoria-2026-09.md`.
+
+| Hallazgo | Commit | Resumen |
+| --- | --- | --- |
+| E-1  | `22b6c48` | Se borra `redactar_con_modelo`; el relato sale entero de una plantilla determinística, nunca de un modelo. |
+| E-2  | `22b6c48` | Dirección real ("subió"/"bajó") según el signo de `efecto_precio_total`; sin signo duplicado en el porcentaje. |
+| E-3  | `22b6c48` | El relato separa cuánto del cambio es consumo y cuánto impuestos/recargos/créditos. |
+| E-4  | `abca397` | El PDF cae a la base (`documentos_pdf`, base64) cuando no hay S3 ni `EVIDENCIA_DIR`; tope de 10 MB por subida. |
+| E-5  | `22b6c48` | `ipc_periodo_pct: float \| None` -- inflación desconocida ya no se trata como 0%. |
+| E-6  | `1d98387` | `procesar_pdf` reintenta transitorios de Gemini (503/429/timeout) hasta 3 veces; los permanentes no. |
+| E-7  | -- | Rotación de credenciales: paso del usuario, fuera del alcance de este repo. |
+| E-8  | `1d98387` | `post_subir` corre `procesar_pdf` en `run_in_threadpool`; tope de 10 archivos por subida. |
+| E-9  | `1d98387` | `_api_key_configurada` mira solo `GEMINI_API_KEY`, la única que usa el pipeline real. |
+| E-10 | `959e87f` | Cookie `flash` reemplazada por `?aviso=` en el redirect, traducido a un mensaje fijo. |
+| E-11 | `22b6c48` | `web/comparacion.py::calcular_comparacion` -- pantalla y Excel comparten un solo cálculo. |
+| E-12 | `959e87f` | Con un solo período, `/ver` muestra un resumen (total, composición, relato) en vez de solo pedir cargar dos meses. |
+| E-13 | `959e87f` | `core/formato.py` (nombre de servicio, fecha en castellano, porcentaje AR) reemplaza slugs/ISO/"Efecto combinado". |
+| E-14 | `37b87af` | Botón "Cargar como un solo renglón" para gas cuando subtotal y total cierran pero las líneas no. |
+| E-15 | `959e87f` | `_leer_borrador_o_none` / `_error_de_formulario` -- sin 500 por doble click, botón atrás o formulario roto. |
+| E-16 | `68629f1` | `render.yaml` sin `GROQ_API_KEY`, con `PYTHON_VERSION` fijada y auto-deploy activado. |
+| E-17 | `68629f1` | `SECRET_KEY` obligatoria (salvo `SEGURPLUS_DEV=1`); se borra la clave de firma fija de respaldo. |
+| E-18 | `68629f1` | Login con límite de 5 intentos fallidos cada 15 minutos por IP; cookie con `secure=True` sobre HTTPS. |
+| E-19 | `37b87af` | `concepto_sugerido` se persiste y se usa de respaldo si Dice no homologa, acotado al servicio de la factura. |
+| E-20 | `1d98387` | Se sacan `groq_scout`/`groq_qwen` de `data/extraccion.yaml` (decisión del usuario, no técnica). |
+| E-21 | `1d98387` | La cascada no reintenta errores permanentes ("falta la clave"). |
+| E-22 | `959e87f` | Se saca `sincronizar_casos_alertas` de `_analisis` -- el GET de `/ver` no vuelve a escribir en la base. |
+| E-23 | `68629f1` | README con la sección de deploy en Render; addendum de ADR-003; `docs/estado.md` actualizado. |
+| E-24 | (todos) | Cada bloque agregó los tests del hallazgo que resolvía -- ver el `pytest -q` de cada commit. |
+
+**Recorrido manual de punta a punta** (Bloque 8, con las dos facturas reales de luz de
+`data/reales/banco/`, Gemini reemplazado por su verdad de referencia ya que no hay
+`GEMINI_API_KEY` en este entorno): subir las dos → PDF visible en Revisar (`<embed>` con
+`/pdf/<hash>`) para las dos → confirmar cada una → aviso `?aviso=confirmada` visible →
+`/ver` muestra el relato ("En agosto de 2022 pagaste $3.684,64 de luz, $11,55 menos que
+en julio de 2022 (-0,3%)...") → alertas en pantalla y en el Excel descargado son las
+mismas (vacías, para este par de facturas). Sin errores en todo el recorrido.

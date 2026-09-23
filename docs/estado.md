@@ -600,8 +600,22 @@ antes de cada uno:
   (Render, con `--proxy-headers`); `render.yaml` sin `GROQ_API_KEY`, con
   `PYTHON_VERSION` fijada y auto-deploy activado; esta sección y el README documentan
   el deploy.
-- **Bloques 7 y 8**: en curso -- ver `docs/auditoria-2026-09-web.md` para el detalle de
-  cada hallazgo y qué commit lo resolvió.
+- **Bloque 7 (E-14, E-19)** -- botón "Cargar como un solo renglón" en Revisar para
+  facturas de gas donde el subtotal y el total cierran pero las líneas de concepto no
+  (layout a dos columnas conocido); `concepto_sugerido` (ya lo pedía el prompt de
+  Gemini y se descartaba) se persiste y se usa de respaldo en `confirmar_factura`
+  cuando Dice no homologa nada, solo si la sugerencia pertenece al diccionario del
+  servicio de la factura.
+- **Bloque 8 (E-24) -- cierre**: suite completa verde (556 tests, 3 skipped) y `ruff
+  check`/`ruff format --check` limpios en cada commit; revisión de
+  `revisor-financiero` sobre relato, alertas, la homologación por `concepto_sugerido`
+  y el colapso "un solo renglón" de gas (sin hallazgos bloqueantes -- un gap de
+  revalidación server-side detectado y corregido, ver el commit de E-14/E-19);
+  `docs/auditoria-2026-09-web.md` cierra con la tabla hallazgo → commit; recorrido
+  manual de punta a punta con las dos facturas reales de luz de `data/reales/banco/`
+  (Gemini reemplazado por su verdad de referencia, sin `GEMINI_API_KEY` en este
+  entorno): subir → PDF visible en Revisar → confirmar → aviso visible → `/ver` con el
+  relato correcto → Excel con las mismas alertas que la pantalla. Sin errores.
 - **Pendiente, sin hacer a propósito**: mover `streamlit`/`pandas` a un extra opcional
   de `pyproject.toml` (para que Render no los instale) queda anotado, no hecho -- el
   tablero Streamlit sigue desplegado en Streamlit Community Cloud (ver "Publicar en
