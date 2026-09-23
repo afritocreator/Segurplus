@@ -26,3 +26,13 @@ dias_tolerancia_periodo: 10
 # muestra como "mixto" -- ni cantidad ni precio explican la mayor parte
 # por sí solos. Ver core/analisis/variacion.py::efecto_dominante.
 umbral_efecto_dominante: 0.60
+
+# Proporción mínima (0.15 = 15%) del movimiento total (en pesos) que tienen
+# que pesar impuestos + recargos - créditos para que el relato en
+# castellano mencione esa composición por separado ("de esa diferencia, $X
+# son impuestos..."). Por debajo de esto, la frase sería ruido: casi todo
+# el cambio ya es de consumo y no hace falta aclararlo. Ver
+# core/relato.py::generar_relato_determinista, docs/auditoria-2026-09-web.md
+# E-3 (antes el relato no distinguía consumo de impuestos y atribuía a
+# "precio" un cambio que en realidad era de un impuesto nuevo).
+umbral_composicion_relato: 0.15

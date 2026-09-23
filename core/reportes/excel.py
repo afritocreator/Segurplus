@@ -151,6 +151,9 @@ def generar_reporte_excel(
     cuarentena: list[tuple[str, str]],
     ruta_salida: str | Path | BytesIO,
     borradores_sin_confirmar: int = 0,
+    componentes_0: dict[str, float] | None = None,
+    componentes_1: dict[str, float] | None = None,
+    relato: str | None = None,
 ) -> Path | BytesIO:
     """Escribe el Excel de una comparación de evolución.
 
@@ -162,7 +165,17 @@ def generar_reporte_excel(
     `borradores_sin_confirmar` (docs/auditoria-2026-09-confirmacion.md,
     D-3): cuántas facturas de este servicio están esperando confirmación y
     por lo tanto NO están incluidas en este reporte -- sin esto, un total
-    podía estar incompleto sin ninguna advertencia en el Excel."""
+    podía estar incompleto sin ninguna advertencia en el Excel.
+
+    `componentes_0`/`componentes_1`/`relato` (opcionales, de
+    `core.almacenamiento.componentes_financieros_periodo` y
+    `core.relato.generar_relato_determinista`): si se pasan, la hoja
+    Resumen agrega el total pagable con su composición (consumos,
+    impuestos, recargos, créditos) y el párrafo en castellano, iguales a
+    los que ya se muestran en la pantalla "Ver" -- sin esto, el Excel solo
+    mostraba la suma de consumos (docs/auditoria-2026-09-web.md, E-11).
+    Quien no los pase (el tablero Streamlit, en proceso de reemplazo)
+    sigue teniendo el resumen de antes, sin composición ni relato."""
     wb = Workbook()
 
     ws_resumen = wb.active
@@ -174,14 +187,28 @@ def generar_reporte_excel(
     total_0 = sum(d.total_0 for d in descomposiciones)
     total_1 = sum(d.total_1 for d in descomposiciones)
     filas_resumen: list[tuple[str, Any, str | None]] = [
-        ("Total período base", total_0, _MONEDA),
-        ("Total período comparado", total_1, _MONEDA),
-        ("Variación total", total_1 - total_0, _MONEDA),
+        ("Total de consumos, período base", total_0, _MONEDA),
+        ("Total de consumos, período comparado", total_1, _MONEDA),
+        ("Variación de consumos", total_1 - total_0, _MONEDA),
         ("Cantidad de conceptos", len(descomposiciones), None),
         ("Cantidad de alertas", len(alertas), None),
         ("En cuarentena (histórico)", len(cuarentena), None),
         ("Facturas sin confirmar (no incluidas)", borradores_sin_confirmar, None),
     ]
+    if componentes_0 is not None and componentes_1 is not None:
+        filas_resumen = [
+            ("Total pagable, período base", componentes_0["total_pagable"], _MONEDA),
+            ("Total pagable, período comparado", componentes_1["total_pagable"], _MONEDA),
+            (
+                "Variación del total pagable",
+                componentes_1["total_pagable"] - componentes_0["total_pagable"],
+                _MONEDA,
+            ),
+            ("Impuestos, período comparado", componentes_1["impuestos"], _MONEDA),
+            ("Recargos, período comparado", componentes_1["recargos"], _MONEDA),
+            ("Créditos / descuentos, período comparado", componentes_1["creditos"], _MONEDA),
+            *filas_resumen,
+        ]
     fila = 3
     for etiqueta, valor, formato in filas_resumen:
         ws_resumen.cell(row=fila, column=1, value=etiqueta).font = Font(bold=True)
@@ -189,6 +216,11 @@ def generar_reporte_excel(
         if formato:
             celda_valor.number_format = formato
         fila += 1
+    if relato:
+        fila += 1
+        ws_resumen.cell(row=fila, column=1, value=relato).alignment = Alignment(wrap_text=True)
+        ws_resumen.merge_cells(start_row=fila, start_column=1, end_row=fila, end_column=4)
+        ws_resumen.row_dimensions[fila].height = 60
     ws_resumen.column_dimensions["A"].width = 30
     ws_resumen.column_dimensions["B"].width = 20
 

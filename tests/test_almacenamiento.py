@@ -663,6 +663,22 @@ def test_totales_por_periodo_acotado_por_servicio(tmp_path):
     con.close()
 
 
+def test_totales_pagables_por_periodo_suma_facturas_total_no_solo_conceptos(tmp_path):
+    """docs/auditoria-2026-09-web.md, E-11: a diferencia de
+    `totales_por_periodo` (arriba), esta SÍ incluye impuestos y recargos --
+    `_factura()` tiene conceptos por $10.000 pero `total=12.100` (con IVA
+    de $2.100). La serie de `web/app.py` tiene que mostrar $12.100, el
+    mismo total pagable que la métrica principal de la misma pantalla."""
+    from core.almacenamiento import totales_pagables_por_periodo
+
+    con = conectar(tmp_path / "test.duckdb")
+    guardar_factura(con, _factura())
+
+    totales = totales_pagables_por_periodo(con, servicio="telefonia")
+    assert totales == {"2026-08-01": pytest.approx(12100.0)}
+    con.close()
+
+
 # --- piloto operativo: revisión, evidencia y casos ------------------------
 
 

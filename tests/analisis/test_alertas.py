@@ -110,6 +110,15 @@ def test_precio_apenas_por_encima_del_ipc_no_dispara():
     assert alertas_por_precio_sobre_ipc([d], ipc_periodo_pct=0.10) == []
 
 
+def test_precio_sobre_ipc_sin_ipc_conocido_no_alerta():
+    """docs/auditoria-2026-09-web.md, E-5: antes, cuando el IPC no se podía
+    descargar/calcular, se usaba 0.0 como reemplazo -- cualquier aumento de
+    precio, por chico que fuera, disparaba "por encima de la inflación".
+    Precio +8%, mismo caso que el ejemplo de la auditoría."""
+    d = descomponer_variacion("abono_movil", cantidad_0=4, precio_0=100, cantidad_1=4, precio_1=108)
+    assert alertas_por_precio_sobre_ipc([d], ipc_periodo_pct=None) == []
+
+
 def test_deflacta_en_vez_de_restar_porcentajes():
     # docs/auditoria-2026-09.md, hallazgo A-22: con la vieja fórmula lineal
     # (variacion - ipc), precio +55% con IPC +50% daba exceso = 5.0pp exactos

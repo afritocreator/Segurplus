@@ -1189,21 +1189,46 @@ def importes_por_periodo(con: duckdb.DuckDBPyConnection) -> list[tuple[float, st
 
 
 def totales_por_periodo(con: duckdb.DuckDBPyConnection, *, servicio: str) -> dict[str, float]:
-    """`{periodo_desde: total}` de TODOS los períodos cargados de
-    `servicio` -- lo que usa `apps/segurplus/paginas/evolucion.py` para la
-    serie temporal (`core.analisis.serie`).
+    """`{periodo_desde: total de consumos}` de TODOS los períodos cargados
+    de `servicio` -- lo que usa el tablero Streamlit
+    (`apps/segurplus/paginas/evolucion.py`) para la serie temporal
+    (`core.analisis.serie`), en proceso de reemplazo por `web/` (ver
+    CLAUDE.md).
 
-    Suma `conceptos.importe`, NO `facturas.total` -- a propósito: `total`
-    incluye impuestos y recargos, y la comparación de dos períodos que ya
-    existe en esta misma página (`agregar_conceptos` + `descomponer_
-    conceptos`) también trabaja solo sobre `conceptos`. Sumar `facturas.
-    total` acá haría que la serie y la comparación de dos puntos muestren
-    números distintos para el mismo período -- confuso e innecesario."""
+    Suma `conceptos.importe`, NO `facturas.total`: es la misma base
+    (consumos, sin impuestos ni recargos) que usaba esa pantalla en su
+    métrica principal antes del Bloque 6 del plan de rediseño de
+    septiembre 2026. `web/app.py` usa en cambio `totales_pagables_por_
+    periodo`, que sí incluye impuestos y recargos -- ver esa función para
+    el porqué (docs/auditoria-2026-09-web.md, E-11)."""
     filas = con.execute(
         """SELECT f.periodo_desde, sum(c.importe)
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
            WHERE f.servicio = ? AND f.periodo_desde IS NOT NULL AND f.estado = 'aprobada'
            GROUP BY f.periodo_desde""",
+        [servicio],
+    ).fetchall()
+    return {periodo: total for periodo, total in filas}
+
+
+def totales_pagables_por_periodo(
+    con: duckdb.DuckDBPyConnection, *, servicio: str
+) -> dict[str, float]:
+    """`{periodo_desde: total pagable}` de TODOS los períodos cargados de
+    `servicio` -- para la serie histórica de `web/app.py::_analisis`.
+
+    Suma `facturas.total` (consumos + impuestos + recargos - créditos, ya
+    validado por `confirmar_factura` antes de quedar `'aprobada'`), no solo
+    `conceptos.importe` como `totales_por_periodo` (arriba). Necesaria
+    porque el Bloque 6 del plan de rediseño cambió el número principal de
+    la pantalla "Ver" al total pagable: si la serie histórica siguiera
+    usando solo consumos, la misma pantalla mostraría dos cifras distintas
+    para el mismo mes -- la métrica grande y el punto de la serie
+    (docs/auditoria-2026-09-web.md, E-11)."""
+    filas = con.execute(
+        """SELECT periodo_desde, sum(total) FROM facturas
+           WHERE servicio = ? AND periodo_desde IS NOT NULL AND estado = 'aprobada'
+           GROUP BY periodo_desde""",
         [servicio],
     ).fetchall()
     return {periodo: total for periodo, total in filas}

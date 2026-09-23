@@ -8,29 +8,32 @@ el usuario reportó que, incluso cuando la herramienta lee bien la factura,
 el análisis no se entiende.
 
 REGLA DURA, NO NEGOCIABLE (misma que separa esta herramienta de "confiar en
-la IA", ver CLAUDE.md): el modelo de lenguaje NUNCA produce un número.
-`generar_relato_determinista` recibe los números YA CALCULADOS y
-VALIDADOS por `core/analisis/*` (la misma fuente que ya usa `web/app.py`
-para las métricas) y arma el párrafo con una plantilla de Python -- sin
-IA, sin red, nunca falla. `redactar_con_modelo` (opcional) le pide a un
-modelo de texto que lo redacte más natural, pasándole el párrafo ya armado
-como única fuente de verdad y prohibiéndole explícitamente cambiar un
-número; si el modelo no está configurado, falla, o devuelve algo que no
-se puede verificar como una reescritura fiel, se usa el párrafo
-determinístico tal cual. Nunca se le pide al modelo "generá un resumen a
-partir de los datos" -- eso le daría la oportunidad de inventar o
-redondear mal un número.
+la IA", ver CLAUDE.md): el modelo de lenguaje NUNCA produce un número. Por
+eso este módulo arma el párrafo entero con una plantilla de Python, sin IA
+y sin red -- nunca falla, y nunca puede decir un número que no venga de
+`core/analisis/*` (la misma fuente que ya usa `web/app.py` para las
+métricas). Antes existía `redactar_con_modelo`, que le pedía a un modelo de
+texto (Groq) que reescribiera el párrafo; se sacó en el arreglo de
+`docs/auditoria-2026-09-web.md` (E-1): la "verificación" que el docstring
+prometía nunca se implementó, así que en producción el modelo podía decir
+cualquier cosa sin que nada lo controlara. Si en el futuro se quiere volver
+a probar, tiene que venir con una verificación real (comparar los números
+del párrafo original contra los de la respuesta) antes de mostrarse.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
+
+import yaml
 
 from core.analisis.agregacion import etiqueta_legible
 from core.analisis.variacion import DescomposicionVariacion
 from core.formato import pesos_ars
+
+RUTA_ALERTAS = Path(__file__).resolve().parents[1] / "data" / "alertas.yaml"
 
 _MESES = (
     "enero",
@@ -48,6 +51,15 @@ _MESES = (
 )
 
 
+def _umbral_composicion_relato() -> float:
+    """Sin cache y sin lectura a nivel de módulo, a propósito -- mismo
+    criterio que `core/analisis/alertas.py::_leer_umbrales`: un YAML
+    corrupto no debe tumbar el import. Nunca hardcodeado en el código
+    (CLAUDE.md), ver `data/alertas.yaml::umbral_composicion_relato`."""
+    datos = yaml.safe_load(RUTA_ALERTAS.read_text(encoding="utf-8"))
+    return float(datos["umbral_composicion_relato"])
+
+
 def _mes_anio(periodo_iso: str) -> str:
     """`"2026-08-01"` -> `"agosto de 2026"`. Si el formato no se puede
     interpretar (no debería pasar -- `periodo_desde` ya se normalizó a ISO
@@ -61,8 +73,22 @@ def _mes_anio(periodo_iso: str) -> str:
     return f"{_MESES[fecha.month - 1]} de {fecha.year}"
 
 
-def _porcentaje(valor: float) -> str:
-    return f"{valor * 100:+.1f}%".replace(".", ",").replace(",0%", "%")
+def _porcentaje(valor: float, *, con_signo: bool = True) -> str:
+    """`con_signo=True` (default): `+15,0%` / `-15,0%`, para cuando el
+    signo es la única forma de saber la dirección (ej. la variación
+    nominal). `con_signo=False`: `15,0%` sin signo, para cuando la
+    dirección YA la dice una palabra ("subió", "bajó") -- antes esta
+    función siempre forzaba el signo, así que "bajó un ..." terminaba en
+    "bajó un +23%" (docs/auditoria-2026-09-web.md, E-2): un signo de más
+    delante de una baja."""
+    if con_signo:
+        texto = f"{valor * 100:+.1f}%"
+    else:
+        texto = f"{abs(valor) * 100:.1f}%"
+    texto = texto.replace(".", ",").replace(",0%", "%")
+    # Un valor que redondea a cero no tiene dirección -- "+0%" sugeriría
+    # una suba mínima en vez de "sin cambio".
+    return "0%" if texto == "+0%" else texto
 
 
 @dataclass(frozen=True)
@@ -70,17 +96,44 @@ class DatosRelato:
     """Todo lo que necesita el relato, ya calculado por `core/analisis/*`
     -- ver `web/app.py::_analisis` para de dónde sale cada campo. Ninguno
     de estos valores se recalcula acá: si algo está mal, el bug está en
-    quien llama, no en este módulo."""
+    quien llama, no en este módulo.
+
+    `total_0`/`total_1` son el TOTAL PAGABLE (consumos + impuestos +
+    recargos - créditos, ver Bloque 6 del plan de rediseño), no solo los
+    consumos -- son los mismos números que se muestran como cifra
+    principal. `consumos_0/1`, `impuestos_0/1`, `recargos_0/1` y
+    `creditos_0/1` son la composición de ese total (de
+    `core.almacenamiento.componentes_financieros_periodo`), para poder
+    explicar cuánto del cambio es de cada parte
+    (docs/auditoria-2026-09-web.md, E-3).
+
+    `tipo_dominante`/`proporcion_dominante` y
+    `efecto_precio_total`/`efecto_cantidad_total` describen el cambio
+    DENTRO de los consumos únicamente (de
+    `core.analisis.variacion.efecto_dominante` y la suma de
+    `DescomposicionVariacion.efecto_precio`/`efecto_cantidad` de todos los
+    conceptos) -- nunca del total pagable, que puede moverse por motivos
+    ajenos al consumo (impuestos, recargos)."""
 
     servicio: str
     periodo_0: str  # ISO, ej. "2026-07-01"
     periodo_1: str
-    total_0: float
+    total_0: float  # total pagable
     total_1: float
-    tipo_dominante: str  # "precio" | "cantidad" | "mixto" | "sin_variacion"
+    consumos_0: float
+    consumos_1: float
+    impuestos_0: float
+    impuestos_1: float
+    recargos_0: float
+    recargos_1: float
+    creditos_0: float
+    creditos_1: float
+    tipo_dominante: str  # "precio" | "cantidad" | "mixto" | "sin_variacion", de los CONSUMOS
     proporcion_dominante: float  # 0..1, irrelevante si tipo_dominante == "sin_variacion"
+    efecto_precio_total: float  # signo real: positivo = el precio subió
+    efecto_cantidad_total: float  # signo real: positivo = se consumió más
     variacion_real_pct: float | None  # None si no se pudo calcular (ver core/analisis/real.py)
-    inflacion_pct: float
+    inflacion_pct: float | None  # None si no se pudo descargar/calcular el IPC del período
     concepto_destacado: DescomposicionVariacion | None  # el de mayor variación absoluta, o None
 
 
@@ -108,25 +161,53 @@ def generar_relato_determinista(datos: DatosRelato) -> str:
         f"({_porcentaje(variacion_pct)})."
     )
 
+    # Cuánto del cambio es consumo y cuánto es impuestos/recargos/créditos
+    # (docs/auditoria-2026-09-web.md, E-3) -- solo se menciona si la parte
+    # que no es consumo pesa lo suficiente como para importar.
+    delta_consumo = datos.consumos_1 - datos.consumos_0
+    no_consumo_0 = datos.impuestos_0 + datos.recargos_0 - datos.creditos_0
+    no_consumo_1 = datos.impuestos_1 + datos.recargos_1 - datos.creditos_1
+    delta_no_consumo = no_consumo_1 - no_consumo_0
+
+    frase_composicion = ""
+    if (
+        variacion_pesos != 0
+        and abs(delta_no_consumo) / abs(variacion_pesos) >= _umbral_composicion_relato()
+    ):
+        frase_composicion = (
+            f" De esa diferencia, {pesos_ars(abs(delta_no_consumo))} son impuestos, "
+            f"recargos y créditos, y {pesos_ars(abs(delta_consumo))} son consumos."
+        )
+
     if datos.tipo_dominante == "sin_variacion":
-        frase_causa = "El gasto no cambió entre los dos meses."
+        if variacion_pesos == 0:
+            frase_causa = "El gasto no cambió entre los dos meses."
+        else:
+            frase_causa = (
+                "Los consumos no cambiaron: toda la diferencia es de impuestos, "
+                "recargos o créditos."
+            )
     elif datos.tipo_dominante == "precio":
+        direccion = "subió" if datos.efecto_precio_total >= 0 else "bajó"
         frase_causa = (
-            f"Casi todo el cambio es por PRECIO ({datos.proporcion_dominante:.0%} del "
-            "movimiento): consumiste una cantidad parecida, pero salió más caro."
+            f"Dentro de los consumos, el cambio fue mayormente por PRECIO "
+            f"({datos.proporcion_dominante:.0%} del movimiento): el precio unitario "
+            f"{direccion}."
         )
     elif datos.tipo_dominante == "cantidad":
+        direccion = "aumentó" if datos.efecto_cantidad_total >= 0 else "disminuyó"
         frase_causa = (
-            f"Casi todo el cambio es por CANTIDAD ({datos.proporcion_dominante:.0%} del "
-            "movimiento): consumiste distinto, el precio se mantuvo parecido."
+            f"Dentro de los consumos, el cambio fue mayormente por CANTIDAD "
+            f"({datos.proporcion_dominante:.0%} del movimiento): lo que consumiste "
+            f"{direccion}."
         )
     else:  # "mixto"
         frase_causa = (
-            "Fue una mezcla de cantidad y precio -- ningún efecto explica la mayor "
-            "parte por sí solo."
+            "Dentro de los consumos, fue una mezcla de cantidad y precio -- ningún "
+            "efecto explica la mayor parte por sí solo."
         )
 
-    if datos.variacion_real_pct is not None:
+    if datos.variacion_real_pct is not None and datos.inflacion_pct is not None:
         if abs(datos.variacion_real_pct) < 0.005:
             frase_real = (
                 f"Descontada la inflación del período ({_porcentaje(datos.inflacion_pct)}), "
@@ -136,7 +217,7 @@ def generar_relato_determinista(datos: DatosRelato) -> str:
             frase_real = (
                 f"Descontada la inflación del período ({_porcentaje(datos.inflacion_pct)}), "
                 f"tu gasto real {'subió' if datos.variacion_real_pct >= 0 else 'bajó'} un "
-                f"{_porcentaje(abs(datos.variacion_real_pct))}."
+                f"{_porcentaje(abs(datos.variacion_real_pct), con_signo=False)}."
             )
     else:
         frase_real = (
@@ -154,64 +235,4 @@ def generar_relato_determinista(datos: DatosRelato) -> str:
             f"{'más' if d.variacion_total >= 0 else 'menos'}."
         )
 
-    return f"{frase_monto} {frase_causa} {frase_real}{frase_concepto}"
-
-
-_INSTRUCCION_REDACCION = """\
-Te paso un párrafo que explica cómo cambió el gasto de un servicio entre dos meses. \
-Reescribilo en un castellano más natural y fluido, en 2 o 3 oraciones, sin cambiar \
-NINGÚN número, porcentaje ni nombre propio -- son datos ya verificados, tu única tarea \
-es la redacción. Si no podés reescribirlo sin tocar un número, devolvé el párrafo \
-original tal cual. Respondé solo con el párrafo final, sin explicaciones ni comillas.
-
-Párrafo original:
-"""
-
-
-def redactar_con_modelo(
-    parrafo_determinista: str,
-    *,
-    base_url: str = "https://api.groq.com/openai/v1",
-    modelo: str = "llama-3.3-70b-versatile",
-    variable_entorno_clave: str = "GROQ_API_KEY",
-    timeout_segundos: float = 8.0,
-) -> str:
-    """Le pide a un modelo de texto rápido y gratis (Groq, recomendación
-    #1 del Informe Técnico Semanal de APIs Gratuitas del 18/09/2026) que
-    redacte mejor el párrafo YA ARMADO -- nunca que lo genere desde cero.
-    Cualquier fallo (sin clave, sin red, timeout, respuesta vacía) devuelve
-    el párrafo determinístico tal cual: esto es una mejora cosmética
-    opcional, nunca un punto de falla para ver el resultado.
-
-    Todavía no se probó contra la API real de Groq en este entorno de
-    desarrollo (no hay GROQ_API_KEY -- ver docs/banco_extraccion.md)."""
-    api_key = os.environ.get(variable_entorno_clave)
-    if not api_key:
-        return parrafo_determinista
-
-    try:
-        import requests
-
-        respuesta = requests.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": modelo,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": _INSTRUCCION_REDACCION + parrafo_determinista,
-                    }
-                ],
-                "temperature": 0.3,
-            },
-            timeout=timeout_segundos,
-        )
-        respuesta.raise_for_status()
-        texto = respuesta.json()["choices"][0]["message"]["content"].strip()
-    except Exception:  # noqa: BLE001 -- cualquier fallo cae al párrafo determinístico
-        return parrafo_determinista
-
-    if not texto:
-        return parrafo_determinista
-    return texto
+    return f"{frase_monto}{frase_composicion} {frase_causa} {frase_real}{frase_concepto}"

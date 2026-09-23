@@ -31,41 +31,20 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from core.almacenamiento import (
-    alertas_del_periodo,
-    componentes_financieros_periodo,
     conectar,
     contar_borradores,
     descartar_borrador,
     guardar_factura,
     leer_borrador,
     listar_borradores,
-    recargos_del_periodo,
     sincronizar_casos_alertas,
-    totales_por_periodo,
+    totales_pagables_por_periodo,
 )
-from core.analisis.agregacion import (
-    PREFIJO_SIN_HOMOLOGAR,
-    FilaConcepto,
-    acumular_conceptos,
-    agregar_conceptos,
-    conceptos_con_cantidad_neta_cero,
-    conceptos_con_cantidad_neta_negativa,
-    etiqueta_legible,
-)
-from core.analisis.alertas import (
-    alertas_por_periodo_faltante,
-    etiqueta_tipo,
-    generar_alertas,
-    ordenar_por_severidad,
-)
+from core.analisis.agregacion import etiqueta_legible
+from core.analisis.alertas import etiqueta_tipo, ordenar_por_severidad
 from core.analisis.diccionario import cargar_diccionario
-from core.analisis.real import inflacion_del_periodo, variacion_real
 from core.analisis.serie import serie_nominal_y_real
-from core.analisis.variacion import (
-    descomponer_conceptos,
-    efecto_dominante,
-    top_conceptos_por_variacion,
-)
+from core.analisis.variacion import top_conceptos_por_variacion
 from core.evidencia import leer_pdf
 from core.extraccion.esquema import (
     SERVICIOS_CONOCIDOS,
@@ -84,9 +63,9 @@ from core.formato import pesos_ars
 from core.ingesta.pdf_texto import total_impreso
 from core.macro.ipc import leer_ipc
 from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf
-from core.relato import DatosRelato, generar_relato_determinista, redactar_con_modelo
 from core.reportes.excel import generar_reporte_excel
 from web.auth import NOMBRE_COOKIE, contrasena_configurada, intentar_login, leer_sesion
+from web.comparacion import calcular_comparacion
 
 TOP_N_CONCEPTOS = 12
 
@@ -682,145 +661,47 @@ def _analisis(
     try:
         borradores_pendientes = contar_borradores(con, servicio=servicio)
         filas_periodos = _periodos_del_servicio(con, servicio)
-        avisos_calculo: list[str] = []
-        try:
-            fechas_periodos = [
-                (date.fromisoformat(d), date.fromisoformat(h) if h else None)
-                for d, h in filas_periodos
-            ]
-        except ValueError:
-            fechas_periodos = []
-            avisos_calculo.append(
-                "No se pudieron calcular alertas de período: hay una fecha guardada con "
-                "formato inválido."
-            )
-        alertas_periodo_faltante = (
-            alertas_por_periodo_faltante(fechas_periodos) if fechas_periodos else []
-        )
 
-        def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
-            filas = con.execute(
-                """SELECT c.concepto_normalizado, c.descripcion, c.cantidad, c.importe, c.unidad
-                   FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-                   WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
-                [servicio, periodo],
-            ).fetchall()
-            return [
-                FilaConcepto(cn, desc, cant, imp, unidad) for cn, desc, cant, imp, unidad in filas
-            ]
-
-        filas_0 = _filas_del_periodo(periodo_0)
-        filas_1 = _filas_del_periodo(periodo_1)
-        acumulado_0 = acumular_conceptos(filas_0)
-        acumulado_1 = acumular_conceptos(filas_1)
-        agregado_0 = agregar_conceptos(filas_0, acumulado=acumulado_0)
-        agregado_1 = agregar_conceptos(filas_1, acumulado=acumulado_1)
-        descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
-
-        conceptos_sin_clasificar = any(
-            d.concepto.startswith(PREFIJO_SIN_HOMOLOGAR) for d in descomposiciones
-        )
-
-        anomalos_0 = conceptos_con_cantidad_neta_cero(
-            filas_0, acumulado=acumulado_0
-        ) + conceptos_con_cantidad_neta_negativa(filas_0, acumulado=acumulado_0)
-        anomalos_1 = conceptos_con_cantidad_neta_cero(
-            filas_1, acumulado=acumulado_1
-        ) + conceptos_con_cantidad_neta_negativa(filas_1, acumulado=acumulado_1)
-        anomalos = sorted({etiqueta_legible(a) for a in anomalos_0 + anomalos_1})
-
-        total_0 = sum(d.total_0 for d in descomposiciones)  # consumos, sin impuestos
-        total_1 = sum(d.total_1 for d in descomposiciones)
-
-        # Bloque 6 del plan de rediseño de septiembre 2026: el número
-        # grande de la pantalla pasa a ser el TOTAL PAGABLE (consumos +
-        # impuestos + recargos - créditos), no solo los consumos -- antes
-        # `total_0`/`total_1` (arriba) eran el único número mostrado en
-        # grande, y esa suma NO es lo que la factura cobra de verdad. Se
-        # calcula acá (antes que la variación real e inflación) porque
-        # "cuánto cambió en plata real" tiene que hablar del mismo total
-        # que se muestra, no de los consumos solos.
-        componentes_0 = componentes_financieros_periodo(
-            con, servicio=servicio, periodo_desde=periodo_0
-        )
-        componentes_1 = componentes_financieros_periodo(
-            con, servicio=servicio, periodo_desde=periodo_1
-        )
-        total_pagable_0 = componentes_0["total_pagable"]
-        total_pagable_1 = componentes_1["total_pagable"]
-
-        ipc_periodo_pct = None
-        vr = None
-        try:
-            fecha_0 = date.fromisoformat(periodo_0)
-            fecha_1 = date.fromisoformat(periodo_1)
-            df_ipc = leer_ipc()
-            ipc_periodo_pct = inflacion_del_periodo(fecha_0, fecha_1, df_ipc=df_ipc)
-            if total_pagable_0 != 0:
-                vr = variacion_real(
-                    total_pagable_0, fecha_0, total_pagable_1, fecha_1, df_ipc=df_ipc
-                )
-        except requests.exceptions.RequestException as exc:
-            avisos_calculo.append(f"No se pudo descargar el IPC (problema de red): {exc}")
-        except ValueError as exc:
-            avisos_calculo.append(f"No se pudo calcular la variación real: {exc}")
-
-        recargos_periodo_1 = [
-            Recargo(nombre=n, importe=i)
-            for n, i in recargos_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
-        ]
-        factura_agregada = FacturaExtraida(
-            emisor=None,
-            cuit=None,
+        # docs/auditoria-2026-09-web.md, E-11: el cálculo de la comparación
+        # es el MISMO que usa el Excel (`get_ver_excel`, más abajo) -- antes
+        # cada pantalla tenía su propia copia y podían mostrar alertas
+        # distintas para el mismo par de períodos.
+        resultado = calcular_comparacion(
+            con,
             servicio=servicio,
-            periodo_desde=periodo_1,
-            periodo_hasta=None,
-            fecha_emision=None,
-            fecha_vencimiento=None,
-            numero_comprobante=None,
-            moneda="ARS",
-            recargos=recargos_periodo_1,
-        )
-        alertas_totales = (
-            generar_alertas(
-                factura_agregada,
-                descomposiciones,
-                # Sin IPC real no se puede saber si un precio subió "por
-                # encima de la inflación" -- 0.0 es el mismo default que ya
-                # usaba generar_alertas, explícito acá para no confundirlo
-                # con una inflación real de cero (ver "avisos_calculo" de
-                # arriba, que ya avisa que el IPC falló).
-                ipc_periodo_pct=ipc_periodo_pct if ipc_periodo_pct is not None else 0.0,
-                conceptos_con_cantidad_sintetica=frozenset(anomalos_0 + anomalos_1),
-            )
-            + alertas_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
-            + alertas_periodo_faltante
+            periodo_0=periodo_0,
+            periodo_1=periodo_1,
+            periodos_del_servicio=filas_periodos,
         )
         sincronizar_casos_alertas(
             con,
             referencia=f"comparacion:{servicio}:{periodo_0}:{periodo_1}",
-            alertas=alertas_totales,
+            alertas=resultado.alertas,
         )
 
-        tipo_dominante, proporcion_dominante = efecto_dominante(descomposiciones)
-        cambio_formateado = pesos_ars(total_1 - total_0, signo=True)
+        total_pagable_0 = resultado.componentes_0["total_pagable"]
+        total_pagable_1 = resultado.componentes_1["total_pagable"]
+        consumos_0 = resultado.componentes_0["consumos"]
+        consumos_1 = resultado.componentes_1["consumos"]
+
+        cambio_formateado = pesos_ars(consumos_1 - consumos_0, signo=True)
         # Bloque 6 del plan de rediseño: "(73%)" a secas se leía como si
         # $73 de cada $100 de la variación fueran por precio -- en
         # realidad es la fracción del MOVIMIENTO total (incluye el efecto
         # cruzado), no de la variación neta. "del movimiento" lo aclara
         # sin volverse un párrafo aparte.
-        proporcion_formateada = f"{abs(proporcion_dominante):.0%} del movimiento"
-        if tipo_dominante == "precio":
+        proporcion_formateada = f"{abs(resultado.proporcion_dominante):.0%} del movimiento"
+        if resultado.tipo_dominante == "precio":
             veredicto = (
                 f"El cambio de {cambio_formateado} en los consumos fue mayormente por "
                 f"PRECIO ({proporcion_formateada})."
             )
-        elif tipo_dominante == "cantidad":
+        elif resultado.tipo_dominante == "cantidad":
             veredicto = (
                 f"El cambio de {cambio_formateado} en los consumos fue mayormente por "
                 f"CANTIDAD ({proporcion_formateada})."
             )
-        elif tipo_dominante == "mixto":
+        elif resultado.tipo_dominante == "mixto":
             veredicto = (
                 f"El cambio de {cambio_formateado} fue una mezcla de cantidad y precio -- "
                 "ningún efecto explica la mayor parte por sí solo."
@@ -828,42 +709,22 @@ def _analisis(
         else:
             veredicto = "No hubo variación nominal entre los períodos seleccionados."
 
-        principales = top_conceptos_por_variacion(descomposiciones, TOP_N_CONCEPTOS)
-        if len(principales) < len(descomposiciones):
+        avisos_calculo = list(resultado.avisos_calculo)
+        principales = top_conceptos_por_variacion(resultado.descomposiciones, TOP_N_CONCEPTOS)
+        if len(principales) < len(resultado.descomposiciones):
             avisos_calculo.append(
                 f"Mostrando los {TOP_N_CONCEPTOS} conceptos con mayor variación, de "
-                f"{len(descomposiciones)} en total -- el resto está en Detalle."
+                f"{len(resultado.descomposiciones)} en total -- el resto está en Detalle."
             )
-
-        # Bloque 5 del plan de rediseño: el párrafo en castellano de arriba
-        # de todo -- se arma con los MISMOS números que las métricas y la
-        # tabla de abajo, nunca un cálculo aparte (ver core/relato.py).
-        # Bloque 6: el relato habla del TOTAL PAGABLE ("lo que pagaste"),
-        # no de los consumos solos -- son los mismos números que ahora se
-        # muestran como número grande, más abajo.
-        relato = redactar_con_modelo(
-            generar_relato_determinista(
-                DatosRelato(
-                    servicio=servicio,
-                    periodo_0=periodo_0,
-                    periodo_1=periodo_1,
-                    total_0=total_pagable_0,
-                    total_1=total_pagable_1,
-                    tipo_dominante=tipo_dominante,
-                    proporcion_dominante=abs(proporcion_dominante),
-                    variacion_real_pct=vr.variacion_real_pct if vr is not None else None,
-                    inflacion_pct=ipc_periodo_pct if ipc_periodo_pct is not None else 0.0,
-                    concepto_destacado=principales[0] if principales else None,
-                )
-            )
-        )
 
         composicion = [
             {
                 "etiqueta": etiqueta,
-                "valor_0": pesos_ars(componentes_0[clave]),
-                "valor_1": pesos_ars(componentes_1[clave]),
-                "variacion": pesos_ars(componentes_1[clave] - componentes_0[clave]),
+                "valor_0": pesos_ars(resultado.componentes_0[clave]),
+                "valor_1": pesos_ars(resultado.componentes_1[clave]),
+                "variacion": pesos_ars(
+                    resultado.componentes_1[clave] - resultado.componentes_0[clave]
+                ),
             }
             for clave, etiqueta in [
                 ("consumos", "Consumos / abonos"),
@@ -874,13 +735,19 @@ def _analisis(
             ]
         ]
 
+        # La serie histórica (multi-período) es propia de la pantalla, no
+        # de una comparación de dos períodos -- no la calcula
+        # `calcular_comparacion`. Usa el TOTAL PAGABLE
+        # (`totales_pagables_por_periodo`), no solo consumos, para no
+        # mostrar dos cifras distintas del mismo mes en la misma pantalla
+        # (docs/auditoria-2026-09-web.md, E-11).
         serie = []
         error_serie = None
         try:
             fecha_base = date.fromisoformat(filas_periodos[-1][0])
             totales_por_fecha = {
                 date.fromisoformat(p): total
-                for p, total in totales_por_periodo(con, servicio=servicio).items()
+                for p, total in totales_pagables_por_periodo(con, servicio=servicio).items()
             }
             df_ipc_serie = leer_ipc()
             puntos = serie_nominal_y_real(
@@ -901,7 +768,7 @@ def _analisis(
         except ValueError as exc:
             error_serie = f"No se pudo calcular la serie histórica: {exc}"
 
-        ordenadas = ordenar_por_severidad(alertas_totales)
+        ordenadas = ordenar_por_severidad(resultado.alertas)
         conteo = Counter(a.severidad for a in ordenadas)
     finally:
         con.close()
@@ -912,24 +779,30 @@ def _analisis(
         "periodo_1": periodo_1,
         "borradores_pendientes": borradores_pendientes,
         "avisos_calculo": avisos_calculo,
-        "conceptos_sin_clasificar": conceptos_sin_clasificar,
-        "anomalos": anomalos,
+        "conceptos_sin_clasificar": resultado.conceptos_sin_clasificar,
+        "anomalos": resultado.anomalos,
         # Bloque 6: el número grande es el TOTAL PAGABLE (consumos +
         # impuestos + recargos - créditos) -- antes era solo la suma de
         # consumos, que no es lo que la factura cobra de verdad. Los
         # consumos siguen mostrándose, como referencia secundaria.
         "total_0": pesos_ars(total_pagable_0),
         "total_1": pesos_ars(total_pagable_1),
-        "consumos_0": pesos_ars(total_0),
-        "consumos_1": pesos_ars(total_1),
+        "consumos_0": pesos_ars(consumos_0),
+        "consumos_1": pesos_ars(consumos_1),
         "variacion_nominal": f"{pesos_ars(total_pagable_1 - total_pagable_0, signo=True)} nominal",
-        "variacion_real": f"{vr.variacion_real_pct:+.1%}" if vr is not None else None,
+        "variacion_real": (
+            f"{resultado.variacion_real_pct:+.1%}"
+            if resultado.variacion_real_pct is not None
+            else None
+        ),
         # None (no "+0,0%") cuando el IPC no se pudo descargar/calcular --
         # ver "avisos_calculo" arriba, que ya explica por qué. +0,0% sería
         # indistinguible de una inflación real de cero.
-        "inflacion_periodo": f"{ipc_periodo_pct:+.1%}" if ipc_periodo_pct is not None else None,
+        "inflacion_periodo": (
+            f"{resultado.ipc_periodo_pct:+.1%}" if resultado.ipc_periodo_pct is not None else None
+        ),
         "veredicto": veredicto,
-        "relato": relato,
+        "relato": resultado.relato,
         "descomposiciones": [
             {
                 "concepto": etiqueta_legible(d.concepto),
@@ -968,7 +841,7 @@ def _analisis(
                 "efecto_cruzado": pesos_ars(d.efecto_cruzado),
                 "variacion_total": pesos_ars(d.variacion_total),
             }
-            for d in descomposiciones
+            for d in resultado.descomposiciones
         ],
     }
     contexto.update(contexto_selector)
@@ -980,43 +853,20 @@ def get_ver_excel(servicio: str, periodo_0: str, periodo_1: str):
     con = conectar()
     try:
         borradores_pendientes = contar_borradores(con, servicio=servicio)
+        filas_periodos = _periodos_del_servicio(con, servicio)
 
-        def _filas_del_periodo(periodo: str) -> list[FilaConcepto]:
-            filas = con.execute(
-                """SELECT c.concepto_normalizado, c.descripcion, c.cantidad, c.importe, c.unidad
-                   FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-                   WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
-                [servicio, periodo],
-            ).fetchall()
-            return [
-                FilaConcepto(cn, desc, cant, imp, unidad) for cn, desc, cant, imp, unidad in filas
-            ]
-
-        filas_0 = _filas_del_periodo(periodo_0)
-        filas_1 = _filas_del_periodo(periodo_1)
-        agregado_0 = agregar_conceptos(filas_0)
-        agregado_1 = agregar_conceptos(filas_1)
-        descomposiciones = descomponer_conceptos(agregado_0, agregado_1)
-
-        recargos_periodo_1 = [
-            Recargo(nombre=n, importe=i)
-            for n, i in recargos_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
-        ]
-        factura_agregada = FacturaExtraida(
-            emisor=None,
-            cuit=None,
+        # docs/auditoria-2026-09-web.md, E-11: mismo cálculo que la
+        # pantalla (`_analisis`, más arriba) -- antes el Excel no tenía en
+        # cuenta `acumulado`, ni la alerta de período faltante, ni los
+        # conceptos con cantidad sintética, así que podía mostrar una lista
+        # de alertas distinta de la que la persona acababa de ver.
+        resultado = calcular_comparacion(
+            con,
             servicio=servicio,
-            periodo_desde=periodo_1,
-            periodo_hasta=None,
-            fecha_emision=None,
-            fecha_vencimiento=None,
-            numero_comprobante=None,
-            moneda="ARS",
-            recargos=recargos_periodo_1,
+            periodo_0=periodo_0,
+            periodo_1=periodo_1,
+            periodos_del_servicio=filas_periodos,
         )
-        alertas_totales = generar_alertas(
-            factura_agregada, descomposiciones, ipc_periodo_pct=0.0
-        ) + alertas_del_periodo(con, servicio=servicio, periodo_desde=periodo_1)
         cuarentena_actual = con.execute("SELECT ruta_pdf, motivos FROM cuarentena").fetchall()
 
         buffer_excel = BytesIO()
@@ -1024,11 +874,14 @@ def get_ver_excel(servicio: str, periodo_0: str, periodo_1: str):
             servicio=servicio,
             periodo_0=periodo_0,
             periodo_1=periodo_1,
-            descomposiciones=descomposiciones,
-            alertas=alertas_totales,
+            descomposiciones=resultado.descomposiciones,
+            alertas=resultado.alertas,
             cuarentena=cuarentena_actual,
             ruta_salida=buffer_excel,
             borradores_sin_confirmar=borradores_pendientes,
+            componentes_0=resultado.componentes_0,
+            componentes_1=resultado.componentes_1,
+            relato=resultado.relato,
         )
     finally:
         con.close()

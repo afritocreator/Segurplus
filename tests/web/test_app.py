@@ -6,14 +6,16 @@ subir → revisar → confirmar → aparece en Ver, no solo el renderizado."""
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 import core.almacenamiento as almacenamiento_mod
 import core.pipeline as pipeline_mod
-from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto
+from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto, Recargo
 from core.pipeline import confirmar_factura
 from web.app import app
 
@@ -435,3 +437,62 @@ def test_ver_muestra_el_total_pagable_como_numero_principal_no_solo_consumos(
     assert "pagaste $133,10 de energia" in r.text
     # Los consumos siguen visibles, como referencia -- no desaparecen.
     assert "Consumos sin impuestos: $100,00 → $110,00" in r.text
+
+
+def test_ver_y_excel_muestran_las_mismas_alertas(cliente_logueado):
+    """docs/auditoria-2026-09-web.md, E-11: pantalla y Excel usan la misma
+    `calcular_comparacion` -- para la misma comparación no pueden mostrar
+    una cantidad distinta de alertas. Uso un recargo (alerta determinística,
+    no depende del IPC) para que el resultado no dependa de la red."""
+    con = almacenamiento_mod.conectar()
+    try:
+        f1 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 100.0, 100.0)],
+            subtotal=100.0,
+            total=100.0,
+            hash_pdf="pe1",
+        )
+        almacenamiento_mod.guardar_factura(con, f1, estado="borrador")
+        confirmar_factura(con, f1, actor="test")
+        f2 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-08-01",
+            periodo_hasta="2026-08-31",
+            fecha_emision="2026-09-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-2",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 100.0, 100.0)],
+            recargos=[Recargo("Interés por mora", importe=50.0)],
+            subtotal=100.0,
+            total=150.0,
+            hash_pdf="pe2",
+        )
+        almacenamiento_mod.guardar_factura(con, f2, estado="borrador")
+        confirmar_factura(con, f2, actor="test")
+    finally:
+        con.close()
+
+    r_pantalla = cliente_logueado.get("/ver")
+    assert r_pantalla.status_code == 200
+    assert "🔴 1 alta(s)" in r_pantalla.text
+
+    r_excel = cliente_logueado.get(
+        "/ver/excel",
+        params={"servicio": "energia", "periodo_0": "2026-07-01", "periodo_1": "2026-08-01"},
+    )
+    wb = load_workbook(BytesIO(r_excel.content))
+    ws = wb["Resumen"]
+    filas = {ws.cell(row=i, column=1).value: ws.cell(row=i, column=2).value for i in range(3, 15)}
+    assert filas["Cantidad de alertas"] == 1

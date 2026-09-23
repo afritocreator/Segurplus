@@ -147,7 +147,7 @@ def alertas_por_salto_de_cantidad(
 
 
 def alertas_por_precio_sobre_ipc(
-    descomposiciones: list[DescomposicionVariacion], *, ipc_periodo_pct: float
+    descomposiciones: list[DescomposicionVariacion], *, ipc_periodo_pct: float | None
 ) -> list[Alerta]:
     """Precio unitario que sube más de `precio_por_encima_del_ipc_pp` puntos
     porcentuales POR ENCIMA, EN TÉRMINOS REALES, de la inflación del período
@@ -163,7 +163,17 @@ def alertas_por_precio_sobre_ipc(
     Ejemplo con el umbral real de data/alertas.yaml (5,0 pp): precio +55%,
     inflación +50% -> la resta lineal da exactamente 5,0 pp y dispara la
     alerta; la fórmula correcta da (1.55/1.50 - 1) = +3,33%, por debajo del
-    umbral -- el proveedor subió en línea con la inflación, no por encima."""
+    umbral -- el proveedor subió en línea con la inflación, no por encima.
+
+    `ipc_periodo_pct=None` (no se pudo descargar/calcular el IPC del
+    período): esta regla no corre y devuelve `[]` -- no hay con qué
+    comparar el precio, así que no se puede decir si subió "por encima de
+    la inflación" (docs/auditoria-2026-09-web.md, E-5: antes se usaba 0.0
+    como reemplazo, lo que generaba alertas falsas -- cualquier aumento de
+    precio, por chico que fuera, aparecía como "por encima" de una
+    inflación de 0%)."""
+    if ipc_periodo_pct is None:
+        return []
     umbral_pp = _leer_umbrales()["precio_por_encima_del_ipc_pp"]
     alertas = []
     for d in descomposiciones:
@@ -296,7 +306,7 @@ def generar_alertas(
     factura: FacturaExtraida,
     descomposiciones: list[DescomposicionVariacion],
     *,
-    ipc_periodo_pct: float = 0.0,
+    ipc_periodo_pct: float | None = None,
     conceptos_con_cantidad_sintetica: frozenset[str] = frozenset(),
 ) -> list[Alerta]:
     """Corre todas las reglas de alerta y devuelve la lista combinada.
@@ -305,7 +315,11 @@ def generar_alertas(
     `alertas_por_salto_de_cantidad` -- pasar acá el resultado de
     `core.analisis.agregacion.conceptos_con_cantidad_neta_cero()` de AMBOS
     períodos comparados, para no generar un "salto de cantidad" espurio
-    sobre el 1.0 sintético del hallazgo A-20."""
+    sobre el 1.0 sintético del hallazgo A-20.
+
+    `ipc_periodo_pct=None` (default): sin inflación conocida, la regla de
+    "precio por encima del IPC" no corre -- ver
+    `alertas_por_precio_sobre_ipc` (docs/auditoria-2026-09-web.md, E-5)."""
     return [
         *alertas_por_recargos(factura),
         *alertas_por_item_duplicado(factura),
