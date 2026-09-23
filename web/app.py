@@ -68,6 +68,11 @@ from web.auth import NOMBRE_COOKIE, contrasena_configurada, intentar_login, leer
 from web.comparacion import calcular_comparacion
 
 TOP_N_CONCEPTOS = 12
+# docs/auditoria-2026-09-web.md, E-4/E-3 del plan de arreglos: sin
+# EVIDENCIA_DIR ni S3_BUCKET, el PDF se guarda en la base (base64, en una
+# columna VARCHAR) -- un PDF escaneado sin tope llenaría el plan gratis de
+# Supabase (500 MB) en pocas facturas grandes.
+_TAMANIO_MAXIMO_PDF_BYTES = 10 * 1024 * 1024
 
 app = FastAPI(title="Segurplus")
 _RAIZ = Path(__file__).resolve().parent
@@ -185,6 +190,19 @@ async def post_subir(request: Request, archivos: list[UploadFile]):
     try:
         for archivo in archivos:
             contenido = await archivo.read()
+            if len(contenido) > _TAMANIO_MAXIMO_PDF_BYTES:
+                resultados.append(
+                    ResultadoPipeline(
+                        Path(archivo.filename or "archivo.pdf"),
+                        hash_pdf="",
+                        estado="error_extraccion",
+                        detalle=(
+                            f"El archivo pesa más de {_TAMANIO_MAXIMO_PDF_BYTES // (1024 * 1024)} "
+                            "MB -- no se subió."
+                        ),
+                    )
+                )
+                continue
             ruta_temporal = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -307,7 +325,7 @@ def _filas_desde_factura(factura: FacturaExtraida) -> dict[str, list[dict]]:
 
 
 def _contexto_detalle(
-    hash_pdf: str, datos: dict, *, errores_aritmetica: list[str], aritmetica_ok: bool
+    hash_pdf: str, datos: dict, *, con, errores_aritmetica: list[str], aritmetica_ok: bool
 ) -> dict:
     filas_conceptos = _filas_con_blancos(
         [
@@ -329,7 +347,7 @@ def _contexto_detalle(
     return {
         "hash_pdf": hash_pdf,
         "motivo_carga": datos["motivo_carga"],
-        "pdf_disponible": bool(leer_pdf(datos["ruta_evidencia"])),
+        "pdf_disponible": bool(leer_pdf(datos["ruta_evidencia"], con=con)),
         "texto_extraido": datos["texto_extraido"],
         "servicios_conocidos": SERVICIOS_CONOCIDOS,
         "f": {
@@ -359,8 +377,18 @@ def get_revisar_detalle(request: Request, hash_pdf: str):
     con = conectar()
     try:
         datos = leer_borrador(con, hash_pdf)
+        contexto = _contexto_detalle_completo(con, hash_pdf, datos)
     finally:
         con.close()
+    return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
+
+
+def _contexto_detalle_completo(con, hash_pdf: str, datos: dict) -> dict:
+    """Arma el contexto completo (incluida la validación aritmética) para
+    `revisar_detalle.html` -- separado de `get_revisar_detalle` para que
+    `con` siga abierta mientras `_contexto_detalle` necesita leer el PDF
+    de la base (docs/auditoria-2026-09-web.md, E-4: `leer_pdf` con
+    `ruta_evidencia` de la forma `db://...` necesita una conexión viva)."""
     factura = FacturaExtraida(
         emisor=datos["emisor"],
         cuit=datos["cuit"],
@@ -407,10 +435,9 @@ def get_revisar_detalle(request: Request, hash_pdf: str):
     if total_impreso_valor is not None and not resultado.total_impreso_ok:
         errores.append(f"En el PDF dice un total distinto: {pesos_ars(total_impreso_valor)}.")
 
-    contexto = _contexto_detalle(
-        hash_pdf, datos, errores_aritmetica=errores, aritmetica_ok=resultado.factura_valida
+    return _contexto_detalle(
+        hash_pdf, datos, con=con, errores_aritmetica=errores, aritmetica_ok=resultado.factura_valida
     )
-    return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
 
 
 def _num_desde_texto(texto: str) -> float | None:
@@ -514,7 +541,11 @@ async def post_confirmar(request: Request, hash_pdf: str):
             )
             errores = [str(exc)]
             contexto = _contexto_detalle(
-                hash_pdf, datos, errores_aritmetica=errores, aritmetica_ok=resultado.factura_valida
+                hash_pdf,
+                datos,
+                con=con,
+                errores_aritmetica=errores,
+                aritmetica_ok=resultado.factura_valida,
             )
             # Se repuebla el formulario con lo que la persona tipeó, no con
             # lo guardado -- si se perdiera lo editado, corregir un error
@@ -581,12 +612,20 @@ def post_descartar(hash_pdf: str):
 
 @app.get("/pdf/{hash_pdf}")
 def get_pdf(hash_pdf: str):
+    # docs/auditoria-2026-09-web.md, E-4: no usa `leer_borrador` (que
+    # rechaza cualquier factura que no esté en estado 'borrador') -- esta
+    # ruta sirve el PDF tanto de un borrador como de una factura ya
+    # confirmada, y `leer_pdf` con una `ruta_evidencia` de la forma
+    # `db://...` necesita una conexión viva para leer la base.
     con = conectar()
     try:
-        datos = leer_borrador(con, hash_pdf)
+        fila = con.execute(
+            "SELECT ruta_evidencia FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+        ).fetchone()
+        ruta_evidencia = fila[0] if fila else None
+        contenido = leer_pdf(ruta_evidencia, con=con)
     finally:
         con.close()
-    contenido = leer_pdf(datos["ruta_evidencia"])
     if contenido is None:
         return Response(status_code=404)
     return Response(content=contenido, media_type="application/pdf")

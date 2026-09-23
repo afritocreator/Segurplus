@@ -167,7 +167,7 @@ def procesar_pdf(
         )
         factura = _borrador_vacio(documento.hash_sha256, ruta)
         try:
-            factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf)
+            factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
         except Exception:  # noqa: BLE001 -- un borrador vacío sin PDF sigue siendo mejor que nada
             factura.ruta_evidencia = None
         guardar_factura(
@@ -187,7 +187,7 @@ def procesar_pdf(
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)
     try:
-        factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf)
+        factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
     except Exception as exc:  # noqa: BLE001 -- no se pierde una lectura exitosa por esto
         # Gemini SÍ pudo leer la factura -- que el PDF no se haya podido
         # guardar como evidencia (disco lleno, S3 caído) es un problema de

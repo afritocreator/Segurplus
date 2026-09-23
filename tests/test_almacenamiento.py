@@ -178,6 +178,28 @@ def test_descartar_borrador_borra_el_pdf_de_evidencia(tmp_path, monkeypatch):
     con.close()
 
 
+def test_descartar_borrador_borra_el_pdf_guardado_en_la_base(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-4: mismo caso que arriba, pero con
+    el PDF guardado en la base (sin EVIDENCIA_DIR ni S3_BUCKET, el caso de
+    Render)."""
+    from core.evidencia import guardar_pdf, leer_pdf
+
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.delenv("EVIDENCIA_DIR", raising=False)
+
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura(hash_pdf="b1")
+    factura.ruta_evidencia = guardar_pdf("b1", b"contenido del pdf", con=con)
+    assert factura.ruta_evidencia == "db://b1"
+    assert leer_pdf(factura.ruta_evidencia, con=con) is not None
+    guardar_factura(con, factura, estado="borrador")
+
+    descartar_borrador(con, "b1")
+
+    assert leer_pdf(factura.ruta_evidencia, con=con) is None
+    con.close()
+
+
 def test_recargos_conservan_el_orden_de_guardado(tmp_path):
     """docs/auditoria-2026-09-confirmacion.md, D-12: sin una columna de
     orden, un re-guardado (UPSERT) podía devolver las filas en otro orden

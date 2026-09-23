@@ -198,6 +198,18 @@ CREATE TABLE IF NOT EXISTS intentos_gemini (
 -- piloto, pero el índice es la protección real contra el costo de la
 -- consulta en sí.
 CREATE INDEX IF NOT EXISTS idx_intentos_gemini_creado_en ON intentos_gemini (creado_en);
+-- docs/auditoria-2026-09-web.md, E-4: guarda el PDF original cuando no hay
+-- S3_BUCKET ni EVIDENCIA_DIR configurados (el caso de Render tal cual se
+-- desplegó) -- antes, sin ninguna de las dos variables, el PDF no se
+-- guardaba en ningún lado y la pantalla Revisar no podía mostrarlo.
+-- `contenido_b64` es VARCHAR (no un tipo binario) a propósito: la misma
+-- columna sirve igual en DuckDB (BLOB) y PostgreSQL (BYTEA) sin una rama
+-- de DDL por motor -- ver core/evidencia.py.
+CREATE TABLE IF NOT EXISTS documentos_pdf (
+    hash_pdf VARCHAR PRIMARY KEY,
+    contenido_b64 VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
 """
 
 ESTADOS_FACTURA = frozenset(
@@ -576,7 +588,7 @@ def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_p
     ).fetchone()
     if fila is None or fila[0] != "borrador":
         raise ValueError("Solo se puede descartar una factura en estado borrador.")
-    borrar_pdf(fila[1])
+    borrar_pdf(fila[1], con=con)
     for tabla in ("conceptos", "impuestos", "recargos", "creditos", "alertas", "facturas"):
         con.execute(f"DELETE FROM {tabla} WHERE hash_pdf = ?", [hash_pdf])
 
@@ -592,6 +604,7 @@ _TABLAS_OPERATIVAS = (
     "correcciones_factura",
     "casos_alerta",
     "intentos_gemini",
+    "documentos_pdf",
     "facturas",
 )
 

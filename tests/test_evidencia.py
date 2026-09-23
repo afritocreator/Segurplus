@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.almacenamiento import conectar
 from core.evidencia import (
     borrar_pdf,
     evidencia_durable_configurada,
@@ -107,3 +108,72 @@ def test_borrar_pdf_archivo_inexistente_no_lanza(tmp_path):
 
 def test_borrar_pdf_s3_sin_boto3_no_lanza():
     borrar_pdf("s3://mi-bucket/segurplus/documentos/abc123.pdf")
+
+
+# --- Guardado en la base (docs/auditoria-2026-09-web.md, E-4) -------------
+# Sin EVIDENCIA_DIR ni S3_BUCKET (el caso real de Render tal cual se
+# desplegó): el PDF se guarda en la tabla documentos_pdf en vez de perderse.
+
+
+def test_guardar_pdf_en_base_sin_bucket_ni_directorio(tmp_path, monkeypatch):
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.delenv("EVIDENCIA_DIR", raising=False)
+    con = conectar(tmp_path / "test.duckdb")
+
+    ruta = guardar_pdf("abc123", b"contenido original", con=con)
+
+    assert ruta == "db://abc123"
+    fila = con.execute(
+        "SELECT contenido_b64 FROM documentos_pdf WHERE hash_pdf = 'abc123'"
+    ).fetchone()
+    assert fila is not None
+    con.close()
+
+
+def test_guardar_pdf_en_base_es_idempotente(tmp_path, monkeypatch):
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.delenv("EVIDENCIA_DIR", raising=False)
+    con = conectar(tmp_path / "test.duckdb")
+
+    guardar_pdf("abc123", b"contenido original", con=con)
+    guardar_pdf("abc123", b"contenido distinto", con=con)  # no debería pisar el primero
+
+    assert leer_pdf("db://abc123", con=con) == b"contenido original"
+    con.close()
+
+
+def test_guardar_pdf_sin_con_ni_bucket_ni_directorio_sigue_devolviendo_none():
+    assert guardar_pdf("abc123", b"contenido") is None
+
+
+def test_leer_pdf_desde_base_lee_lo_que_guardo_pdf(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    ruta = guardar_pdf("abc123", b"contenido original", con=con)
+
+    assert leer_pdf(ruta, con=con) == b"contenido original"
+    con.close()
+
+
+def test_leer_pdf_db_sin_con_devuelve_none_no_lanza():
+    assert leer_pdf("db://abc123") is None
+
+
+def test_leer_pdf_db_hash_inexistente_devuelve_none(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    assert leer_pdf("db://no-existe", con=con) is None
+    con.close()
+
+
+def test_borrar_pdf_desde_base(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    ruta = guardar_pdf("abc123", b"contenido", con=con)
+    assert leer_pdf(ruta, con=con) is not None
+
+    borrar_pdf(ruta, con=con)
+
+    assert leer_pdf(ruta, con=con) is None
+    con.close()
+
+
+def test_borrar_pdf_db_sin_con_no_lanza():
+    borrar_pdf("db://abc123")

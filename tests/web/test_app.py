@@ -79,6 +79,26 @@ def test_subir_sin_api_key_deshabilita_boton(cliente_logueado, monkeypatch):
     assert "disabled" in r.text
 
 
+def test_subir_archivo_de_mas_de_10mb_se_rechaza_sin_procesar(cliente_logueado, monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-4 del plan de arreglos: un PDF
+    escaneado sin tope llenaría el plan gratis de Supabase en pocas
+    facturas -- se rechaza antes de intentar leerlo con Gemini."""
+
+    def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("no debería intentar leer un archivo rechazado por tamaño")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _no_deberia_llamarse)
+    monkeypatch.setenv("GEMINI_API_KEY", "clave-falsa")
+
+    contenido_grande = b"x" * (10 * 1024 * 1024 + 1)
+    r = cliente_logueado.post(
+        "/subir",
+        files={"archivos": ("gigante.pdf", contenido_grande, "application/pdf")},
+    )
+    assert r.status_code == 200
+    assert "más de 10 MB" in r.text
+
+
 def test_flujo_completo_subir_revisar_confirmar(cliente_logueado, monkeypatch):
     """El flujo entero: subir un PDF real (mockeando solo la llamada a
     Gemini, no el pipeline), verlo en la lista de Revisar, corregirlo y
@@ -322,6 +342,78 @@ def test_descartar_borrador_lo_saca_de_la_lista(cliente_logueado, monkeypatch):
 
     r = cliente_logueado.get("/revisar")
     assert "No hay facturas esperando confirmación" in r.text
+
+
+def test_pdf_sirve_una_factura_ya_confirmada_no_solo_borradores(cliente_logueado, monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-4 del plan de arreglos: antes
+    `/pdf/{hash}` usaba `leer_borrador`, que rechaza cualquier hash que no
+    esté en estado 'borrador' -- una vez confirmada, la factura dejaba de
+    tener PDF visible en ningún lado."""
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.delenv("EVIDENCIA_DIR", raising=False)
+
+    def _falso_extraer(pdf_bytes, *, api_key=None, texto_extraido=None):
+        return FacturaExtraida(
+            emisor="Usina de Prueba",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 28374.5, 28374.5)],
+            subtotal=28374.5,
+            total=28374.5,
+        )
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _falso_extraer)
+    monkeypatch.setenv("GEMINI_API_KEY", "clave-falsa")
+
+    with open(_FIXTURE_ENERGIA, "rb") as f:
+        cliente_logueado.post("/subir", files={"archivos": ("energia.pdf", f, "application/pdf")})
+
+    con = almacenamiento_mod.conectar()
+    try:
+        hash_pdf = almacenamiento_mod.listar_borradores(con)[0][0]
+    finally:
+        con.close()
+
+    r_borrador = cliente_logueado.get(f"/pdf/{hash_pdf}")
+    assert r_borrador.status_code == 200
+
+    cliente_logueado.post(
+        f"/revisar/{hash_pdf}/confirmar",
+        data={
+            "emisor": "Usina de Prueba",
+            "cuit": "30-1",
+            "servicio": "energia",
+            "moneda": "ARS",
+            "periodo_desde": "2026-07-01",
+            "periodo_hasta": "2026-07-31",
+            "fecha_emision": "2026-08-01",
+            "fecha_vencimiento": "",
+            "numero_comprobante": "A-1",
+            "concepto_descripcion": ["Cargo fijo", "", "", ""],
+            "concepto_cantidad": ["1", "", "", ""],
+            "concepto_unidad": ["", "", "", ""],
+            "concepto_precio_unitario": ["28374.5", "", "", ""],
+            "concepto_importe": ["28374.5", "", "", ""],
+            "impuesto_nombre": ["", "", ""],
+            "impuesto_importe": ["", "", ""],
+            "recargo_nombre": ["", "", ""],
+            "recargo_importe": ["", "", ""],
+            "credito_nombre": ["", "", ""],
+            "credito_importe": ["", "", ""],
+            "subtotal": "28374.5",
+            "total": "28374.5",
+        },
+    )
+
+    r_confirmada = cliente_logueado.get(f"/pdf/{hash_pdf}")
+    assert r_confirmada.status_code == 200
+    assert r_confirmada.content == r_borrador.content
 
 
 def test_ver_con_dos_periodos_muestra_el_analisis(cliente_logueado):
