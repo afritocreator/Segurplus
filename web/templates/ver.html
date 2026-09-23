@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block titulo %}{{ servicio }}: {{ periodo_0 }} → {{ periodo_1 }} -- Segurplus{% endblock %}
+{% block titulo %}{{ servicio_legible }}: {{ periodo_0_legible }} → {{ periodo_1_legible }} -- Segurplus{% endblock %}
 {% block contenido %}
 <p><a href="/ver">← Cambiar servicio o período</a></p>
-<h1>📊 {{ servicio }}: {{ periodo_0 }} → {{ periodo_1 }}</h1>
+<h1>📊 {{ servicio_legible }}: {{ periodo_0_legible }} → {{ periodo_1_legible }}</h1>
 
 {% if borradores_pendientes %}
 <div class="aviso advertencia">
-  Hay {{ borradores_pendientes }} factura(s) de {{ servicio }} esperando confirmación --
+  Hay {{ borradores_pendientes }} factura(s) de {{ servicio_legible }} esperando confirmación --
   no están incluidas en este análisis. Ver <a href="/revisar">Revisar</a>.
 </div>
 {% endif %}
@@ -15,8 +15,7 @@
 {% endfor %}
 {% if conceptos_sin_clasificar %}
 <div class="aviso advertencia">
-  Hay conceptos sin clasificar en esta comparación -- agregar un alias mejoraría el análisis
-  (ver <code>data/conceptos/{{ servicio }}.yaml</code>).
+  Hay conceptos sin clasificar en esta comparación -- agregar un alias mejoraría el análisis.
 </div>
 {% endif %}
 {% if anomalos %}
@@ -32,7 +31,7 @@
   <div class="metricas">
     <div class="metrica">
       <div class="valor principal">{{ total_1 }}</div>
-      <div class="etiqueta">Pagaste en {{ periodo_1 }} ({{ variacion_nominal }} vs. {{ total_0 }} en {{ periodo_0 }})</div>
+      <div class="etiqueta">Pagaste en {{ periodo_1_legible }} ({{ variacion_nominal }} vs. {{ total_0 }} en {{ periodo_0_legible }})</div>
     </div>
     {% if variacion_real is not none %}
     <div class="metrica">
@@ -56,12 +55,12 @@
   <h2>Precio vs. cantidad</h2>
   <p style="color:var(--gris);">
     Qué explica el cambio del gasto en cada concepto: ¿subió el precio, subió el consumo, o
-    los dos a la vez? El <strong>efecto combinado</strong> es la parte que no se puede atribuir
-    a uno solo -- precio y cantidad cambiaron juntos.
+    los dos a la vez? <strong>Precio y cantidad a la vez</strong> es la parte que no se puede
+    atribuir a uno solo -- precio y cantidad cambiaron juntos.
   </p>
   <table>
     <tr>
-      <th>Concepto</th><th>Por cantidad</th><th>Por precio</th><th>Efecto combinado</th><th>Variación total</th>
+      <th>Concepto</th><th>Por cantidad</th><th>Por precio</th><th>Precio y cantidad a la vez</th><th>Variación total</th>
     </tr>
     {% for d in descomposiciones %}
     <tr>
@@ -82,7 +81,7 @@
     recargos, créditos y el total pagable de cada período.
   </p>
   <table>
-    <tr><th>Componente</th><th>{{ periodo_0 }}</th><th>{{ periodo_1 }}</th><th>Variación</th></tr>
+    <tr><th>Componente</th><th>{{ periodo_0_legible }}</th><th>{{ periodo_1_legible }}</th><th>Variación</th></tr>
     {% for fila in composicion %}
     <tr>
       <td>{{ fila.etiqueta }}</td>
@@ -140,7 +139,7 @@
     <tr>
       <th>Concepto</th><th>Cantidad (base)</th><th>Precio (base)</th>
       <th>Cantidad (comparado)</th><th>Precio (comparado)</th>
-      <th>Por cantidad</th><th>Por precio</th><th>Efecto combinado</th><th>Variación total</th>
+      <th>Por cantidad</th><th>Por precio</th><th>Precio y cantidad a la vez</th><th>Variación total</th>
     </tr>
     {% for d in detalle %}
     <tr>

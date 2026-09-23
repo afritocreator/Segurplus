@@ -33,9 +33,35 @@
     </div>
   </div>
   <button type="submit" class="primario">Ver</button>
+  {% elif resumen %}
+  <div class="aviso info">
+    Todavía hay un solo período cargado de {{ servicio_elegido_legible }}. Cargá otro mes para
+    poder comparar.
+  </div>
   {% else %}
-  <div class="aviso info">Hay menos de dos períodos cargados para {{ servicio_elegido }}. Cargá al menos dos meses.</div>
+  <div class="aviso info">Hay menos de dos períodos cargados para {{ servicio_elegido_legible }}. Cargá al menos dos meses.</div>
   {% endif %}
 </form>
+
+{% if resumen %}
+<div class="relato">{{ resumen.relato }}</div>
+<div class="tarjeta">
+  <div class="metricas">
+    <div class="metrica">
+      <div class="valor principal">{{ resumen.total }}</div>
+      <div class="etiqueta">Total pagable en {{ resumen.periodo_legible }}</div>
+    </div>
+  </div>
+  <table>
+    <tr><th>Componente</th><th>{{ resumen.periodo_legible }}</th></tr>
+    {% for fila in resumen.composicion %}
+    <tr>
+      <td>{{ fila.etiqueta }}</td>
+      <td class="numero">{{ fila.valor }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
 {% endif %}
 {% endblock %}

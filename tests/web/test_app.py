@@ -203,9 +203,9 @@ def test_flujo_completo_subir_revisar_confirmar(cliente_logueado, monkeypatch):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/revisar"
+    assert r.headers["location"] == "/revisar?aviso=confirmada"
 
-    r = cliente_logueado.get("/revisar")
+    r = cliente_logueado.get(r.headers["location"])
     assert "No hay facturas esperando confirmación" in r.text
 
 
@@ -493,7 +493,7 @@ def test_ver_con_dos_periodos_muestra_el_analisis(cliente_logueado):
     assert "$110,00" in r.text
     # Bloque 5: el relato en castellano tiene que estar arriba de todo.
     assert 'class="relato"' in r.text
-    assert "pagaste $110,00 de energia" in r.text
+    assert "pagaste $110,00 de luz" in r.text
 
     r = cliente_logueado.get(
         "/ver/excel",
@@ -503,6 +503,40 @@ def test_ver_con_dos_periodos_muestra_el_analisis(cliente_logueado):
     assert r.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+
+def test_ver_con_un_solo_periodo_muestra_resumen_en_vez_de_pedir_dos_meses(cliente_logueado):
+    """docs/auditoria-2026-09-web.md, E-12: con una sola factura cargada,
+    antes se mostraba únicamente "cargá al menos dos meses" -- ahora se ve
+    un resumen de lo que sí se tiene."""
+    con = almacenamiento_mod.conectar()
+    try:
+        f1 = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 100.0, 100.0)],
+            subtotal=100.0,
+            total=100.0,
+            hash_pdf="h1",
+        )
+        almacenamiento_mod.guardar_factura(con, f1, estado="borrador")
+        confirmar_factura(con, f1, actor="test")
+    finally:
+        con.close()
+
+    r = cliente_logueado.get("/ver")
+    assert r.status_code == 200
+    assert "Cargá al menos dos meses" not in r.text
+    assert "$100,00" in r.text
+    assert "pagaste $100,00 de luz" in r.text
+    assert "No hay un junio de 2026 con gasto para comparar" in r.text
 
 
 def test_ver_muestra_el_total_pagable_como_numero_principal_no_solo_consumos(
@@ -557,7 +591,7 @@ def test_ver_muestra_el_total_pagable_como_numero_principal_no_solo_consumos(
     assert r.status_code == 200
     # Total pagable (110 + 23,10 = 133,10), no los consumos solos (110,00).
     assert "$133,10" in r.text
-    assert "pagaste $133,10 de energia" in r.text
+    assert "pagaste $133,10 de luz" in r.text
     # Los consumos siguen visibles, como referencia -- no desaparecen.
     assert "Consumos sin impuestos: $100,00 → $110,00" in r.text
 

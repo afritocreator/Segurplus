@@ -56,7 +56,7 @@ def test_caso_precio_dominante_calculado_a_mano():
     # concepto_destacado.variacion_total = (80-50)*1 = 30 -> "$30,00 más"
     texto = generar_relato_determinista(_datos())
     assert texto == (
-        "En agosto de 2026 pagaste $230,00 de energia, $30,00 más que en julio de 2026 "
+        "En agosto de 2026 pagaste $230,00 de luz, $30,00 más que en julio de 2026 "
         "(+15%). Dentro de los consumos, el cambio fue mayormente por PRECIO (73% del "
         "movimiento): el precio unitario subió. Descontada la inflación del período "
         '(+10%), tu gasto real subió un 5%. El que más cambió fue "Cargo fijo": '

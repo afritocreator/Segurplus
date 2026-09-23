@@ -24,31 +24,15 @@ del párrafo original contra los de la respuesta) antes de mostrarse.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 import yaml
 
 from core.analisis.agregacion import etiqueta_legible
 from core.analisis.variacion import DescomposicionVariacion
-from core.formato import pesos_ars
+from core.formato import mes_anio, nombre_servicio, pesos_ars, porcentaje_ar
 
 RUTA_ALERTAS = Path(__file__).resolve().parents[1] / "data" / "alertas.yaml"
-
-_MESES = (
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
-)
 
 
 def _umbral_composicion_relato() -> float:
@@ -58,37 +42,6 @@ def _umbral_composicion_relato() -> float:
     (CLAUDE.md), ver `data/alertas.yaml::umbral_composicion_relato`."""
     datos = yaml.safe_load(RUTA_ALERTAS.read_text(encoding="utf-8"))
     return float(datos["umbral_composicion_relato"])
-
-
-def _mes_anio(periodo_iso: str) -> str:
-    """`"2026-08-01"` -> `"agosto de 2026"`. Si el formato no se puede
-    interpretar (no debería pasar -- `periodo_desde` ya se normalizó a ISO
-    en `core/extraccion/esquema.py` antes de llegar acá), devuelve el
-    valor tal cual en vez de lanzar: un relato con una fecha rara sigue
-    siendo mejor que una pantalla rota."""
-    try:
-        fecha = date.fromisoformat(periodo_iso)
-    except ValueError:
-        return periodo_iso
-    return f"{_MESES[fecha.month - 1]} de {fecha.year}"
-
-
-def _porcentaje(valor: float, *, con_signo: bool = True) -> str:
-    """`con_signo=True` (default): `+15,0%` / `-15,0%`, para cuando el
-    signo es la única forma de saber la dirección (ej. la variación
-    nominal). `con_signo=False`: `15,0%` sin signo, para cuando la
-    dirección YA la dice una palabra ("subió", "bajó") -- antes esta
-    función siempre forzaba el signo, así que "bajó un ..." terminaba en
-    "bajó un +23%" (docs/auditoria-2026-09-web.md, E-2): un signo de más
-    delante de una baja."""
-    if con_signo:
-        texto = f"{valor * 100:+.1f}%"
-    else:
-        texto = f"{abs(valor) * 100:.1f}%"
-    texto = texto.replace(".", ",").replace(",0%", "%")
-    # Un valor que redondea a cero no tiene dirección -- "+0%" sugeriría
-    # una suba mínima en vez de "sin cambio".
-    return "0%" if texto == "+0%" else texto
 
 
 @dataclass(frozen=True)
@@ -140,25 +93,28 @@ class DatosRelato:
 def generar_relato_determinista(datos: DatosRelato) -> str:
     """El párrafo, siempre disponible, siempre verificable a mano contra
     los mismos números que ya se muestran en las métricas de arriba."""
-    mes_1 = _mes_anio(datos.periodo_1)
-    mes_0 = _mes_anio(datos.periodo_0)
+    mes_1 = mes_anio(datos.periodo_1)
+    mes_0 = mes_anio(datos.periodo_0)
+    # docs/auditoria-2026-09-web.md, E-13: "de energia" (el slug crudo de
+    # SERVICIOS_CONOCIDOS) en vez de "de luz".
+    servicio_legible = nombre_servicio(datos.servicio).lower()
     variacion_pesos = datos.total_1 - datos.total_0
 
     if datos.total_0 == 0:
         # No hay período base real contra el cual comparar -- primera
         # factura de este servicio, o el servicio no facturó nada antes.
         return (
-            f"En {mes_1} pagaste {pesos_ars(datos.total_1)} de {datos.servicio}. "
+            f"En {mes_1} pagaste {pesos_ars(datos.total_1)} de {servicio_legible}. "
             f"No hay un {mes_0} con gasto para comparar, así que todavía no se puede "
             "decir si esto es más, menos o parecido a lo habitual."
         )
 
     variacion_pct = variacion_pesos / datos.total_0
     frase_monto = (
-        f"En {mes_1} pagaste {pesos_ars(datos.total_1)} de {datos.servicio}, "
+        f"En {mes_1} pagaste {pesos_ars(datos.total_1)} de {servicio_legible}, "
         f"{pesos_ars(abs(variacion_pesos))} "
         f"{'más' if variacion_pesos >= 0 else 'menos'} que en {mes_0} "
-        f"({_porcentaje(variacion_pct)})."
+        f"({porcentaje_ar(variacion_pct)})."
     )
 
     # Cuánto del cambio es consumo y cuánto es impuestos/recargos/créditos
@@ -210,14 +166,14 @@ def generar_relato_determinista(datos: DatosRelato) -> str:
     if datos.variacion_real_pct is not None and datos.inflacion_pct is not None:
         if abs(datos.variacion_real_pct) < 0.005:
             frase_real = (
-                f"Descontada la inflación del período ({_porcentaje(datos.inflacion_pct)}), "
+                f"Descontada la inflación del período ({porcentaje_ar(datos.inflacion_pct)}), "
                 "el gasto real fue prácticamente el mismo."
             )
         else:
             frase_real = (
-                f"Descontada la inflación del período ({_porcentaje(datos.inflacion_pct)}), "
+                f"Descontada la inflación del período ({porcentaje_ar(datos.inflacion_pct)}), "
                 f"tu gasto real {'subió' if datos.variacion_real_pct >= 0 else 'bajó'} un "
-                f"{_porcentaje(abs(datos.variacion_real_pct), con_signo=False)}."
+                f"{porcentaje_ar(abs(datos.variacion_real_pct), con_signo=False)}."
             )
     else:
         frase_real = (

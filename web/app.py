@@ -32,13 +32,13 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from core.almacenamiento import (
+    componentes_financieros_periodo,
     conectar,
     contar_borradores,
     descartar_borrador,
     guardar_factura,
     leer_borrador,
     listar_borradores,
-    sincronizar_casos_alertas,
     totales_pagables_por_periodo,
 )
 from core.analisis.agregacion import etiqueta_legible
@@ -58,10 +58,11 @@ from core.extraccion.esquema import (
     montos_desde_filas,
 )
 from core.extraccion.validacion import validar_factura
-from core.formato import pesos_ars
+from core.formato import mes_anio, nombre_servicio, pesos_ars
 from core.ingesta.pdf_texto import total_impreso
 from core.macro.ipc import leer_ipc
 from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf
+from core.relato import DatosRelato, generar_relato_determinista
 from core.reportes.excel import generar_reporte_excel
 from web.auth import NOMBRE_COOKIE, contrasena_configurada, intentar_login, leer_sesion
 from web.comparacion import calcular_comparacion
@@ -291,8 +292,31 @@ def _filas_con_blancos(filas: list[dict], *, columnas: tuple[str, ...]) -> list[
     return resultado
 
 
+# docs/auditoria-2026-09-web.md, E-10: reemplaza la cookie `flash` (nadie
+# la leía -- el mensaje de "factura confirmada" nunca se mostraba). Un
+# parámetro `?aviso=` fijo, traducido acá a un mensaje fijo, para no
+# mostrar texto arbitrario que venga de la URL.
+_AVISOS_REVISAR = {
+    "confirmada": ("Factura confirmada: ya impacta el análisis.", "ok"),
+    "pendiente": (
+        "Factura confirmada: queda pendiente de revisión humana antes de impactar.",
+        "ok",
+    ),
+    "descartada": ("Borrador descartado.", "ok"),
+    # E-15: antes esto era un error 500 -- volver con el botón "atrás",
+    # doblar click en "Confirmar", o que otra persona ya haya confirmado o
+    # descartado la misma factura, todos terminaban en "Internal Server
+    # Error" en vez de un aviso.
+    "ya_procesada": (
+        "Esa factura ya no está esperando confirmación -- puede que ya se haya "
+        "confirmado o descartado.",
+        "info",
+    ),
+}
+
+
 @app.get("/revisar", response_class=HTMLResponse)
-def get_revisar(request: Request):
+def get_revisar(request: Request, aviso: str | None = None):
     con = conectar()
     try:
         filas = listar_borradores(con)
@@ -308,8 +332,12 @@ def get_revisar(request: Request):
         }
         for hash_pdf, emisor, servicio, periodo_desde, total, _evidencia, _motivo in filas
     ]
+    mensajes = [_AVISOS_REVISAR[aviso]] if aviso in _AVISOS_REVISAR else []
     return _render(
-        request, "revisar_lista.html", {"borradores": borradores}, pagina_activa="revisar"
+        request,
+        "revisar_lista.html",
+        {"borradores": borradores, "mensajes": mensajes},
+        pagina_activa="revisar",
     )
 
 
@@ -396,11 +424,25 @@ def _contexto_detalle(
     }
 
 
+def _leer_borrador_o_none(con, hash_pdf: str) -> dict | None:
+    """`None` si `hash_pdf` no existe o ya no está en estado 'borrador' --
+    en vez de dejar pasar el `ValueError` de `leer_borrador` (docs/
+    auditoria-2026-09-web.md, E-15): volver con el botón "atrás", doble
+    click en "Confirmar", o que otra persona ya haya confirmado o
+    descartado la misma factura, todos terminaban en un error 500."""
+    try:
+        return leer_borrador(con, hash_pdf)
+    except ValueError:
+        return None
+
+
 @app.get("/revisar/{hash_pdf}", response_class=HTMLResponse)
 def get_revisar_detalle(request: Request, hash_pdf: str):
     con = conectar()
     try:
-        datos = leer_borrador(con, hash_pdf)
+        datos = _leer_borrador_o_none(con, hash_pdf)
+        if datos is None:
+            return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
         contexto = _contexto_detalle_completo(con, hash_pdf, datos)
     finally:
         con.close()
@@ -543,12 +585,33 @@ async def _factura_desde_form(request: Request, hash_pdf: str, datos: dict) -> F
     )
 
 
+def _error_de_formulario(
+    request: Request, con, hash_pdf: str, datos: dict, mensaje: str
+) -> HTMLResponse:
+    """E-15: `_factura_desde_form` puede lanzar `ValueError` si las listas
+    del formulario no tienen todas la misma longitud (`zip(strict=True)`)
+    -- un formulario armado a mano o roto en el navegador, no algo que
+    antes se manejara: tumbaba la request con un error 500."""
+    contexto = _contexto_detalle(
+        hash_pdf, datos, con=con, errores_aritmetica=[], aritmetica_ok=False
+    )
+    contexto["mensajes"] = [(mensaje, "error")]
+    return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
+
+
 @app.post("/revisar/{hash_pdf}/confirmar", response_class=HTMLResponse)
 async def post_confirmar(request: Request, hash_pdf: str):
     con = conectar()
     try:
-        datos = leer_borrador(con, hash_pdf)
-        factura = await _factura_desde_form(request, hash_pdf, datos)
+        datos = _leer_borrador_o_none(con, hash_pdf)
+        if datos is None:
+            return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
+        try:
+            factura = await _factura_desde_form(request, hash_pdf, datos)
+        except ValueError as exc:
+            return _error_de_formulario(
+                request, con, hash_pdf, datos, f"No se pudo leer el formulario: {exc}"
+            )
         try:
             diccionario = cargar_diccionario(factura.servicio) if factura.servicio else None
             total_impreso_valor = total_impreso(datos["texto_extraido"] or "")
@@ -595,22 +658,23 @@ async def post_confirmar(request: Request, hash_pdf: str):
     finally:
         con.close()
 
-    mensaje = (
-        "Factura confirmada: ya impacta el análisis."
-        if estado_final == "aprobada"
-        else "Factura confirmada: queda pendiente de revisión humana antes de impactar."
-    )
-    respuesta = RedirectResponse("/revisar", status_code=303)
-    respuesta.set_cookie("flash", mensaje, max_age=5)
-    return respuesta
+    aviso = "confirmada" if estado_final == "aprobada" else "pendiente"
+    return RedirectResponse(f"/revisar?aviso={aviso}", status_code=303)
 
 
 @app.post("/revisar/{hash_pdf}/guardar")
 async def post_guardar(request: Request, hash_pdf: str):
     con = conectar()
     try:
-        datos = leer_borrador(con, hash_pdf)
-        factura = await _factura_desde_form(request, hash_pdf, datos)
+        datos = _leer_borrador_o_none(con, hash_pdf)
+        if datos is None:
+            return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
+        try:
+            factura = await _factura_desde_form(request, hash_pdf, datos)
+        except ValueError as exc:
+            return _error_de_formulario(
+                request, con, hash_pdf, datos, f"No se pudo leer el formulario: {exc}"
+            )
         guardar_factura(
             con,
             factura,
@@ -628,10 +692,13 @@ async def post_guardar(request: Request, hash_pdf: str):
 def post_descartar(hash_pdf: str):
     con = conectar()
     try:
-        descartar_borrador(con, hash_pdf)
+        try:
+            descartar_borrador(con, hash_pdf)
+        except ValueError:
+            return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
     finally:
         con.close()
-    return RedirectResponse("/revisar", status_code=303)
+    return RedirectResponse("/revisar?aviso=descartada", status_code=303)
 
 
 @app.get("/pdf/{hash_pdf}")
@@ -677,6 +744,68 @@ def _periodos_del_servicio(con, servicio: str) -> list[tuple[str, str | None]]:
     ).fetchall()
 
 
+def _resumen_periodo_unico(con, *, servicio: str, periodo: str) -> dict:
+    """docs/auditoria-2026-09-web.md, E-12: con un solo período cargado no
+    hay con qué comparar, pero mostrar "cargá dos meses" y nada más
+    desperdicia el único dato que sí tenemos. Se arma el mismo resumen que
+    usaría `_analisis`, pero con el período anterior en cero -- reutiliza
+    la rama de `generar_relato_determinista` ya probada para "primera
+    factura del servicio" (`total_0 == 0`), con el mes calendario previo
+    como referencia (aunque no haya factura cargada para ese mes)."""
+    componentes = componentes_financieros_periodo(con, servicio=servicio, periodo_desde=periodo)
+    fecha = date.fromisoformat(periodo)
+    anio_anterior, mes_anterior = (
+        (fecha.year, fecha.month - 1)
+        if fecha.month > 1
+        else (
+            fecha.year - 1,
+            12,
+        )
+    )
+    periodo_anterior = date(anio_anterior, mes_anterior, 1).isoformat()
+
+    relato = generar_relato_determinista(
+        DatosRelato(
+            servicio=servicio,
+            periodo_0=periodo_anterior,
+            periodo_1=periodo,
+            total_0=0.0,
+            total_1=componentes["total_pagable"],
+            consumos_0=0.0,
+            consumos_1=componentes["consumos"],
+            impuestos_0=0.0,
+            impuestos_1=componentes["impuestos"],
+            recargos_0=0.0,
+            recargos_1=componentes["recargos"],
+            creditos_0=0.0,
+            creditos_1=componentes["creditos"],
+            tipo_dominante="sin_variacion",
+            proporcion_dominante=0.0,
+            efecto_precio_total=0.0,
+            efecto_cantidad_total=0.0,
+            variacion_real_pct=None,
+            inflacion_pct=None,
+            concepto_destacado=None,
+        )
+    )
+    composicion = [
+        {"etiqueta": etiqueta, "valor": pesos_ars(componentes[clave])}
+        for clave, etiqueta in [
+            ("consumos", "Consumos / abonos"),
+            ("impuestos", "Impuestos"),
+            ("recargos", "Recargos"),
+            ("creditos", "Créditos / descuentos"),
+            ("total_pagable", "Total pagable"),
+        ]
+    ]
+    return {
+        "periodo_legible": mes_anio(periodo),
+        "total": pesos_ars(componentes["total_pagable"]),
+        "composicion": composicion,
+        "relato": relato,
+    }
+
+
 @app.get("/ver", response_class=HTMLResponse)
 def get_ver(
     request: Request,
@@ -692,11 +821,30 @@ def get_ver(
         servicio_elegido = servicio if servicio in servicios else servicios[0]
         filas_periodos = _periodos_del_servicio(con, servicio_elegido)
         periodos = [f[0] for f in filas_periodos]
-        if len(periodos) < 2:
+        if len(periodos) == 1:
+            resumen = _resumen_periodo_unico(con, servicio=servicio_elegido, periodo=periodos[0])
             return _render(
                 request,
                 "ver_selector.html",
-                {"servicios": servicios, "servicio_elegido": servicio_elegido, "periodos": []},
+                {
+                    "servicios": servicios,
+                    "servicio_elegido": servicio_elegido,
+                    "servicio_elegido_legible": nombre_servicio(servicio_elegido),
+                    "periodos": [],
+                    "resumen": resumen,
+                },
+                pagina_activa="ver",
+            )
+        if not periodos:
+            return _render(
+                request,
+                "ver_selector.html",
+                {
+                    "servicios": servicios,
+                    "servicio_elegido": servicio_elegido,
+                    "servicio_elegido_legible": nombre_servicio(servicio_elegido),
+                    "periodos": [],
+                },
                 pagina_activa="ver",
             )
         periodo_0_elegido = periodo_0 if periodo_0 in periodos[:-1] else periodos[-2]
@@ -729,17 +877,16 @@ def _analisis(
         # es el MISMO que usa el Excel (`get_ver_excel`, más abajo) -- antes
         # cada pantalla tenía su propia copia y podían mostrar alertas
         # distintas para el mismo par de períodos.
+        # docs/auditoria-2026-09-web.md, E-22: este GET ya no escribe en la
+        # base -- antes sincronizaba "casos" en cada visita a la pantalla,
+        # una pantalla que no existe en web/ (queda en el tablero
+        # Streamlit, que la sigue sincronizando desde su propia página).
         resultado = calcular_comparacion(
             con,
             servicio=servicio,
             periodo_0=periodo_0,
             periodo_1=periodo_1,
             periodos_del_servicio=filas_periodos,
-        )
-        sincronizar_casos_alertas(
-            con,
-            referencia=f"comparacion:{servicio}:{periodo_0}:{periodo_1}",
-            alertas=resultado.alertas,
         )
 
         total_pagable_0 = resultado.componentes_0["total_pagable"]
@@ -840,6 +987,14 @@ def _analisis(
         "servicio": servicio,
         "periodo_0": periodo_0,
         "periodo_1": periodo_1,
+        # docs/auditoria-2026-09-web.md, E-13: el slug (`servicio`) y las
+        # fechas ISO (`periodo_0`/`periodo_1`) se conservan tal cual para
+        # los links que arman query params (Excel, "Cambiar servicio o
+        # período") -- estas versiones son solo para mostrar en el título,
+        # el encabezado y las etiquetas de las métricas.
+        "servicio_legible": nombre_servicio(servicio),
+        "periodo_0_legible": mes_anio(periodo_0),
+        "periodo_1_legible": mes_anio(periodo_1),
         "borradores_pendientes": borradores_pendientes,
         "avisos_calculo": avisos_calculo,
         "conceptos_sin_clasificar": resultado.conceptos_sin_clasificar,
