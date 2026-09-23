@@ -102,6 +102,28 @@ class ExtraccionError(Exception):
         self.respuesta_cruda = respuesta_cruda
 
 
+_MARCADORES_ERROR_TRANSITORIO = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "TIMEOUT")
+
+
+def es_error_transitorio(exc: ExtraccionError) -> bool:
+    """True si `exc` viene de un problema pasajero del lado de Gemini
+    (demanda alta -- 503 UNAVAILABLE --, cuota agotada por un momento --
+    429 RESOURCE_EXHAUSTED --, o un timeout de red), donde reintentar
+    tiene sentido. False para errores permanentes (sin API key, JSON mal
+    formado, campo faltante) que van a fallar exactamente igual la
+    próxima vez -- reintentarlos solo gasta cupo de la API sin ganar nada.
+
+    No hay un tipo de excepción distinto para cada caso (`extraer_con_gemini`
+    envuelve cualquier excepción de la librería en el mismo `ExtraccionError`
+    con el mensaje original adentro, ver docstring de esa función) -- por
+    eso la detección es textual, sobre el mismo mensaje que ya se le
+    muestra a la persona (docs/auditoria-2026-09-web.md, E-6: en la única
+    corrida real contra Gemini, 503 UNAVAILABLE fue justamente el error que
+    apareció, varias veces, y el pipeline no reintentaba ninguna)."""
+    texto = str(exc).upper()
+    return any(marcador in texto for marcador in _MARCADORES_ERROR_TRANSITORIO)
+
+
 def extraer_con_gemini(
     pdf_bytes: bytes, *, api_key: str | None = None, texto_extraido: str | None = None
 ) -> FacturaExtraida:

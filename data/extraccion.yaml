@@ -5,42 +5,25 @@
 # hardcodeado en core/ (ver CLAUDE.md).
 #
 # El pipeline real (core/pipeline.py::procesar_pdf) todavía NO usa esta
-# cascada -- sigue llamando a Gemini directo. Esta configuración la usa hoy
-# scripts/banco_extraccion.py para medir. Migrar procesar_pdf es el primer
-# paso a dar apenas el banco, corrido con claves reales, diga qué proveedor
-# conviene primero (ver "Riesgos" en el plan: cambiar el camino real de
-# carga sin poder medirlo sería la misma adivinanza que este plan existe
-# para evitar).
+# cascada -- sigue llamando a Gemini directo (con su propio reintento, ver
+# core/pipeline.py::procesar_pdf, E-6 de docs/auditoria-2026-09-web.md).
+# Esta configuración la usa hoy scripts/banco_extraccion.py para medir.
 #
 # `variable_entorno_clave` es el NOMBRE de la variable de entorno que
 # guarda la clave de API de ese proveedor -- nunca la clave en sí.
-vigencia_desde: "2026-09-20"
+#
+# docs/auditoria-2026-09-web.md, E-20: Groq (groq_scout, groq_qwen) estuvo
+# acá, pero se sacó por decisión del usuario -- no por un resultado técnico
+# (el problema real era que este entorno de desarrollo no podía llegar a
+# api.groq.com, ver docs/estado.md). El código y los tests de
+# core/extraccion/proveedores/openai_compat.py siguen andando: agregar una
+# entrada acá alcanza para retomarlo si en algún momento se decide medirlo
+# de nuevo.
+vigencia_desde: "2026-09-23"
 timeout_segundos: 25
 
 proveedores:
-  # Gemini primero: es el único que recibe el PDF nativo (no una imagen
-  # renderizada) y el único ya verificado end-to-end en este proyecto,
-  # aunque con B-3 (impuestos de dos montos) todavía sin confirmar contra
-  # la API real -- ver docs/estado.md.
   - nombre: gemini
     tipo: gemini
     modelo: gemini-3.6-flash
     variable_entorno_clave: GEMINI_API_KEY
-
-  # Groq: único proveedor gratis del informe con modelos multimodales de
-  # verdad (recibe imagen, no solo texto). Cerebras y SambaNova quedan
-  # fuera de esta cascada -- sus modelos gratis son de solo texto, no
-  # pueden leer el layout de una factura (ver docs/banco_extraccion.md).
-  - nombre: groq_scout
-    tipo: openai_compat
-    modelo: meta-llama/llama-4-scout-17b-16e-instruct
-    base_url: https://api.groq.com/openai/v1
-    variable_entorno_clave: GROQ_API_KEY
-    acepta_imagen: true
-
-  - nombre: groq_qwen
-    tipo: openai_compat
-    modelo: qwen/qwen3-32b
-    base_url: https://api.groq.com/openai/v1
-    variable_entorno_clave: GROQ_API_KEY
-    acepta_imagen: true

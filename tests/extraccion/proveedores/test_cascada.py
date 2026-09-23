@@ -101,7 +101,9 @@ def test_cascada_reintenta_antes_de_pasar_al_siguiente(monkeypatch):
     def _falso_leer_con_proveedor(config, pdf_bytes, texto_extraido):
         if config.nombre == "primero":
             intentos_primero.append(1)
-            raise ExtraccionError("falla transitoria")
+            # transitorio (ver core.extraccion.gemini.es_error_transitorio) --
+            # los permanentes no se reintentan, ver el test de abajo.
+            raise ExtraccionError("Error llamando a Gemini: 503 UNAVAILABLE")
         return "factura-del-segundo"
 
     monkeypatch.setattr(
@@ -115,6 +117,31 @@ def test_cascada_reintenta_antes_de_pasar_al_siguiente(monkeypatch):
     )
     assert resultado == "factura-del-segundo"
     assert len(intentos_primero) == 3  # se reintentó las 3 veces antes de pasar de proveedor
+
+
+def test_cascada_no_reintenta_un_error_permanente(monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-21: "falta la clave de API" (u otro
+    error permanente) no se reintenta dentro del mismo proveedor -- pasa
+    directo al siguiente, sin gastar los reintentos ni la espera."""
+    intentos_primero = []
+
+    def _falso_leer_con_proveedor(config, pdf_bytes, texto_extraido):
+        if config.nombre == "primero":
+            intentos_primero.append(1)
+            raise ExtraccionError("Falta la clave de API para https://x (variable X_API_KEY).")
+        return "factura-del-segundo"
+
+    monkeypatch.setattr(
+        "core.extraccion.proveedores._leer_con_proveedor", _falso_leer_con_proveedor
+    )
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    resultado = leer_factura_cascada(
+        b"pdf",
+        configuraciones=[_config("primero"), _config("segundo")],
+        intentos_por_proveedor=3,
+    )
+    assert resultado == "factura-del-segundo"
+    assert len(intentos_primero) == 1  # un solo intento, no reintenta un error permanente
 
 
 def test_cascada_lanza_con_el_detalle_de_todos_si_todos_fallan(monkeypatch):

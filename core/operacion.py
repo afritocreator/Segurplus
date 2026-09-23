@@ -54,6 +54,26 @@ def dias_retencion_intentos_gemini() -> int:
     return int(datos["dias_retencion_intentos_gemini"])
 
 
+def intentos_gemini_por_llamada() -> int:
+    """Cuántas veces reintentar una llamada a Gemini que falló por un error
+    transitorio antes de rendirse (docs/auditoria-2026-09-web.md, E-6) --
+    ver `core.extraccion.gemini.es_error_transitorio` y
+    `core.pipeline.procesar_pdf`."""
+    datos = yaml.safe_load(RUTA_OPERACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "intentos_gemini_por_llamada" not in datos:
+        raise ValueError(f"{RUTA_OPERACION} no tiene 'intentos_gemini_por_llamada'")
+    return int(datos["intentos_gemini_por_llamada"])
+
+
+def espera_reintento_gemini_segundos() -> float:
+    """Espera base, en segundos, antes de cada reintento a Gemini -- ver
+    `core.pipeline.procesar_pdf` (docs/auditoria-2026-09-web.md, E-6)."""
+    datos = yaml.safe_load(RUTA_OPERACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "espera_reintento_gemini_segundos" not in datos:
+        raise ValueError(f"{RUTA_OPERACION} no tiene 'espera_reintento_gemini_segundos'")
+    return float(datos["espera_reintento_gemini_segundos"])
+
+
 def zona_horaria() -> str:
     """Nombre de zona horaria IANA del equipo que usa el tablero (docs/
     auditoria-2026-09-facturas-reales.md, hallazgo C-8) -- para mostrar "a

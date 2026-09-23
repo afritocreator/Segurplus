@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 from core.extraccion.esquema import FacturaExtraida
-from core.extraccion.gemini import ExtraccionError
+from core.extraccion.gemini import ExtraccionError, es_error_transitorio
 
 RUTA_CONFIGURACION = Path(__file__).resolve().parents[3] / "data" / "extraccion.yaml"
 
@@ -127,7 +127,15 @@ def leer_factura_cascada(
     `ExtraccionError` con el detalle de cada fallo -- el llamador (hoy,
     `scripts/banco_extraccion.py`; el día de mañana, `core/pipeline.py`)
     sigue tratándolo igual que un fallo de Gemini solo: la factura queda
-    como borrador vacío para completar a mano, nunca se pierde."""
+    como borrador vacío para completar a mano, nunca se pierde.
+
+    Un error PERMANENTE (falta la clave de API, JSON mal formado) no se
+    reintenta dentro del mismo proveedor -- pasa directo al siguiente de
+    la lista, sin la espera de `espera_entre_intentos`
+    (docs/auditoria-2026-09-web.md, E-21): reintentar "falta la clave" solo
+    iba a fallar exactamente igual las veces que quedaran, gastando tiempo
+    sin ganar nada. Solo un error TRANSITORIO (`es_error_transitorio`, ver
+    `core.extraccion.gemini`) amerita reintentar el mismo proveedor."""
     configuraciones = configuraciones if configuraciones is not None else leer_configuracion()
     errores: list[str] = []
     for config in configuraciones:
@@ -136,6 +144,8 @@ def leer_factura_cascada(
                 return _leer_con_proveedor(config, pdf_bytes, texto_extraido)
             except ExtraccionError as exc:
                 errores.append(f"{config.nombre} (intento {intento + 1}): {exc}")
-                if intento < intentos_por_proveedor - 1:
+                if intento < intentos_por_proveedor - 1 and es_error_transitorio(exc):
                     time.sleep(espera_entre_intentos * (2**intento))
+                else:
+                    break
     raise ExtraccionError("Todos los proveedores de extracción fallaron:\n" + "\n".join(errores))

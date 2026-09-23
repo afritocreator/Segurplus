@@ -35,3 +35,18 @@ zona_horaria: America/Argentina/Buenos_Aires
 # margen de sobra para diagnosticar un fallo reciente sin acumular para
 # siempre.
 dias_retencion_intentos_gemini: 30
+
+# Cuántas veces reintentar una llamada a Gemini que falló por un error
+# TRANSITORIO (503 demanda alta, 429 cuota agotada, timeout de red) antes
+# de rendirse y dejar la factura como borrador vacío para completar a
+# mano -- ver core/extraccion/gemini.py::es_error_transitorio y
+# core/pipeline.py::procesar_pdf (docs/auditoria-2026-09-web.md, E-6). Un
+# error PERMANENTE (sin API key, JSON mal formado) nunca se reintenta,
+# sea cual sea este número. Cada intento cuenta como una llamada real
+# contra max_llamadas_gemini_por_hora.
+intentos_gemini_por_llamada: 3
+
+# Espera base, en segundos, antes de cada reintento -- crece con cada
+# intento (espera_base * intento: 2s, 4s, ...) para no golpear la API de
+# nuevo de inmediato si sigue saturada.
+espera_reintento_gemini_segundos: 2.0

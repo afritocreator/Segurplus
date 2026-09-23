@@ -340,11 +340,12 @@ def test_intento_fallido_de_extraccion_deja_un_borrador_vacio(tmp_path, monkeypa
     NINGÚN rastro en la base. Ahora deja DOS cosas -- el registro en
     intentos_gemini de siempre, Y un borrador vacío (con el PDF, si se pudo
     guardar) para completar a mano en vez de perder la factura por
-    completo."""
+    completo. Error PERMANENTE (no 503/429/timeout) -- un solo intento, sin
+    reintentar (ver los tests de reintento más abajo para el caso 503)."""
     from core.extraccion.gemini import ExtraccionError
 
     def _falla(*a, **k):
-        raise ExtraccionError("Error llamando a Gemini: 503 Service Unavailable")
+        raise ExtraccionError("La respuesta de Gemini no es JSON válido")
 
     monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _falla)
     con = conectar(tmp_path / "test.duckdb")
@@ -358,14 +359,94 @@ def test_intento_fallido_de_extraccion_deja_un_borrador_vacio(tmp_path, monkeypa
     ).fetchone()
     assert fila[0] == "borrador"
     assert fila[1] is None  # nada que extraer -- vacío para completar a mano
-    assert "503" in fila[2]
+    assert "JSON" in fila[2]
 
     from core.almacenamiento import intentos_gemini_fallidos_recientes
 
     fallidos = intentos_gemini_fallidos_recientes(con)
     assert len(fallidos) == 1
     ruta_pdf, mensaje, respuesta_cruda, _creado_en = fallidos[0]
-    assert "503" in mensaje
+    assert "JSON" in mensaje
+    con.close()
+
+
+def test_503_reintenta_y_termina_en_exito(tmp_path, monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-6: en la única corrida real contra
+    Gemini, 503 UNAVAILABLE fue justamente el error que apareció varias
+    veces. Dos fallos transitorios seguidos de un éxito -- termina con la
+    factura leída, y quedan 3 intentos registrados (2 fallidos + 1
+    exitoso), todos contando para el tope de la hora."""
+    from core.extraccion.gemini import ExtraccionError
+
+    llamadas = []
+
+    def _falla_dos_veces_despues_exito(*a, **k):
+        llamadas.append(1)
+        if len(llamadas) <= 2:
+            raise ExtraccionError("Error llamando a Gemini: 503 UNAVAILABLE")
+        return _factura_telefonia_julio()
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _falla_dos_veces_despues_exito)
+    monkeypatch.setattr(pipeline_mod.time, "sleep", lambda segundos: None)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "borrador"
+    fila = con.execute(
+        "SELECT emisor FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()
+    assert fila[0] is not None  # se leyó de verdad, no es el borrador vacío
+
+    from core.almacenamiento import llamadas_ultima_hora
+
+    assert len(llamadas) == 3
+    assert llamadas_ultima_hora(con) == 3
+    con.close()
+
+
+def test_503_agota_los_reintentos_y_deja_borrador_vacio(tmp_path, monkeypatch):
+    """Mismo error transitorio en TODOS los intentos -- se rinde después de
+    intentos_gemini_por_llamada() intentos (3 por default) y deja el
+    borrador vacío de siempre, no se queda reintentando para siempre."""
+    from core.extraccion.gemini import ExtraccionError
+
+    def _siempre_503(*a, **k):
+        raise ExtraccionError("Error llamando a Gemini: 503 UNAVAILABLE")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _siempre_503)
+    monkeypatch.setattr(pipeline_mod.time, "sleep", lambda segundos: None)
+    con = conectar(tmp_path / "test.duckdb")
+
+    resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+
+    assert resultado.estado == "borrador"
+    assert "503" in resultado.detalle
+
+    from core.almacenamiento import intentos_gemini_fallidos_recientes, llamadas_ultima_hora
+
+    assert len(intentos_gemini_fallidos_recientes(con)) == 3
+    assert llamadas_ultima_hora(con) == 3
+    con.close()
+
+
+def test_error_permanente_no_reintenta(tmp_path, monkeypatch):
+    """Sin API key (u otro error permanente) no tiene sentido reintentar --
+    va a fallar exactamente igual las tres veces. Un solo intento."""
+    from core.extraccion.gemini import ExtraccionError
+
+    llamadas = []
+
+    def _sin_clave(*a, **k):
+        llamadas.append(1)
+        raise ExtraccionError("No hay GEMINI_API_KEY configurada.")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _sin_clave)
+    con = conectar(tmp_path / "test.duckdb")
+
+    procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key=None)
+
+    assert len(llamadas) == 1
     con.close()
 
 

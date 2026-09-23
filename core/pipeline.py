@@ -22,6 +22,7 @@ Cáscara delgada sobre `core/ingesta/`, `core/extraccion/` y `core/analisis/`
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -45,10 +46,16 @@ from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
 from core.evidencia import guardar_pdf
 from core.extraccion.esquema import FacturaExtraida
-from core.extraccion.gemini import ExtraccionError, extraer_con_gemini
+from core.extraccion.gemini import ExtraccionError, es_error_transitorio, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
 from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto
-from core.operacion import max_llamadas_gemini_por_hora, revision_humana_obligatoria, zona_horaria
+from core.operacion import (
+    espera_reintento_gemini_segundos,
+    intentos_gemini_por_llamada,
+    max_llamadas_gemini_por_hora,
+    revision_humana_obligatoria,
+    zona_horaria,
+)
 
 
 @dataclass
@@ -145,26 +152,53 @@ def procesar_pdf(
         )
 
     contenido_pdf = ruta.read_bytes()
-    try:
-        # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: se le pasa también
-        # el texto que `extraer_texto` ya sacó del mismo PDF -- una segunda
-        # vista, además del PDF nativo, para las facturas con layout a dos
-        # columnas o líneas de impuesto con dos montos.
-        factura = extraer_con_gemini(contenido_pdf, api_key=api_key, texto_extraido=documento.texto)
-    except ExtraccionError as exc:
-        # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5/C-2: el
-        # intento queda registrado igual, con el JSON crudo si Gemini llegó
-        # a responder. A diferencia de antes, la factura NO se pierde: se
+    factura: FacturaExtraida | None = None
+    ultimo_error: ExtraccionError | None = None
+    intentos_max = intentos_gemini_por_llamada()
+    espera_base = espera_reintento_gemini_segundos()
+    for intento in range(1, intentos_max + 1):
+        try:
+            # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: se le pasa también
+            # el texto que `extraer_texto` ya sacó del mismo PDF -- una segunda
+            # vista, además del PDF nativo, para las facturas con layout a dos
+            # columnas o líneas de impuesto con dos montos.
+            factura = extraer_con_gemini(
+                contenido_pdf, api_key=api_key, texto_extraido=documento.texto
+            )
+            # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-10: en un
+            # intento EXITOSO no se manda respuesta_cruda -- esa misma cadena
+            # ya va a facturas.respuesta_extraida vía guardar_factura más abajo.
+            registrar_intento_gemini(
+                con, hash_pdf=documento.hash_sha256, ruta_pdf=str(ruta), exito=True
+            )
+            break
+        except ExtraccionError as exc:
+            ultimo_error = exc
+            # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5/C-2: el
+            # intento queda registrado igual, con el JSON crudo si Gemini llegó
+            # a responder -- CADA intento, no solo el último, así el tope por
+            # hora (max_llamadas_gemini_por_hora) sigue contando llamadas
+            # reales (docs/auditoria-2026-09-web.md, E-6).
+            registrar_intento_gemini(
+                con,
+                hash_pdf=documento.hash_sha256,
+                ruta_pdf=str(ruta),
+                exito=False,
+                mensaje=str(exc),
+                respuesta_cruda=getattr(exc, "respuesta_cruda", None),
+            )
+            if intento < intentos_max and es_error_transitorio(exc):
+                time.sleep(espera_base * intento)
+                continue
+            break
+
+    if factura is None:
+        # E-6: 503/429/timeout ya se reintentaron y siguieron fallando, o
+        # fue un error permanente (sin API key, JSON mal formado) que nunca
+        # se reintenta. A diferencia de antes, la factura NO se pierde: se
         # deja un borrador vacío para completar a mano, con el PDF a la
         # vista -- Gemini no pudo leerla, pero el usuario sí puede.
-        registrar_intento_gemini(
-            con,
-            hash_pdf=documento.hash_sha256,
-            ruta_pdf=str(ruta),
-            exito=False,
-            mensaje=str(exc),
-            respuesta_cruda=getattr(exc, "respuesta_cruda", None),
-        )
+        exc = ultimo_error
         factura = _borrador_vacio(documento.hash_sha256, ruta)
         try:
             factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
@@ -178,11 +212,6 @@ def procesar_pdf(
             texto_extraido=documento.texto,
         )
         return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=str(exc))
-
-    # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-10: en un
-    # intento EXITOSO no se manda respuesta_cruda -- esa misma cadena ya va
-    # a facturas.respuesta_extraida vía guardar_factura más abajo.
-    registrar_intento_gemini(con, hash_pdf=documento.hash_sha256, ruta_pdf=str(ruta), exito=True)
 
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)

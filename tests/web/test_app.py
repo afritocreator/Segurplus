@@ -79,6 +79,17 @@ def test_subir_sin_api_key_deshabilita_boton(cliente_logueado, monkeypatch):
     assert "disabled" in r.text
 
 
+def test_subir_con_solo_groq_api_key_sigue_deshabilitado(cliente_logueado, monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-9: el pipeline real
+    (core.pipeline.procesar_pdf) solo usa GEMINI_API_KEY -- con otra clave
+    configurada (Groq, o cualquier otra) sola, el botón tiene que seguir
+    deshabilitado, porque cada factura fallaría igual."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "clave-de-groq")
+    r = cliente_logueado.get("/subir")
+    assert "disabled" in r.text
+
+
 def test_subir_archivo_de_mas_de_10mb_se_rechaza_sin_procesar(cliente_logueado, monkeypatch):
     """docs/auditoria-2026-09-web.md, E-4 del plan de arreglos: un PDF
     escaneado sin tope llenaría el plan gratis de Supabase en pocas
@@ -97,6 +108,26 @@ def test_subir_archivo_de_mas_de_10mb_se_rechaza_sin_procesar(cliente_logueado, 
     )
     assert r.status_code == 200
     assert "más de 10 MB" in r.text
+
+
+def test_subir_mas_de_10_archivos_se_rechaza_sin_procesar(cliente_logueado, monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-8: subir muchos archivos juntos es
+    una sola request de varios minutos, expuesta al corte del proxy --
+    mejor pedir subir de a tandas que arriesgar perder el lote entero."""
+
+    def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("no debería intentar leer ningún archivo del lote rechazado")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _no_deberia_llamarse)
+    monkeypatch.setenv("GEMINI_API_KEY", "clave-falsa")
+
+    archivos = [(f"archivo{i}.pdf", b"contenido", "application/pdf") for i in range(11)]
+    r = cliente_logueado.post(
+        "/subir",
+        files=[("archivos", (nombre, contenido, tipo)) for nombre, contenido, tipo in archivos],
+    )
+    assert r.status_code == 200
+    assert "el máximo por tanda es 10" in r.text
 
 
 def test_flujo_completo_subir_revisar_confirmar(cliente_logueado, monkeypatch):

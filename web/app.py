@@ -29,6 +29,7 @@ from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from core.almacenamiento import (
     conectar,
@@ -56,8 +57,6 @@ from core.extraccion.esquema import (
     conceptos_desde_filas,
     montos_desde_filas,
 )
-from core.extraccion.proveedores import RUTA_CONFIGURACION as RUTA_CONFIGURACION_EXTRACCION
-from core.extraccion.proveedores import leer_configuracion
 from core.extraccion.validacion import validar_factura
 from core.formato import pesos_ars
 from core.ingesta.pdf_texto import total_impreso
@@ -73,6 +72,11 @@ TOP_N_CONCEPTOS = 12
 # columna VARCHAR) -- un PDF escaneado sin tope llenaría el plan gratis de
 # Supabase (500 MB) en pocas facturas grandes.
 _TAMANIO_MAXIMO_PDF_BYTES = 10 * 1024 * 1024
+# docs/auditoria-2026-09-web.md, E-8: subir muchas facturas juntas es una
+# sola request de varios minutos (cada una tarda 15-35s contra Gemini,
+# según el banco de medición), expuesta al corte del proxy de Render --
+# mejor pedir subir de a tandas que arriesgar perder el lote entero.
+_MAXIMO_ARCHIVOS_POR_SUBIDA = 10
 
 app = FastAPI(title="Segurplus")
 _RAIZ = Path(__file__).resolve().parent
@@ -81,17 +85,14 @@ templates = Jinja2Templates(directory=_RAIZ / "templates")
 
 
 def _api_key_configurada() -> bool:
-    """True si al menos un proveedor de `data/extraccion.yaml` tiene su
-    variable de entorno configurada -- o si `GEMINI_API_KEY` sola está
-    (compatibilidad con el default de la cascada)."""
-    try:
-        configuraciones = leer_configuracion(RUTA_CONFIGURACION_EXTRACCION)
-    except (OSError, ValueError):
-        return bool(os.environ.get("GEMINI_API_KEY"))
-    return any(
-        c.variable_entorno_clave and os.environ.get(c.variable_entorno_clave)
-        for c in configuraciones
-    )
+    """True si `GEMINI_API_KEY` está configurada -- es la ÚNICA clave que
+    usa `core.pipeline.procesar_pdf` (la cascada de `data/extraccion.yaml`
+    con otros proveedores todavía no está conectada al pipeline real, ver
+    su propio comentario). Antes esta función consideraba "configurado"
+    cualquier proveedor de la cascada, así que con solo `GROQ_API_KEY` el
+    botón de Subir se habilitaba y cada factura fallaba igual
+    (docs/auditoria-2026-09-web.md, E-9)."""
+    return bool(os.environ.get("GEMINI_API_KEY"))
 
 
 def _render(
@@ -185,6 +186,23 @@ def get_subir(request: Request):
 
 @app.post("/subir", response_class=HTMLResponse)
 async def post_subir(request: Request, archivos: list[UploadFile]):
+    if len(archivos) > _MAXIMO_ARCHIVOS_POR_SUBIDA:
+        return _render(
+            request,
+            "subir.html",
+            {
+                "api_key_configurada": _api_key_configurada(),
+                "mensajes": [
+                    (
+                        f"Subiste {len(archivos)} archivos -- el máximo por tanda es "
+                        f"{_MAXIMO_ARCHIVOS_POR_SUBIDA}. Subilos en grupos más chicos.",
+                        "error",
+                    )
+                ],
+            },
+            pagina_activa="subir",
+        )
+
     con = conectar()
     resultados: list[ResultadoPipeline] = []
     try:
@@ -208,7 +226,13 @@ async def post_subir(request: Request, archivos: list[UploadFile]):
                 with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                     tmp.write(contenido)
                     ruta_temporal = Path(tmp.name)
-                resultado = procesar_pdf(ruta_temporal, con)
+                # docs/auditoria-2026-09-web.md, E-8: procesar_pdf es
+                # sincrónico y tarda 15-35s contra Gemini (ver el banco de
+                # medición) -- correrlo directo acá bloquearía el único
+                # event loop del proceso, así que nadie más podría usar la
+                # app mientras tanto. `run_in_threadpool` lo corre en un
+                # hilo aparte sin tocar el resto del código de core/.
+                resultado = await run_in_threadpool(procesar_pdf, ruta_temporal, con)
             except Exception as exc:  # noqa: BLE001 -- un archivo roto no tumba el lote
                 resultado = ResultadoPipeline(
                     Path(archivo.filename or "archivo.pdf"),
