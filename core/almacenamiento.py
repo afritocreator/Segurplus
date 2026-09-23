@@ -96,6 +96,11 @@ CREATE TABLE IF NOT EXISTS conceptos (
 ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS score_homologacion DOUBLE PRECISION;
 ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS motivo_homologacion VARCHAR;
 ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS candidatos_empatados VARCHAR;
+-- docs/auditoria-2026-09-web.md, E-19: lo que sugirió el modelo como
+-- concepto (`core/extraccion/esquema.py::Concepto.concepto_sugerido`), para
+-- poder usarlo de respaldo en `core.pipeline.confirmar_factura` cuando Dice
+-- no homologó nada. Se guarda siempre que llega, homologue o no.
+ALTER TABLE conceptos ADD COLUMN IF NOT EXISTS concepto_sugerido VARCHAR;
 CREATE TABLE IF NOT EXISTS recargos (
     hash_pdf VARCHAR,
     nombre VARCHAR,
@@ -555,9 +560,13 @@ def leer_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: s
         raise ValueError(f"{hash_pdf!r} no es un borrador disponible para confirmar.")
     datos = dict(zip(_CAMPOS_BORRADOR, fila[:-1], strict=True))
     datos["hash_pdf"] = hash_pdf
+    # docs/auditoria-2026-09-web.md, E-19: `concepto_sugerido` va al final,
+    # como sexto campo -- así el resto del código que ya compara estas
+    # tuplas de a 5 (D-4, `lineas_corregidas` en `core/pipeline.py`) sigue
+    # funcionando igual si toma solo `fila[:5]`.
     datos["conceptos"] = con.execute(
-        """SELECT descripcion, cantidad, unidad, precio_unitario, importe FROM conceptos
-           WHERE hash_pdf = ? ORDER BY orden""",
+        """SELECT descripcion, cantidad, unidad, precio_unitario, importe, concepto_sugerido
+           FROM conceptos WHERE hash_pdf = ? ORDER BY orden""",
         [hash_pdf],
     ).fetchall()
     datos["impuestos"] = con.execute(
@@ -972,8 +981,8 @@ def guardar_factura(
             """INSERT INTO conceptos
                (hash_pdf, orden, descripcion, concepto_normalizado, cantidad, unidad,
                 precio_unitario, importe, score_homologacion, motivo_homologacion,
-                candidatos_empatados)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                candidatos_empatados, concepto_sugerido)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 factura.hash_pdf,
                 i,
@@ -986,6 +995,7 @@ def guardar_factura(
                 scores_homologacion.get(i),
                 motivos_homologacion.get(i),
                 candidatos_empatados.get(i),
+                c.concepto_sugerido,
             ],
         )
 

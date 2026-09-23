@@ -694,6 +694,66 @@ def test_confirmar_acota_la_homologacion_al_servicio_de_la_factura(tmp_path):
     con.close()
 
 
+def test_confirmar_usa_concepto_sugerido_cuando_dice_no_homologa(tmp_path):
+    """docs/auditoria-2026-09-web.md, E-19: si Dice no encuentra nada pero
+    el modelo ya había sugerido un concepto al extraer, y esa sugerencia
+    pertenece al diccionario DEL SERVICIO de la factura, se usa de
+    respaldo -- con un motivo distinto, para que quede claro que no vino
+    de Dice."""
+    con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.conceptos = [
+        Concepto(
+            "Descripción rarísima sin ningún alias parecido",
+            1,
+            None,
+            10400.0,
+            10400.0,
+            concepto_sugerido="servicio_telefonia",
+        )
+    ]
+
+    confirmar_factura(con, factura)
+
+    fila = con.execute(
+        "SELECT concepto_normalizado, motivo_homologacion FROM conceptos WHERE hash_pdf = 'h1'"
+    ).fetchone()
+    assert fila == ("servicio_telefonia", "sugerido_por_modelo")
+    con.close()
+
+
+def test_confirmar_descarta_concepto_sugerido_de_otro_servicio(tmp_path):
+    """Una sugerencia del modelo que pertenece a OTRO servicio (acá,
+    "consumo_gas" en una factura de telefonía) no se usa -- mismo criterio
+    que ya aplicaba Dice (A-3): el diccionario se acota por servicio."""
+    con = conectar(tmp_path / "test.duckdb")
+    _dejar_como_borrador(con, "h1")
+    factura = _factura_telefonia_julio()
+    factura.hash_pdf = "h1"
+    factura.ruta_pdf = "/tmp/x.pdf"
+    factura.conceptos = [
+        Concepto(
+            "Descripción rarísima sin ningún alias parecido",
+            1,
+            None,
+            10400.0,
+            10400.0,
+            concepto_sugerido="consumo_gas",
+        )
+    ]
+
+    confirmar_factura(con, factura)
+
+    fila = con.execute(
+        "SELECT concepto_normalizado, motivo_homologacion FROM conceptos WHERE hash_pdf = 'h1'"
+    ).fetchone()
+    assert fila == (None, None)
+    con.close()
+
+
 def test_confirmar_guarda_item_duplicado_como_alerta_y_caso(tmp_path):
     # docs/auditoria-2026-09.md, hallazgo A-6: alertas_por_item_duplicado
     # tiene que correr sobre la factura individual con sus conceptos, y

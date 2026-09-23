@@ -51,6 +51,7 @@ from core.analisis.variacion import top_conceptos_por_variacion
 from core.evidencia import leer_pdf
 from core.extraccion.esquema import (
     SERVICIOS_CONOCIDOS,
+    Concepto,
     Credito,
     FacturaExtraida,
     Impuesto,
@@ -439,7 +440,13 @@ def _filas_desde_factura(factura: FacturaExtraida) -> dict[str, list[dict]]:
 
 
 def _contexto_detalle(
-    hash_pdf: str, datos: dict, *, con, errores_aritmetica: list[str], aritmetica_ok: bool
+    hash_pdf: str,
+    datos: dict,
+    *,
+    con,
+    errores_aritmetica: list[str],
+    aritmetica_ok: bool,
+    mostrar_boton_un_renglon: bool = False,
 ) -> dict:
     filas_conceptos = _filas_con_blancos(
         [
@@ -450,7 +457,7 @@ def _contexto_detalle(
                 "precio_unitario": _num_o_vacio(p),
                 "importe": _num_o_vacio(i),
             }
-            for d, c, u, p, i in datos["conceptos"]
+            for d, c, u, p, i, _sugerido in datos["conceptos"]
         ],
         columnas=("descripcion", "cantidad", "unidad", "precio_unitario", "importe"),
     )
@@ -483,6 +490,7 @@ def _contexto_detalle(
         "filas_creditos": filas_monto("creditos"),
         "errores_aritmetica": errores_aritmetica,
         "aritmetica_ok": aritmetica_ok,
+        "mostrar_boton_un_renglon": mostrar_boton_un_renglon,
     }
 
 
@@ -511,6 +519,57 @@ def get_revisar_detalle(request: Request, hash_pdf: str):
     return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
 
 
+def _puede_cargar_un_renglon(datos: dict) -> bool:
+    """docs/auditoria-2026-09-web.md, E-14: True solo cuando el diseño de
+    gas a dos columnas dejó las líneas de concepto rotas pero el subtotal,
+    el total y el total impreso del PDF sí cierran -- la misma condición
+    que decide si se MUESTRA el botón "Cargar como un solo renglón"
+    (`_contexto_detalle_completo`, más abajo) la usa también
+    `post_un_renglon` para revalidar server-side antes de colapsar las
+    líneas, no solo `datos["servicio"] == "gas"` (eso solo no alcanza:
+    alguien podría armar el POST a mano para una factura de gas cuyo
+    subtotal nunca se validó)."""
+    factura = FacturaExtraida(
+        emisor=datos["emisor"],
+        cuit=datos["cuit"],
+        servicio=datos["servicio"],
+        periodo_desde=datos["periodo_desde"],
+        periodo_hasta=datos["periodo_hasta"],
+        fecha_emision=datos["fecha_emision"],
+        fecha_vencimiento=datos["fecha_vencimiento"],
+        numero_comprobante=datos["numero_comprobante"],
+        moneda=datos["moneda"] or "ARS",
+        conceptos=conceptos_desde_filas(
+            [
+                {"descripcion": d, "cantidad": c, "unidad": u, "precio_unitario": p, "importe": i}
+                for d, c, u, p, i, _sugerido in datos["conceptos"]
+            ]
+        ),
+        impuestos=montos_desde_filas(
+            [{"nombre": n, "importe": i} for n, i in datos["impuestos"]], Impuesto
+        ),
+        recargos=montos_desde_filas(
+            [{"nombre": n, "importe": i} for n, i in datos["recargos"]], Recargo
+        ),
+        creditos=montos_desde_filas(
+            [{"nombre": n, "importe": i} for n, i in datos["creditos"]], Credito
+        ),
+        subtotal=datos["subtotal"],
+        total=datos["total"],
+    )
+    total_impreso_valor = total_impreso(datos["texto_extraido"] or "")
+    resultado = validar_factura(factura, total_impreso=total_impreso_valor)
+    return (
+        datos["servicio"] == "gas"
+        and not resultado.todas_las_lineas_ok
+        and resultado.subtotal_presente
+        and resultado.subtotal_ok
+        and resultado.total_presente
+        and resultado.total_ok
+        and (total_impreso_valor is None or resultado.total_impreso_ok)
+    )
+
+
 def _contexto_detalle_completo(con, hash_pdf: str, datos: dict) -> dict:
     """Arma el contexto completo (incluida la validación aritmética) para
     `revisar_detalle.html` -- separado de `get_revisar_detalle` para que
@@ -530,7 +589,7 @@ def _contexto_detalle_completo(con, hash_pdf: str, datos: dict) -> dict:
         conceptos=conceptos_desde_filas(
             [
                 {"descripcion": d, "cantidad": c, "unidad": u, "precio_unitario": p, "importe": i}
-                for d, c, u, p, i in datos["conceptos"]
+                for d, c, u, p, i, _sugerido in datos["conceptos"]
             ]
         ),
         impuestos=montos_desde_filas(
@@ -564,7 +623,12 @@ def _contexto_detalle_completo(con, hash_pdf: str, datos: dict) -> dict:
         errores.append(f"En el PDF dice un total distinto: {pesos_ars(total_impreso_valor)}.")
 
     return _contexto_detalle(
-        hash_pdf, datos, con=con, errores_aritmetica=errores, aritmetica_ok=resultado.factura_valida
+        hash_pdf,
+        datos,
+        con=con,
+        errores_aritmetica=errores,
+        aritmetica_ok=resultado.factura_valida,
+        mostrar_boton_un_renglon=_puede_cargar_un_renglon(datos),
     )
 
 
@@ -745,6 +809,89 @@ async def post_guardar(request: Request, hash_pdf: str):
             motivo_carga=datos["motivo_carga"],
             actor=request.state.sesion["usuario"],
         )
+    finally:
+        con.close()
+    return RedirectResponse(f"/revisar/{hash_pdf}", status_code=303)
+
+
+def _cantidad_m3_conocida(conceptos: list[tuple]) -> float | None:
+    """docs/auditoria-2026-09-web.md, E-14: cuántos m³ se consumieron, SOLO
+    si todas las líneas del borrador ya miden en m³ (o "m3") -- si mezclan
+    unidades o falta alguna cantidad, no hay una cifra confiable que sumar,
+    y se prefiere dejarla sin dato antes que inventar un número."""
+    cantidades = []
+    for _descripcion, cantidad, unidad, _precio, _importe, _sugerido in conceptos:
+        unidad_normalizada = (unidad or "").strip().lower().replace("³", "3")
+        if unidad_normalizada != "m3" or cantidad is None:
+            return None
+        cantidades.append(cantidad)
+    return sum(cantidades) if cantidades else None
+
+
+def _factura_como_un_renglon(hash_pdf: str, datos: dict) -> FacturaExtraida:
+    """docs/auditoria-2026-09-web.md, E-14: reemplaza TODAS las líneas de
+    concepto del borrador por una sola ("Consumo de gas") con el subtotal
+    ya validado -- se pierde el detalle línea por línea, que en el layout
+    de gas a dos columnas de todos modos no era confiable."""
+    subtotal = datos["subtotal"]
+    cantidad_m3 = _cantidad_m3_conocida(datos["conceptos"])
+    if cantidad_m3:
+        concepto = Concepto("Consumo de gas", cantidad_m3, "m³", subtotal / cantidad_m3, subtotal)
+    else:
+        concepto = Concepto("Consumo de gas", 1.0, None, subtotal, subtotal)
+    return FacturaExtraida(
+        emisor=datos["emisor"],
+        cuit=datos["cuit"],
+        servicio=datos["servicio"],
+        periodo_desde=datos["periodo_desde"],
+        periodo_hasta=datos["periodo_hasta"],
+        fecha_emision=datos["fecha_emision"],
+        fecha_vencimiento=datos["fecha_vencimiento"],
+        numero_comprobante=datos["numero_comprobante"],
+        moneda=datos["moneda"] or "ARS",
+        conceptos=[concepto],
+        impuestos=montos_desde_filas(
+            [{"nombre": n, "importe": i} for n, i in datos["impuestos"]], Impuesto
+        ),
+        recargos=montos_desde_filas(
+            [{"nombre": n, "importe": i} for n, i in datos["recargos"]], Recargo
+        ),
+        creditos=montos_desde_filas(
+            [{"nombre": n, "importe": i} for n, i in datos["creditos"]], Credito
+        ),
+        subtotal=subtotal,
+        total=datos["total"],
+        hash_pdf=hash_pdf,
+        ruta_pdf=datos["ruta_pdf"],
+        ruta_evidencia=datos["ruta_evidencia"],
+        modelo_extraccion=datos["modelo_extraccion"],
+        version_prompt=datos["version_prompt"],
+        version_esquema=datos["version_esquema"],
+        respuesta_extraida=datos["respuesta_extraida"],
+    )
+
+
+@app.post("/revisar/{hash_pdf}/un_renglon")
+def post_un_renglon(request: Request, hash_pdf: str):
+    con = conectar()
+    try:
+        datos = _leer_borrador_o_none(con, hash_pdf)
+        if datos is None:
+            return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
+        # Mismo criterio que decide si se MUESTRA el botón
+        # (`_puede_cargar_un_renglon`) -- se revalida acá server side, no
+        # solo en el template, por si alguien arma el POST a mano para una
+        # factura de gas cuyo subtotal nunca se validó.
+        if _puede_cargar_un_renglon(datos):
+            factura = _factura_como_un_renglon(hash_pdf, datos)
+            guardar_factura(
+                con,
+                factura,
+                estado="borrador",
+                texto_extraido=datos["texto_extraido"],
+                motivo_carga=datos["motivo_carga"],
+                actor=request.state.sesion["usuario"],
+            )
     finally:
         con.close()
     return RedirectResponse(f"/revisar/{hash_pdf}", status_code=303)

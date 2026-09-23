@@ -138,12 +138,28 @@
       {% if aritmetica_ok %}
         <div class="aviso exito">La aritmética cierra.</div>
       {% endif %}
+      {% if mostrar_boton_un_renglon %}
+        <div class="aviso info">
+          El subtotal y el total coinciden con el PDF, pero las líneas de concepto no --
+          layout conocido de gas a dos columnas, difícil de leer bien línea por línea.
+        </div>
+      {% endif %}
 
       <div style="display:flex;gap:0.75rem;margin-top:1rem;">
         <button type="submit" class="primario">Confirmar factura</button>
         <button type="submit" formaction="/revisar/{{ hash_pdf }}/guardar">Guardar cambios sin confirmar</button>
       </div>
     </form>
+
+    {% if mostrar_boton_un_renglon %}
+    <form method="post" action="/revisar/{{ hash_pdf }}/un_renglon" style="margin-top:0.75rem;">
+      <button type="submit">Cargar como un solo renglón</button>
+      <span style="color:var(--gris);font-size:0.85rem;">
+        Reemplaza los conceptos por uno solo ("Consumo de gas") con el subtotal ya
+        validado -- se pierde el detalle línea por línea.
+      </span>
+    </form>
+    {% endif %}
 
     <form method="post" action="/revisar/{{ hash_pdf }}/descartar" style="margin-top:0.75rem;"
           onsubmit="return confirm('¿Borrar este borrador por completo?');">

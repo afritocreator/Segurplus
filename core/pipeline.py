@@ -319,7 +319,16 @@ def confirmar_factura(
         for campo in _CAMPOS_CABECERA_CORREGIBLE
         if getattr(factura, campo) != datos_borrador[campo]
     ]
-    conceptos_viejos = datos_borrador["conceptos"]
+    # docs/auditoria-2026-09-web.md, E-19: `datos_borrador["conceptos"]`
+    # ahora trae `concepto_sugerido` como sexto campo -- se separa acá
+    # (`conceptos_viejos` se queda con los primeros 5, para que esta
+    # comparación siga siendo la misma de siempre) y se usa más abajo,
+    # de respaldo cuando Dice no homologa nada.
+    conceptos_viejos_completos = datos_borrador["conceptos"]
+    conceptos_viejos = [fila[:5] for fila in conceptos_viejos_completos]
+    sugeridos_por_indice = {
+        i: fila[5] for i, fila in enumerate(conceptos_viejos_completos) if fila[5]
+    }
     conceptos_nuevos = [
         (c.descripcion, c.cantidad, c.unidad, c.precio_unitario, c.importe)
         for c in factura.conceptos
@@ -350,6 +359,19 @@ def confirmar_factura(
             candidatos_empatados[i] = ", ".join(resultado_homologacion.candidatos_empatados)
         if resultado_homologacion.concepto:
             conceptos_normalizados[i] = resultado_homologacion.concepto
+        else:
+            # docs/auditoria-2026-09-web.md, E-19: Dice no encontró nada,
+            # pero el modelo ya había sugerido un concepto al extraer
+            # (`c.concepto_sugerido`, o el que quedó guardado en el
+            # borrador si la línea no se tocó al confirmar). Se usa SOLO
+            # si esa sugerencia pertenece al diccionario DEL SERVICIO de
+            # esta factura -- una sugerencia de otro servicio (o de un
+            # slug que ya no existe en `data/conceptos/*.yaml`) se
+            # descarta, no se homologa a ciegas.
+            sugerido = c.concepto_sugerido or sugeridos_por_indice.get(i)
+            if sugerido and sugerido in diccionario_a_usar:
+                conceptos_normalizados[i] = sugerido
+                motivos_homologacion[i] = "sugerido_por_modelo"
 
     estado = "requiere_revision" if revision_humana_obligatoria() else "aprobada"
     motivo_decision = "confirmado"

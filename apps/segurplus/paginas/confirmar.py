@@ -244,7 +244,13 @@ try:
         )
 
         st.subheader("Conceptos")
-        df_conceptos = _editor_conceptos(datos["conceptos"], key=f"conceptos_{hash_pdf}")
+        # docs/auditoria-2026-09-web.md, E-19: `datos["conceptos"]` ahora
+        # trae `concepto_sugerido` como sexto campo (lo usa
+        # `core.pipeline.confirmar_factura` de respaldo) -- el editor de
+        # Streamlit no lo muestra, se recorta acá.
+        df_conceptos = _editor_conceptos(
+            [fila[:5] for fila in datos["conceptos"]], key=f"conceptos_{hash_pdf}"
+        )
 
         st.subheader("Impuestos")
         df_impuestos = _editor_montos(

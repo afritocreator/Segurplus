@@ -120,7 +120,7 @@ def test_leer_borrador_trae_cabecera_y_lineas(tmp_path):
 
     assert datos["emisor"] == "Movistar"
     assert datos["texto_extraido"] == "TOTAL A PAGAR $ 12.100,00"
-    assert datos["conceptos"] == [("Abono", 4.0, "línea", 2500.0, 10000.0)]
+    assert datos["conceptos"] == [("Abono", 4.0, "línea", 2500.0, 10000.0, None)]
     assert datos["impuestos"] == [("IVA 21%", 2100.0)]
     assert datos["recargos"] == []
     assert datos["creditos"] == []

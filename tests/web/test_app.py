@@ -97,6 +97,171 @@ def test_revisar_sin_borradores_muestra_mensaje(cliente_logueado):
     assert "No hay facturas esperando confirmación" in r.text
 
 
+def _borrador_gas_con_lineas_rotas(con, hash_pdf: str) -> None:
+    """docs/auditoria-2026-09-web.md, E-14: subtotal y total cierran, pero
+    ninguna línea de concepto cierra sola (cantidad × precio ≠ importe) --
+    el caso que el layout a dos columnas de gas deja, según la auditoría.
+    subtotal = 100 + 200 = 300; total = 300 + 63 (IVA) = 363."""
+    factura = FacturaExtraida(
+        emisor="Gasista S.A.",
+        cuit="30-2",
+        servicio="gas",
+        periodo_desde="2026-07-01",
+        periodo_hasta="2026-07-31",
+        fecha_emision="2026-08-01",
+        fecha_vencimiento=None,
+        numero_comprobante="G-1",
+        moneda="ARS",
+        conceptos=[
+            Concepto("Columna izquierda", 1, "m3", 999.0, 100.0),
+            Concepto("Columna derecha", 1, "m3", 999.0, 200.0),
+        ],
+        impuestos=[Impuesto("IVA 21%", importe=63.0)],
+        subtotal=300.0,
+        total=363.0,
+        hash_pdf=hash_pdf,
+    )
+    almacenamiento_mod.guardar_factura(con, factura, estado="borrador")
+
+
+def test_revisar_detalle_de_gas_con_lineas_rotas_ofrece_un_solo_renglon(cliente_logueado):
+    con = almacenamiento_mod.conectar()
+    try:
+        _borrador_gas_con_lineas_rotas(con, "g1")
+    finally:
+        con.close()
+
+    r = cliente_logueado.get("/revisar/g1")
+    assert "Cargar como un solo renglón" in r.text
+
+
+def test_revisar_detalle_no_ofrece_un_solo_renglon_para_otro_servicio(cliente_logueado):
+    """El botón es específico de gas (E-14) -- el mismo problema de líneas
+    rotas en otro servicio no lo dispara."""
+    con = almacenamiento_mod.conectar()
+    try:
+        factura = FacturaExtraida(
+            emisor="P",
+            cuit="30-1",
+            servicio="energia",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="A-1",
+            moneda="ARS",
+            conceptos=[Concepto("Cargo fijo", 1, None, 999.0, 100.0)],
+            subtotal=100.0,
+            total=100.0,
+            hash_pdf="e1",
+        )
+        almacenamiento_mod.guardar_factura(con, factura, estado="borrador")
+    finally:
+        con.close()
+
+    r = cliente_logueado.get("/revisar/e1")
+    assert "Cargar como un solo renglón" not in r.text
+
+
+def test_un_renglon_deja_la_aritmetica_cerrada_con_cantidad_en_m3(cliente_logueado):
+    con = almacenamiento_mod.conectar()
+    try:
+        _borrador_gas_con_lineas_rotas(con, "g1")
+    finally:
+        con.close()
+
+    r = cliente_logueado.post("/revisar/g1/un_renglon", follow_redirects=False)
+    assert r.status_code == 303
+
+    r = cliente_logueado.get("/revisar/g1")
+    assert "La aritmética cierra." in r.text
+    assert "Consumo de gas" in r.text
+    # cantidad_m3 = 1 + 1 = 2 (las dos líneas rotas ya median en m3)
+    assert "2" in r.text
+
+
+def test_un_renglon_sin_unidad_m3_usa_cantidad_uno(cliente_logueado):
+    """Rama sin unidad m3 conocida de `_factura_como_un_renglon`: sin una
+    cantidad confiable que sumar, el renglón único queda con cantidad 1 y
+    precio_unitario = subtotal -- nunca se inventa un m³ que no se sabe."""
+    con = almacenamiento_mod.conectar()
+    try:
+        factura = FacturaExtraida(
+            emisor="Gasista S.A.",
+            cuit="30-2",
+            servicio="gas",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="G-2",
+            moneda="ARS",
+            conceptos=[
+                Concepto("Columna izquierda", 1, None, 999.0, 100.0),
+                Concepto("Columna derecha", 1, "m3", 999.0, 200.0),
+            ],
+            impuestos=[Impuesto("IVA 21%", importe=63.0)],
+            subtotal=300.0,
+            total=363.0,
+            hash_pdf="g2",
+        )
+        almacenamiento_mod.guardar_factura(con, factura, estado="borrador")
+    finally:
+        con.close()
+
+    r = cliente_logueado.post("/revisar/g2/un_renglon", follow_redirects=False)
+    assert r.status_code == 303
+
+    con = almacenamiento_mod.conectar()
+    try:
+        fila = con.execute(
+            "SELECT cantidad, unidad, precio_unitario, importe FROM conceptos WHERE hash_pdf = 'g2'"
+        ).fetchone()
+    finally:
+        con.close()
+    assert fila == (1.0, None, 300.0, 300.0)
+
+
+def test_un_renglon_no_hace_nada_si_la_factura_no_califica(cliente_logueado):
+    """docs/auditoria-2026-09-web.md, E-14: `post_un_renglon` revalida
+    server-side las mismas condiciones que muestran el botón -- un POST a
+    mano contra una factura de gas que SÍ cierra línea por línea (no
+    debería mostrar el botón) no debe tocar nada."""
+    con = almacenamiento_mod.conectar()
+    try:
+        factura = FacturaExtraida(
+            emisor="Gasista S.A.",
+            cuit="30-2",
+            servicio="gas",
+            periodo_desde="2026-07-01",
+            periodo_hasta="2026-07-31",
+            fecha_emision="2026-08-01",
+            fecha_vencimiento=None,
+            numero_comprobante="G-3",
+            moneda="ARS",
+            conceptos=[Concepto("Consumo de gas", 10, "m3", 30.0, 300.0)],
+            impuestos=[Impuesto("IVA 21%", importe=63.0)],
+            subtotal=300.0,
+            total=363.0,
+            hash_pdf="g3",
+        )
+        almacenamiento_mod.guardar_factura(con, factura, estado="borrador")
+    finally:
+        con.close()
+
+    r = cliente_logueado.post("/revisar/g3/un_renglon", follow_redirects=False)
+    assert r.status_code == 303
+
+    con = almacenamiento_mod.conectar()
+    try:
+        filas = con.execute(
+            "SELECT descripcion, cantidad FROM conceptos WHERE hash_pdf = 'g3'"
+        ).fetchall()
+    finally:
+        con.close()
+    assert filas == [("Consumo de gas", 10.0)]  # sin cambios
+
+
 def test_ver_sin_facturas_aprobadas_muestra_mensaje(cliente_logueado):
     r = cliente_logueado.get("/ver")
     assert "Todavía no hay facturas cargadas" in r.text
