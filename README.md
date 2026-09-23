@@ -66,6 +66,37 @@ Abrí `http://localhost:8000`. Reemplaza al tablero Streamlit (ver
 `docs/decisiones/ADR-005-fastapi-y-render.md`) -- Streamlit sigue andando en paralelo
 hasta que esta versión pase el recorrido manual completo.
 
+## Desplegar la web nueva en Render (gratis)
+
+`render.yaml` (blueprint) arma el servicio solo -- no hay nada que configurar a mano en
+la consola salvo los secrets:
+
+1. En [render.com](https://render.com) → **New** → **Blueprint** → conectar el repo
+   `afritocreator/Segurplus`. Render lee `render.yaml` y crea el servicio
+   `segurplus-web` (plan gratis).
+2. Cargar en el panel de Render (Environment) las variables marcadas `sync: false` en
+   `render.yaml`: `APP_PASSWORD`, `GEMINI_API_KEY`, y `DATABASE_URL` si se usa Postgres
+   (sin ella, la app usa DuckDB local -- ver "El PDF original y la base" más abajo).
+   `SECRET_KEY` la genera Render sola (`generateValue: true`), no hace falta cargarla.
+3. Deploy. Con `autoDeploy: true`, cada push a la rama de `render.yaml` (hoy
+   `claude/invoice-analysis-automation-7axk9u`, `main` cuando se mergee -- ver más
+   abajo) dispara un deploy solo; mientras tanto, después de cada push hay que apretar
+   **Manual Deploy** en el panel.
+
+**Actualizar después de mergear a `main`**: cambiar `branch:` en `render.yaml` (y
+volver a conectar el blueprint, o editar el servicio en el panel de Render) para que
+apunte a `main` en vez de la rama de trabajo -- Render no lo hace solo.
+
+**El PDF original y la base**: sin `S3_BUCKET` ni un disco persistente montado (Render
+free no tiene disco persistente), el PDF se guarda directamente en la misma base de
+datos (`core/evidencia.py`, ver ADR-003) -- no hace falta configurar nada aparte para
+que **Revisar** pueda mostrar la factura al lado del formulario.
+
+**Seguridad**: sin `APP_PASSWORD` o sin `SECRET_KEY` configuradas, el login se niega
+con un mensaje en vez de mostrar la app sin protección (`SEGURPLUS_DEV=1` salta esto,
+solo para desarrollo local). El login también corta después de 5 intentos fallidos
+cada 15 minutos por IP.
+
 ## Correr el tablero Streamlit (versión anterior, en proceso de reemplazo)
 
 ```bash
@@ -212,8 +243,9 @@ dupliquen. El día que haga falta que también sea durable, un bucket S3 compati
 - `core/deflactor/`, `core/macro/` — copiados de Consultora (ajuste por IPC).
 - `core/almacenamiento.py` — Postgres (gratis, Neon/Supabase) en producción y DuckDB
   local en desarrollo; conserva decisiones, correcciones y casos operativos.
-- `core/evidencia.py` — PDF original: carpeta local por defecto, bucket S3 compatible
-  opcional (extra `s3`).
+- `core/evidencia.py` — PDF original: bucket S3 si está configurado (`S3_BUCKET`,
+  extra `s3`), si no una carpeta local (`EVIDENCIA_DIR`), y si no hay ninguna de las
+  dos (caso de Render, sin disco persistente), la misma base de datos.
 - `core/operacion.py` — parámetros operativos del piloto (`data/operacion.yaml`), como
   si la revisión humana es obligatoria.
 - `apps/segurplus/estilo.py` — paleta institucional y formato compartido de los gráficos.

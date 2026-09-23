@@ -10,15 +10,17 @@ acá, todo pasa por `core/`. Corré con:
 
     uvicorn web.app:app --reload
 
-Variables de entorno: `APP_PASSWORD` (obligatoria salvo `SEGURPLUS_DEV=1`),
-`SECRET_KEY` (firma de la cookie de sesión), `GEMINI_API_KEY` (o lo que
-pida `data/extraccion.yaml`), `DATABASE_URL` (Postgres, opcional -- sin
-ella usa DuckDB local, igual que el tablero Streamlit)."""
+Variables de entorno: `APP_PASSWORD` y `SECRET_KEY` (firma de la cookie de
+sesión) -- las dos obligatorias salvo `SEGURPLUS_DEV=1` (ver
+docs/auditoria-2026-09-web.md, E-17) --, `GEMINI_API_KEY` (o lo que pida
+`data/extraccion.yaml`), `DATABASE_URL` (Postgres, opcional -- sin ella usa
+DuckDB local, igual que el tablero Streamlit)."""
 
 from __future__ import annotations
 
 import os
 import tempfile
+import time
 from collections import Counter
 from datetime import date
 from io import BytesIO
@@ -64,7 +66,13 @@ from core.macro.ipc import leer_ipc
 from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf
 from core.relato import DatosRelato, generar_relato_determinista
 from core.reportes.excel import generar_reporte_excel
-from web.auth import NOMBRE_COOKIE, contrasena_configurada, intentar_login, leer_sesion
+from web.auth import (
+    NOMBRE_COOKIE,
+    contrasena_configurada,
+    intentar_login,
+    leer_sesion,
+    secret_key_configurada,
+)
 from web.comparacion import calcular_comparacion
 
 TOP_N_CONCEPTOS = 12
@@ -128,6 +136,25 @@ async def _gate_de_sesion(request: Request, call_next):
     return await call_next(request)
 
 
+# docs/auditoria-2026-09-web.md, E-18: 5 intentos fallidos cada 15 minutos
+# por IP, en memoria -- alcanza porque el plan gratis de Render corre un
+# solo proceso. Se pierde si el proceso se reinicia (no es defensa contra
+# un atacante con muchas IP, es contra probar contraseñas a mano o con un
+# script simple).
+_VENTANA_INTENTOS_SEGUNDOS = 15 * 60
+_MAXIMO_INTENTOS_FALLIDOS = 5
+_intentos_fallidos_por_ip: dict[str, list[float]] = {}
+
+
+def _intentos_recientes(ip: str) -> list[float]:
+    ahora = time.monotonic()
+    intentos = [
+        t for t in _intentos_fallidos_por_ip.get(ip, []) if ahora - t < _VENTANA_INTENTOS_SEGUNDOS
+    ]
+    _intentos_fallidos_por_ip[ip] = intentos
+    return intentos
+
+
 @app.get("/login", response_class=HTMLResponse)
 def get_login(request: Request):
     if request.state.sesion:
@@ -137,26 +164,61 @@ def get_login(request: Request):
 
 @app.post("/login")
 def post_login(request: Request, contrasena: str = Form(...)):
+    falta = []
     if not contrasena_configurada() and os.environ.get("SEGURPLUS_DEV") != "1":
+        falta.append("APP_PASSWORD")
+    if not secret_key_configurada() and os.environ.get("SEGURPLUS_DEV") != "1":
+        falta.append("SECRET_KEY")
+    if falta:
         return _render(
             request,
             "login.html",
             {
                 "mensajes": [
                     (
-                        "Falta configurar APP_PASSWORD. Por seguridad, la app no se "
-                        "muestra sin contraseña (para desarrollo local, definí "
+                        f"Falta configurar {' y '.join(falta)}. Por seguridad, la app no "
+                        "se muestra sin eso (para desarrollo local, definí "
                         "SEGURPLUS_DEV=1).",
                         "error",
                     )
                 ]
             },
         )
+
+    ip = request.client.host if request.client else "desconocida"
+    if len(_intentos_recientes(ip)) >= _MAXIMO_INTENTOS_FALLIDOS:
+        return _render(
+            request,
+            "login.html",
+            {
+                "mensajes": [
+                    (
+                        "Demasiados intentos fallidos. Esperá unos minutos antes de "
+                        "volver a probar.",
+                        "error",
+                    )
+                ]
+            },
+        )
+
     cookie = intentar_login(contrasena)
     if cookie is None:
+        _intentos_fallidos_por_ip.setdefault(ip, []).append(time.monotonic())
         return _render(request, "login.html", {"mensajes": [("Contraseña incorrecta.", "error")]})
+    _intentos_fallidos_por_ip.pop(ip, None)
     respuesta = RedirectResponse("/subir", status_code=303)
-    respuesta.set_cookie(NOMBRE_COOKIE, cookie, httponly=True, samesite="lax")
+    # docs/auditoria-2026-09-web.md, E-18: `secure=True` cuando la request
+    # llegó por HTTPS -- detrás del proxy de Render, `request.url.scheme`
+    # solo refleja eso si uvicorn arranca con `--proxy-headers` (ver
+    # render.yaml). En desarrollo local (HTTP puro) `secure=False`, si no
+    # el navegador nunca mandaría la cookie de vuelta.
+    respuesta.set_cookie(
+        NOMBRE_COOKIE,
+        cookie,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
     return respuesta
 
 

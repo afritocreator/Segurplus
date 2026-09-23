@@ -561,3 +561,52 @@ mano).
   Streamlit y mejorar la estética ahí. Si alguna vez se reconsidera, la arquitectura
   recomendada es Next.js + `core/` en Python detrás de una API, no portar la lógica a
   TypeScript (son ~2400 líneas con más de 250 tests y revisión financiera).
+
+## Actualización 2026-09-23: auditoría del rediseño web (E-1 a E-24) y su arreglo
+
+`docs/auditoria-2026-09-web.md` auditó `web/` recién rediseñada (24 hallazgos: 7 altos,
+9 medios, 8 bajos) y `docs/decisiones/ADR-003-persistencia-durable.md` (segundo
+addendum) documenta el más grande de los cambios de infraestructura. El plan de
+arreglos se ejecuta en 8 bloques, un commit por bloque, con `pytest`/`ruff` verdes
+antes de cada uno:
+
+- **Bloque 1 (E-1, E-2, E-3)** -- el párrafo en castellano (`core/relato.py`) ya no lo
+  reescribe un modelo de lenguaje sin control (`redactar_con_modelo` se borró): sale
+  entero de una plantilla determinística, con la dirección real de cada efecto (antes
+  podía decir "subió" cuando en realidad bajó) y separando la causa en consumos de la
+  causa en impuestos/recargos/créditos (antes se le atribuía a "consumo" un aumento que
+  en realidad era un impuesto nuevo).
+- **Bloque 2 (E-5, E-11)** -- pantalla y Excel comparten un solo cálculo
+  (`web/comparacion.py::calcular_comparacion`), así que ya no pueden mostrar alertas
+  distintas para el mismo par de períodos; una inflación desconocida (`None`) dejó de
+  tratarse como 0% al armar la alerta de precio-sobre-IPC.
+- **Bloque 3 (E-4)** -- el PDF cae a la misma base de datos cuando no hay S3 ni disco
+  persistente (Render no tiene ninguno de los dos por defecto) -- ver el addendum de
+  ADR-003 de esta misma fecha.
+- **Bloque 4 (E-6, E-8, E-9, E-20, E-21)** -- `procesar_pdf` reintenta solo los errores
+  transitorios de Gemini (503/429/timeout), hasta 3 veces; la subida corre en un
+  threadpool para no congelar el servidor mientras Gemini responde; Groq se sacó de
+  `data/extraccion.yaml` por decisión del usuario (no por falla técnica, ver la
+  actualización 2026-09-23 de más arriba).
+- **Bloque 5 (E-10, E-12, E-13, E-15, E-22)** -- avisos visibles después de
+  confirmar/descartar (la cookie `flash` no la leía nadie); Ver con un solo período
+  muestra un resumen en vez de solo pedir cargar dos meses; nombres de servicio y
+  fechas en castellano llano (`core/formato.py`) en vez de slugs/ISO; sin 500 por doble
+  click o botón atrás; se sacó un efecto secundario de un GET.
+- **Bloque 6 (E-16, E-17, E-18, E-23)** -- `SECRET_KEY` obligatoria para armar cookies
+  de sesión (antes tenía una clave de respaldo hardcodeada pese a que el comentario
+  decía lo contrario); login con límite de 5 intentos fallidos cada 15 minutos por IP;
+  cookie de sesión con `secure=True` quedó lista para cuando la request llega por HTTPS
+  (Render, con `--proxy-headers`); `render.yaml` sin `GROQ_API_KEY`, con
+  `PYTHON_VERSION` fijada y auto-deploy activado; esta sección y el README documentan
+  el deploy.
+- **Bloques 7 y 8**: en curso -- ver `docs/auditoria-2026-09-web.md` para el detalle de
+  cada hallazgo y qué commit lo resolvió.
+- **Pendiente, sin hacer a propósito**: mover `streamlit`/`pandas` a un extra opcional
+  de `pyproject.toml` (para que Render no los instale) queda anotado, no hecho -- el
+  tablero Streamlit sigue desplegado en Streamlit Community Cloud (ver "Publicar en
+  Streamlit Community Cloud" del README) y no se pudo confirmar desde acá cómo hace
+  esa plataforma el install (si lee `requirements.txt`/`pyproject.toml` directo, mover
+  las dependencias a un extra podría romper ese deploy sin que se note hasta el
+  próximo reinicio). Confirmar el mecanismo de instalación de Streamlit Cloud antes de
+  tocar esto.

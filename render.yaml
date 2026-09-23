@@ -10,16 +10,21 @@ services:
     runtime: python
     plan: free
     branch: claude/invoice-analysis-automation-7axk9u
+    autoDeploy: true
     buildCommand: pip install -e .
-    startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT
+    # --proxy-headers: docs/auditoria-2026-09-web.md, E-18 -- sin esto,
+    # uvicorn no ve que la request original llegó por HTTPS (Render
+    # termina el TLS en su proxy), y la cookie de sesión nunca saldría
+    # con `secure=True`.
+    startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT --proxy-headers
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: SECRET_KEY
         generateValue: true
       - key: APP_PASSWORD
         sync: false
       - key: GEMINI_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
         sync: false
       - key: DATABASE_URL
         sync: false

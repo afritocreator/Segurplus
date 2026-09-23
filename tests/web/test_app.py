@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 
 import core.almacenamiento as almacenamiento_mod
 import core.pipeline as pipeline_mod
+import web.app as web_app_mod
 from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto, Recargo
 from core.pipeline import confirmar_factura
 from web.app import app
@@ -29,6 +30,11 @@ def _base_de_prueba(tmp_path, monkeypatch):
     monkeypatch.setattr(almacenamiento_mod, "RUTA_BASE", tmp_path / "test.duckdb")
     monkeypatch.setenv("APP_PASSWORD", "clave-de-test")
     monkeypatch.setenv("SECRET_KEY", "clave-de-firma-test")
+    # docs/auditoria-2026-09-web.md, E-18: el contador de intentos
+    # fallidos es un dict a nivel de módulo -- sin limpiarlo, un test de
+    # rate-limiting dejaría "envenenada" la IP de test para los que
+    # corren después.
+    web_app_mod._intentos_fallidos_por_ip.clear()
 
 
 @pytest.fixture
@@ -49,6 +55,29 @@ def test_login_incorrecto_muestra_error():
     cliente = TestClient(app)
     r = cliente.post("/login", data={"contrasena": "mal"})
     assert "Contraseña incorrecta" in r.text
+
+
+def test_login_sin_secret_key_muestra_error(monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-17: sin SECRET_KEY (y sin
+    SEGURPLUS_DEV=1) el login se niega con un mensaje, igual que ya pasa
+    sin APP_PASSWORD -- no arma cookies con una clave de respaldo fija."""
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    cliente = TestClient(app)
+    r = cliente.post("/login", data={"contrasena": "clave-de-test"})
+    assert "Falta configurar" in r.text
+    assert "SECRET_KEY" in r.text
+
+
+def test_login_con_seis_intentos_fallidos_bloquea_el_septimo():
+    """docs/auditoria-2026-09-web.md, E-18: 5 intentos fallidos cada 15
+    minutos por IP -- el sexto (con contraseña correcta o no) se rechaza
+    sin ni siquiera comparar la contraseña."""
+    cliente = TestClient(app)
+    for _ in range(5):
+        r = cliente.post("/login", data={"contrasena": "mal"})
+        assert "Demasiados intentos" not in r.text
+    r = cliente.post("/login", data={"contrasena": "clave-de-test"})
+    assert "Demasiados intentos" in r.text
 
 
 def test_login_correcto_da_acceso(cliente_logueado):

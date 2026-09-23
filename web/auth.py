@@ -23,11 +23,25 @@ NOMBRE_COOKIE = "segurplus_sesion"
 DURACION_SEGUNDOS = 4 * 60 * 60
 
 
+def secret_key_configurada() -> str | None:
+    return os.environ.get("SECRET_KEY")
+
+
 def _serializador() -> URLSafeTimedSerializer:
-    # SECRET_KEY nunca hardcodeada -- si falta, cada reinicio del servidor
-    # invalida las cookies existentes (todo el mundo tiene que loguearse de
-    # nuevo), pero no hay una clave fija en el código para forjar cookies.
-    clave = os.environ.get("SECRET_KEY") or "clave-de-desarrollo-local-no-usar-en-produccion"
+    # docs/auditoria-2026-09-web.md, E-17: antes había una clave fija de
+    # respaldo si faltaba SECRET_KEY -- el comentario decía "nunca
+    # hardcodeada" pero la clave hardcodeada estaba ahí mismo, dos líneas
+    # abajo. Sin SECRET_KEY (y sin SEGURPLUS_DEV=1) no se arma ninguna
+    # cookie: mismo criterio que ya usa APP_PASSWORD en `post_login`.
+    clave = secret_key_configurada()
+    if not clave:
+        if os.environ.get("SEGURPLUS_DEV") == "1":
+            clave = "clave-de-desarrollo-local-no-usar-en-produccion"
+        else:
+            raise RuntimeError(
+                "Falta SECRET_KEY. Por seguridad, la app no arma cookies de sesión sin "
+                "ella (para desarrollo local, definí SEGURPLUS_DEV=1)."
+            )
     return URLSafeTimedSerializer(clave, salt="segurplus-sesion")
 
 
@@ -41,8 +55,14 @@ def crear_cookie_sesion(*, usuario: str, rol: str) -> str:
 
 def leer_sesion(valor_cookie: str | None) -> dict | None:
     """`{"usuario": ..., "rol": ...}` si la cookie es válida y no expiró,
-    `None` en cualquier otro caso (cookie ausente, forjada, o vieja)."""
+    `None` en cualquier otro caso (cookie ausente, forjada, vieja, o sin
+    SECRET_KEY configurada). Se llama en cada request que llega al
+    servidor (`_gate_de_sesion`), así que nunca puede levantar una
+    excepción por falta de configuración -- eso lo reporta `post_login`,
+    donde sí hay una pantalla para mostrar el error."""
     if not valor_cookie:
+        return None
+    if not secret_key_configurada() and os.environ.get("SEGURPLUS_DEV") != "1":
         return None
     try:
         return _serializador().loads(valor_cookie, max_age=DURACION_SEGUNDOS)

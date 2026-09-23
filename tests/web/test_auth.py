@@ -1,12 +1,50 @@
 """Tests de web/auth.py: la cookie de sesión firmada -- equivalente HTTP
 del `st.session_state` que usaba `apps/segurplus/autenticacion.py`."""
 
-from web.auth import contrasena_configurada, crear_cookie_sesion, intentar_login, leer_sesion
+import pytest
+
+from web.auth import (
+    contrasena_configurada,
+    crear_cookie_sesion,
+    intentar_login,
+    leer_sesion,
+    secret_key_configurada,
+)
 
 
 def test_sin_app_password_no_hay_contrasena_configurada(monkeypatch):
     monkeypatch.delenv("APP_PASSWORD", raising=False)
     assert contrasena_configurada() is None
+
+
+def test_sin_secret_key_no_hay_clave_configurada(monkeypatch):
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    assert secret_key_configurada() is None
+
+
+def test_sin_secret_key_ni_dev_crear_cookie_sesion_no_arma_nada(monkeypatch):
+    """docs/auditoria-2026-09-web.md, E-17: antes había una clave de firma
+    fija de respaldo si faltaba SECRET_KEY -- ahora directamente no se
+    arma la cookie."""
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("SEGURPLUS_DEV", raising=False)
+    with pytest.raises(RuntimeError):
+        crear_cookie_sesion(usuario="x", rol="administrador")
+
+
+def test_sin_secret_key_pero_con_dev_si_arma_la_cookie(monkeypatch):
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.setenv("SEGURPLUS_DEV", "1")
+    cookie = crear_cookie_sesion(usuario="x", rol="administrador")
+    assert cookie is not None
+
+
+def test_sin_secret_key_leer_sesion_no_explota_da_none(monkeypatch):
+    """`leer_sesion` corre en cada request (middleware) -- sin SECRET_KEY
+    tiene que devolver `None` en vez de levantar una excepción."""
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("SEGURPLUS_DEV", raising=False)
+    assert leer_sesion("cualquier-cosa") is None
 
 
 def test_intentar_login_sin_contrasena_configurada_falla(monkeypatch):
