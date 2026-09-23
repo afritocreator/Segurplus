@@ -487,6 +487,15 @@ mano).
 
 ## Falta (siguiente trabajo)
 
+- **Actualización 2026-09-23: Groq queda descartado por decisión del usuario, no por
+  falta de resultado técnico.** Se había conseguido `GROQ_API_KEY` y el código está listo
+  (`core/extraccion/proveedores/openai_compat.py`), pero no se pudo probar contra la API
+  real desde este entorno de desarrollo (bloqueo de proxy de red, ver más abajo) y el
+  usuario prefirió seguir solo con Gemini en vez de resolverlo. **Gemini queda como único
+  proveedor, sin cascada activa.** Si en el futuro se quiere retomar Groq, el código y los
+  tests ya existen -- solo faltaría correr `scripts/banco_extraccion.py --proveedor
+  groq_scout --proveedor groq_qwen` desde un entorno que sí llegue a `api.groq.com`
+  (cualquier máquina normal, o la propia Render).
 - **Actualización 2026-09-20: ya se consiguió `GEMINI_API_KEY` y el banco corrió contra la
   API real** (ver resultado en el Bloque 1 más arriba: luz al 93-100%, gas con problemas
   de layout ya conocidos, `concepto_sugerido` al 100%). Sigue faltando `GROQ_API_KEY` --
