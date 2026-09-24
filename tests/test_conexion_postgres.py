@@ -11,6 +11,8 @@ nada más que este test lo garantiza hacia adelante.
 """
 
 import ast
+import sys
+import types
 from pathlib import Path
 
 RUTA_ALMACENAMIENTO = Path(__file__).resolve().parent.parent / "core" / "almacenamiento.py"
@@ -52,3 +54,20 @@ def test_ddl_de_nivel_de_modulo_no_tiene_porcentaje():
     from core.almacenamiento import _DDL
 
     assert "%" not in _DDL
+
+
+def test_conexion_postgres_fija_el_esquema_segurplus(monkeypatch):
+    """La conexión productiva no puede caer por accidente en `public`,
+    compartido con Klericó."""
+    llamadas = []
+
+    class ConexionFalsa:
+        def execute(self, sql, params=None):
+            llamadas.append((sql, params))
+
+    modulo_falso = types.SimpleNamespace(connect=lambda _url, autocommit: ConexionFalsa())
+    monkeypatch.setitem(sys.modules, "psycopg", modulo_falso)
+    from core.almacenamiento import ConexionPostgres
+
+    ConexionPostgres("postgresql://ejemplo")
+    assert llamadas == [("SET search_path TO segurplus", None)]

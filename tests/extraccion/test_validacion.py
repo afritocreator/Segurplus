@@ -120,11 +120,28 @@ def test_doble_lectura_del_total_coincidente_pasa():
     assert resultado.factura_valida
 
 
-def test_tolerancia_de_un_peso_por_redondeo_no_bloquea():
+def test_diferencia_de_casi_un_peso_bloquea():
     factura = _factura_ok()
-    factura.conceptos[0].importe = 10000.99  # $0.99 de diferencia, dentro de tolerancia
+    factura.conceptos[0].importe = 10000.99
     resultado = validar_factura(factura)
-    assert resultado.items[0].ok
+    assert not resultado.items[0].ok
+    assert not resultado.factura_valida
+
+
+def test_diferencia_de_un_por_ciento_no_se_acepta():
+    factura = _factura_ok()
+    factura.total += 100
+    resultado = validar_factura(factura)
+    assert not resultado.total_ok
+    assert resultado.diferencia_total == -100
+    assert "100.00" in resultado.motivos_de_falla()[-1]
+
+
+def test_redondeo_de_cantidad_por_precio_a_centavo():
+    factura = _factura_ok()
+    factura.conceptos[0].cantidad = 3
+    factura.conceptos[0].precio_unitario = 3333.333
+    assert validar_factura(factura).items[0].ok
 
 
 def test_subtotal_y_total_ausentes_ya_no_pasan_solos():

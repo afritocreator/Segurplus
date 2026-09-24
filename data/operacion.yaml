@@ -50,3 +50,10 @@ intentos_gemini_por_llamada: 3
 # intento (espera_base * intento: 2s, 4s, ...) para no golpear la API de
 # nuevo de inmediato si sigue saturada.
 espera_reintento_gemini_segundos: 2.0
+
+# Tiempo máximo por intento HTTP; el SDK lo interpreta en milisegundos.
+timeout_gemini_segundos: 90
+
+# Se verifica antes de abrir el PDF y antes de conservarlo/enviarlo. El límite
+# protege también las cargas por CLI, además del formulario web.
+tamano_maximo_pdf_bytes: 10485760

@@ -43,8 +43,9 @@ class _ModelsFake:
 class _ClienteFake:
     instancias: list["_ClienteFake"] = []
 
-    def __init__(self, api_key):
+    def __init__(self, api_key, http_options=None):
         self.api_key = api_key
+        self.http_options = http_options
         self.models = _ModelsFake()
         _ClienteFake.instancias.append(self)
 
@@ -65,6 +66,7 @@ def test_sin_texto_extraido_manda_solo_prompt_y_pdf(monkeypatch):
     contents = _ClienteFake.instancias[0].models.llamadas[0]["contents"]
     assert contents[0] == PROMPT_EXTRACCION
     assert len(contents) == 2  # prompt + PDF, nada más
+    assert _ClienteFake.instancias[0].http_options["timeout"] == 90_000
 
 
 def test_con_texto_extraido_lo_manda_como_contenido_adicional(monkeypatch):
@@ -109,7 +111,7 @@ class _ModelsJsonIncompleto:
 
 
 class _ClienteJsonIncompleto:
-    def __init__(self, api_key):
+    def __init__(self, api_key, http_options=None):
         self.api_key = api_key
         self.models = _ModelsJsonIncompleto()
 

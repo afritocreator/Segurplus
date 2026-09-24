@@ -6,9 +6,11 @@ import pytest
 from web.auth import (
     contrasena_configurada,
     crear_cookie_sesion,
+    crear_token_csrf,
     intentar_login,
     leer_sesion,
     secret_key_configurada,
+    verificar_token_csrf,
 )
 
 
@@ -82,3 +84,37 @@ def test_leer_sesion_cookie_firmada_con_otra_clave_no_es_valida(monkeypatch):
     cookie = crear_cookie_sesion(usuario="x", rol="administrador")
     monkeypatch.setenv("SECRET_KEY", "clave-b")
     assert leer_sesion(cookie) is None
+
+
+def test_produccion_acepta_contrasena_compartida(monkeypatch):
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    monkeypatch.setenv("APP_PASSWORD", "correcta123")
+    monkeypatch.setenv("SECRET_KEY", "clave-de-test")
+    assert intentar_login("correcta123") is not None
+
+
+def test_csrf_esta_ligado_a_la_cookie_de_sesion(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "clave-de-test")
+    cookie = crear_cookie_sesion(usuario="operador", rol="administrador")
+    otra = crear_cookie_sesion(usuario="otro-operador", rol="administrador")
+    token = crear_token_csrf(cookie)
+    assert verificar_token_csrf(cookie, token)
+    assert not verificar_token_csrf(otra, token)
+    assert not verificar_token_csrf(cookie, "forjado")
+
+
+def test_accion_web_rechaza_csrf_ausente_en_produccion(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from web.app import app
+
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    monkeypatch.setenv("SECRET_KEY", "clave-de-test")
+    cookie = crear_cookie_sesion(usuario="operador", rol="administrador")
+    cliente = TestClient(app)
+    cliente.cookies.set("segurplus_sesion", cookie)
+    assert cliente.post("/logout").status_code == 403
+    respuesta = cliente.post(
+        "/logout", data={"csrf": crear_token_csrf(cookie)}, follow_redirects=False
+    )
+    assert respuesta.status_code == 303

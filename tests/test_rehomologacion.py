@@ -256,12 +256,39 @@ def test_aplicar_cambios_es_idempotente(tmp_path):
         score_despues=1.0,
     )
     aplicar_cambios(con, [cambio])
-    aplicar_cambios(con, [cambio])  # aplicar dos veces no rompe ni duplica
+    assert aplicar_cambios(con, [cambio]) == 0  # segunda pasada no informa cambios falsos
 
     cantidad = con.execute(
         "SELECT COUNT(*) FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf]
     ).fetchone()[0]
     assert cantidad == 1
+    con.close()
+
+
+def test_aplicar_cambios_rechaza_preview_obsoleto_sin_parciales(tmp_path):
+    con = conectar(tmp_path / "test.duckdb")
+    factura = _factura()
+    guardar_factura(con, factura, scores_homologacion={0: 0.3})
+    cambio = CambioHomologacion(
+        hash_pdf=factura.hash_pdf,
+        orden=0,
+        descripcion="Abono linea movil",
+        servicio="telefonia",
+        concepto_antes=None,
+        score_antes=0.3,
+        concepto_despues="abono_movil",
+        score_despues=1.0,
+    )
+    con.execute(
+        "UPDATE conceptos SET score_homologacion = 0.4 WHERE hash_pdf = ?",
+        [factura.hash_pdf],
+    )
+    with pytest.raises(ValueError, match="previsualización"):
+        aplicar_cambios(con, [cambio])
+    assert con.execute(
+        "SELECT concepto_normalizado, score_homologacion FROM conceptos WHERE hash_pdf = ?",
+        [factura.hash_pdf],
+    ).fetchone() == (None, pytest.approx(0.4))
     con.close()
 
 

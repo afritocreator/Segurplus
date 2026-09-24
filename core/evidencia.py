@@ -22,6 +22,56 @@ import os
 from pathlib import Path
 from typing import Any
 
+LIMITE_BORRADORES_BUCKET_BYTES = 800 * 1024 * 1024
+
+
+def _cliente_s3():
+    try:
+        import boto3
+    except ImportError as exc:  # pragma: no cover - depende del deploy
+        raise RuntimeError("S3_BUCKET requiere instalar boto3.") from exc
+    clave_acceso = os.environ.get("AWS_ACCESS_KEY_ID")
+    clave_secreta = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not clave_acceso or not clave_secreta:
+        raise RuntimeError("Faltan las credenciales S3 en el entorno de ejecución.")
+
+    parametros: dict[str, Any] = {
+        "endpoint_url": os.environ.get("S3_ENDPOINT_URL") or None,
+        "region_name": os.environ.get("S3_REGION") or None,
+        "aws_access_key_id": clave_acceso,
+        "aws_secret_access_key": clave_secreta,
+    }
+    try:
+        from botocore.config import Config
+    except ImportError:  # pragma: no cover - boto3 instala botocore en producción
+        pass
+    else:
+        # Supabase Storage requiere direccionamiento por ruta, no por subdominio.
+        parametros["config"] = Config(s3={"addressing_style": "path"})
+    return boto3.client("s3", **parametros)
+
+
+def uso_bucket_bytes(cliente: Any, bucket: str) -> int:
+    """Cuenta todos los objetos del bucket; un error bloquea una nueva carga."""
+    total = 0
+    continuacion = None
+    while True:
+        parametros = {"Bucket": bucket}
+        if continuacion:
+            parametros["ContinuationToken"] = continuacion
+        pagina = cliente.list_objects_v2(**parametros)
+        total += sum(int(objeto["Size"]) for objeto in pagina.get("Contents", []))
+        if not pagina.get("IsTruncated"):
+            return total
+        continuacion = pagina.get("NextContinuationToken")
+        if not continuacion:
+            raise RuntimeError("No se pudo medir por completo el uso del bucket.")
+
+
+def uso_evidencia_bytes() -> int | None:
+    bucket = os.environ.get("S3_BUCKET")
+    return uso_bucket_bytes(_cliente_s3(), bucket) if bucket else None
+
 
 def persistencia_durable_configurada() -> bool:
     """True si la base transaccional (facturas, decisiones, casos) está en
@@ -53,24 +103,22 @@ def guardar_pdf(hash_pdf: str, contenido: bytes, *, con: Any = None) -> str | No
     vez de perderse (docs/auditoria-2026-09-web.md, E-4)."""
     bucket = os.environ.get("S3_BUCKET")
     if bucket:
-        try:
-            import boto3
-        except ImportError as exc:  # pragma: no cover - depende del deploy
-            raise RuntimeError("S3_BUCKET requiere instalar boto3.") from exc
-        cliente = boto3.client(
-            "s3",
-            endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-            region_name=os.environ.get("S3_REGION") or None,
-        )
+        cliente = _cliente_s3()
+        if os.environ.get("SEGURPLUS_PRODUCTION") == "1" and (
+            uso_bucket_bytes(cliente, bucket) + len(contenido) > LIMITE_BORRADORES_BUCKET_BYTES
+        ):
+            raise RuntimeError("El bucket se acerca al cupo gratuito: se bloqueó la carga.")
         clave = f"segurplus/documentos/{hash_pdf}.pdf"
         cliente.put_object(
             Bucket=bucket,
             Key=clave,
             Body=contenido,
             ContentType="application/pdf",
-            ServerSideEncryption="AES256",
         )
         return f"s3://{bucket}/{clave}"
+
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        raise RuntimeError("Producción requiere un bucket privado para conservar el PDF.")
 
     directorio = os.environ.get("EVIDENCIA_DIR")
     if directorio:
@@ -104,17 +152,9 @@ def leer_pdf(ruta_evidencia: str | None, *, con: Any = None) -> bytes | None:
     if not ruta_evidencia:
         return None
     if ruta_evidencia.startswith("s3://"):
-        try:
-            import boto3
-        except ImportError:
-            return None
         bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
         try:
-            cliente = boto3.client(
-                "s3",
-                endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-                region_name=os.environ.get("S3_REGION") or None,
-            )
+            cliente = _cliente_s3()
             return cliente.get_object(Bucket=bucket, Key=clave)["Body"].read()
         except Exception:  # noqa: BLE001 -- nunca romper la pantalla por esto
             return None
@@ -137,7 +177,7 @@ def leer_pdf(ruta_evidencia: str | None, *, con: Any = None) -> bytes | None:
         return None
 
 
-def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> None:
+def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> bool:
     """Borra el PDF original a partir de la URI que devolvió `guardar_pdf`
     -- usada por `core.almacenamiento.descartar_borrador` (docs/auditoria-
     2026-09-confirmacion.md, D-11): antes, descartar un borrador borraba
@@ -147,33 +187,26 @@ def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> None:
     el borrado falla por cualquier motivo, no debe bloquear el descarte del
     borrador en sí."""
     if not ruta_evidencia:
-        return
+        return True
     if ruta_evidencia.startswith("s3://"):
-        try:
-            import boto3
-        except ImportError:
-            return
         bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
         try:
-            cliente = boto3.client(
-                "s3",
-                endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-                region_name=os.environ.get("S3_REGION") or None,
-            )
+            cliente = _cliente_s3()
             cliente.delete_object(Bucket=bucket, Key=clave)
         except Exception:  # noqa: BLE001 -- nunca bloquear el descarte por esto
-            return
-        return
+            return False
+        return True
     if ruta_evidencia.startswith("db://"):
         if con is None:
-            return
+            return False
         hash_pdf = ruta_evidencia.removeprefix("db://")
         try:
             con.execute("DELETE FROM documentos_pdf WHERE hash_pdf = ?", [hash_pdf])
         except Exception:  # noqa: BLE001 -- nunca bloquear el descarte por esto
-            return
-        return
+            return False
+        return True
     try:
         Path(ruta_evidencia).unlink(missing_ok=True)
     except OSError:
-        pass
+        return False
+    return True

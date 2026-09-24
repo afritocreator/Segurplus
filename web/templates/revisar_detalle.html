@@ -5,7 +5,9 @@
 <h1>🧾 Confirmar carga</h1>
 
 {% if motivo_carga %}
-<div class="aviso advertencia">No se pudo leer automáticamente: {{ motivo_carga }}</div>
+<div class="aviso {{ 'info' if motivo_carga.startswith('Carga manual') else 'advertencia' }}">
+  {% if not motivo_carga.startswith('Carga manual') %}No se pudo leer automáticamente: {% endif %}{{ motivo_carga }}
+</div>
 {% endif %}
 
 <div class="dos-columnas">
@@ -22,6 +24,7 @@
 
   <div>
     <form class="formulario tarjeta" method="post" action="/revisar/{{ hash_pdf }}/confirmar">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <h3>Cabecera</h3>
       <div class="fila-2">
         <div>
@@ -145,6 +148,14 @@
         </div>
       {% endif %}
 
+      <div class="aviso advertencia">
+        Si este comprobante ya fue aprobado desde otro PDF, la confirmación se bloqueará.
+        Solo para una excepción legítima, marcá esta casilla y explicá por qué deben contarse ambos.
+        <label><input type="checkbox" name="permitir_duplicado" value="si"> Autorizar excepción de duplicado</label>
+        <label>Motivo de la excepción</label>
+        <input type="text" name="motivo_duplicado" value="" placeholder="Obligatorio si hay coincidencia">
+      </div>
+
       <div style="display:flex;gap:0.75rem;margin-top:1rem;">
         <button type="submit" class="primario">Confirmar factura</button>
         <button type="submit" formaction="/revisar/{{ hash_pdf }}/guardar">Guardar cambios sin confirmar</button>
@@ -153,6 +164,7 @@
 
     {% if mostrar_boton_un_renglon %}
     <form method="post" action="/revisar/{{ hash_pdf }}/un_renglon" style="margin-top:0.75rem;">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button type="submit">Cargar como un solo renglón</button>
       <span style="color:var(--gris);font-size:0.85rem;">
         Reemplaza los conceptos por uno solo ("Consumo de gas") con el subtotal ya
@@ -163,6 +175,7 @@
 
     <form method="post" action="/revisar/{{ hash_pdf }}/descartar" style="margin-top:0.75rem;"
           onsubmit="return confirm('¿Borrar este borrador por completo?');">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button type="submit" class="peligro">Descartar borrador</button>
       <span style="color:var(--gris);font-size:0.85rem;">
         Si Gemini no pudo leerla bien, esta es la forma de que la vuelva a intentar:

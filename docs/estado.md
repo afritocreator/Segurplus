@@ -1,5 +1,17 @@
 # Estado del proyecto
 
+> **Rama de corrección `codex/cierre-auditoria-piloto` — no desplegada.** El
+> cierre de N-01–N-18 está **implementado y probado localmente**: cálculo
+> exacto al centavo, bloqueo de duplicados de negocio, evidencia verificable,
+> reserva de intentos Gemini, snapshots para pantalla/Excel y materialización
+> post-commit de casos. El piloto mantiene contraseña compartida; Google OIDC
+> no forma parte de esta etapa. Falta verificar con el rol de aplicación en
+> PostgreSQL/Supabase, bucket privado, backup/restauración externa y Render.
+> Ninguno de esos pasos se hizo desde este checkout ni se debe habilitar
+> auto-deploy antes del corte controlado.
+> El orden operativo y la reversión están en
+> [runbook-corte-produccion.md](runbook-corte-produccion.md).
+
 Ver el plan completo en `docs/PLAN.md`. Esto es el resumen rápido de qué está construido
 y qué falta, para no tener que releer el plan entero cada vez.
 

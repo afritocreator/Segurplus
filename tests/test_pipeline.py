@@ -19,7 +19,7 @@ from core.extraccion.esquema import (
     conceptos_desde_filas,
     montos_desde_filas,
 )
-from core.pipeline import confirmar_factura, procesar_pdf
+from core.pipeline import confirmar_factura, procesar_pdf, procesar_pdf_manual
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "fixtures" / "sintetico"
 
@@ -96,6 +96,36 @@ def _factura_rota() -> FacturaExtraida:
 # extracción (válida, con la aritmética rota, o sin período/servicio) no
 # cambia el resultado de procesar_pdf, solo lo que hay para confirmar
 # después en apps/segurplus/paginas/confirmar.py.
+
+
+def test_produccion_no_envia_a_gemini_sin_clasificacion(tmp_path, monkeypatch):
+    def no_llamar(*_args, **_kwargs):
+        raise AssertionError("No debe llamar al modelo")
+
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", no_llamar)
+    con = conectar(tmp_path / "test.duckdb")
+    resultado = procesar_pdf(
+        FIXTURES / "energia_2026-07.pdf", con, apto_gemini=False, actor="ana@example.com"
+    )
+    assert resultado.estado == "error_extraccion"
+    assert con.execute("SELECT count(*) FROM facturas").fetchone()[0] == 0
+    con.close()
+
+
+def test_carga_manual_crea_borrador_sin_gemini(tmp_path, monkeypatch):
+    def no_llamar(*_args, **_kwargs):
+        raise AssertionError("No debe llamar al modelo")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", no_llamar)
+    con = conectar(tmp_path / "manual.duckdb")
+    resultado = procesar_pdf_manual(
+        FIXTURES / "energia_2026-07.pdf", con, actor="ana@example.com"
+    )
+    assert resultado.estado == "borrador"
+    assert con.execute("SELECT estado FROM facturas").fetchone()[0] == "borrador"
+    assert con.execute("SELECT apto_gemini FROM clasificaciones_documento").fetchone()[0] is False
+    con.close()
 
 
 def test_factura_valida_queda_como_borrador(tmp_path, monkeypatch):

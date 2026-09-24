@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block titulo %}Casos · Segurplus{% endblock %}
+{% block contenido %}
+<h1>Casos de alerta</h1>
+<p>Las alertas se incorporan al aprobar o recalcular facturas. Abrir esta página no crea casos.</p>
+{% if not casos %}<p>No hay casos registrados.</p>{% endif %}
+{% for caso in casos %}
+<section class="tarjeta" id="{{ caso.clave }}">
+  <h2>{{ caso.tipo }} · {{ caso.severidad }}</h2>
+  <p>{{ caso.mensaje }}</p>
+  {% if caso.concepto %}<p>Concepto: {{ caso.concepto }}</p>{% endif %}
+  <p>Estado: <strong>{{ caso.estado }}</strong> · Responsable: {{ caso.responsable or 'sin asignar' }}</p>
+  <form action="/casos/{{ caso.clave }}" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Estado
+      <select name="estado">
+        {% for opcion in ['abierto', 'en_analisis', 'resuelto', 'descartado'] %}
+        <option value="{{ opcion }}" {{ 'selected' if opcion == caso.estado else '' }}>{{ opcion }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Responsable <input name="responsable" value="{{ caso.responsable or '' }}"></label>
+    <label>Vencimiento <input type="date" name="vencimiento" value="{{ caso.vencimiento or '' }}"></label>
+    <label>Evidencia de resolución <textarea name="evidencia">{{ caso.evidencia or '' }}</textarea></label>
+    <label>Motivo de este cambio <textarea name="motivo"></textarea></label>
+    <button type="submit">Guardar caso</button>
+  </form>
+  <details>
+    <summary>Historial ({{ caso.historial | length }})</summary>
+    {% for accion, actor, motivo, antes, despues, fecha in caso.historial %}
+    <p>{{ fecha }} · {{ actor }} · {{ accion }}{% if motivo %}: {{ motivo }}{% endif %}</p>
+    {% endfor %}
+  </details>
+</section>
+{% endfor %}
+{% endblock %}

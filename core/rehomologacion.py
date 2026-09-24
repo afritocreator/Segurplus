@@ -21,10 +21,12 @@ el CLI que los orquesta.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import duckdb
 
+from core.almacenamiento import transaccion
 from core.analisis.homologacion import homologar_concepto, umbral_coincidencia
 
 
@@ -154,7 +156,7 @@ def leer_filas_a_rehomologar(
         f"""SELECT c.hash_pdf, c.orden, c.descripcion, f.servicio,
                    c.concepto_normalizado, c.score_homologacion
             FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-            WHERE f.estado = 'aprobada' {condicion}
+            WHERE f.estado = 'aprobada' AND f.moneda = 'ARS' {condicion}
             ORDER BY f.servicio, c.hash_pdf, c.orden""",
         parametros,
     ).fetchall()
@@ -178,16 +180,44 @@ def aplicar_cambios(con: duckdb.DuckDBPyConnection, cambios: list[CambioHomologa
     tocados = [c for c in cambios if c.tipo not in ("sin_cambio", "omitido")]
     if not tocados:
         return 0
-    con.execute("BEGIN")
-    try:
+    modificadas = 0
+    with transaccion(con):
         for c in tocados:
-            con.execute(
-                "UPDATE conceptos SET concepto_normalizado = ?, score_homologacion = ? "
-                "WHERE hash_pdf = ? AND orden = ?",
-                [c.concepto_despues, c.score_despues, c.hash_pdf, c.orden],
-            )
-        con.execute("COMMIT")
-    except Exception:
-        con.execute("ROLLBACK")
-        raise
-    return len(tocados)
+            actual = con.execute(
+                "SELECT c.concepto_normalizado, c.score_homologacion "
+                "FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf "
+                "WHERE c.hash_pdf = ? AND c.orden = ? "
+                "AND f.estado = 'aprobada' AND f.moneda = 'ARS'",
+                [c.hash_pdf, c.orden],
+            ).fetchone()
+            if actual is None:
+                raise ValueError("La factura de la previsualización ya no está aprobada en ARS.")
+            if actual[0] == c.concepto_despues and actual[1] == c.score_despues:
+                continue
+            if actual != (c.concepto_antes, c.score_antes):
+                raise ValueError("La homologación cambió después de la previsualización.")
+            motivo = "empate" if c.candidatos_empatados else "recalculado"
+            filas = con.execute(
+                "UPDATE conceptos SET concepto_normalizado = ?, score_homologacion = ?, "
+                "motivo_homologacion = ?, candidatos_empatados = ? "
+                "WHERE hash_pdf = ? AND orden = ? "
+                "AND concepto_normalizado IS NOT DISTINCT FROM ? "
+                "AND score_homologacion IS NOT DISTINCT FROM ? "
+                "RETURNING hash_pdf",
+                [
+                    c.concepto_despues,
+                    c.score_despues,
+                    motivo,
+                    json.dumps(c.candidatos_empatados, ensure_ascii=False),
+                    c.hash_pdf,
+                    c.orden,
+                    c.concepto_antes,
+                    c.score_antes,
+                ],
+            ).fetchall()
+            if len(filas) != 1:
+                raise ValueError(
+                    "La homologación cambió durante la aplicación; se revierte el lote."
+                )
+            modificadas += 1
+    return modificadas

@@ -1,10 +1,9 @@
 """Validación aritmética determinística de una factura extraída.
 
-Port de `lib/invoice/validate.ts` de Kleric- (mismo problema: "no es
-infalible confiar ciegamente en el modelo, acá se audita en código"), con
-las tolerancias ya calibradas ahí contra facturas reales ($1 por línea, 2%
-en el total), más dos controles propios de facturas de servicios que
-Kleric- no necesita:
+Port de `lib/invoice/validate.ts` de Kleric-, con cierre contable exacto
+en centavos. Un porcentaje de tolerancia ocultaría diferencias materiales;
+los redondeos impresos deben capturarse como líneas identificables.
+Agrega controles propios de facturas de servicios:
 
 - impuestos + recargos también tienen que cerrar contra el total, no solo
   el subtotal (una factura de servicios discrimina IVA e Ingresos Brutos
@@ -32,11 +31,16 @@ siendo un borrador editable, no un callejón sin salida."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
 
 from core.extraccion.esquema import FacturaExtraida
 
-TOLERANCIA_LINEA = 1.0  # $1 de tolerancia por redondeos de la factura original
-TOLERANCIA_TOTAL_RATIO = 0.02  # 2% de tolerancia en el total (percepciones, redondeos)
+TOLERANCIA_LINEA = 0.01  # Un centavo para el redondeo de cantidad × precio.
+TOLERANCIA_TOTAL_RATIO = 0.0  # Compatibilidad de firma; no se admite tolerancia porcentual.
+
+
+def _centavos(valor: float | Decimal) -> int:
+    return int((Decimal(str(valor)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 @dataclass
@@ -44,6 +48,7 @@ class ItemValidado:
     indice: int
     ok: bool
     importe_esperado: float
+    diferencia: float = 0.0
 
 
 @dataclass
@@ -59,6 +64,9 @@ class ResultadoValidacion:
     todas_las_lineas_ok: bool = True
     subtotal_presente: bool = True
     total_presente: bool = True
+    diferencia_subtotal: float = 0.0
+    diferencia_total: float = 0.0
+    diferencia_impreso: float = 0.0
 
     @property
     def factura_valida(self) -> bool:
@@ -94,11 +102,20 @@ class ResultadoValidacion:
         if not self.total_presente:
             motivos.append("el modelo no pudo leer el total de la factura")
         if self.subtotal_presente and not self.subtotal_ok:
-            motivos.append("la suma de los conceptos no coincide con el subtotal")
+            motivos.append(
+                f"la suma de los conceptos no coincide con el subtotal "
+                f"(diferencia: ${self.diferencia_subtotal:,.2f})"
+            )
         if self.total_presente and not self.total_ok:
-            motivos.append("subtotal + impuestos + recargos no coincide con el total")
+            motivos.append(
+                "subtotal + impuestos + recargos - créditos no coincide con el total "
+                f"(diferencia: ${self.diferencia_total:,.2f})"
+            )
         if not self.total_impreso_ok:
-            motivos.append("el total extraído no coincide con el total impreso en el PDF")
+            motivos.append(
+                "el total extraído no coincide con el total impreso en el PDF "
+                f"(diferencia: ${self.diferencia_impreso:,.2f})"
+            )
         return motivos
 
 
@@ -109,18 +126,25 @@ def validar_factura(
     tolerancia_linea: float = TOLERANCIA_LINEA,
     tolerancia_total_ratio: float = TOLERANCIA_TOTAL_RATIO,
 ) -> ResultadoValidacion:
-    """Corre los cuatro controles aritméticos sobre una factura extraída.
+    """Corre los controles aritméticos sobre una factura extraída.
 
     `total_impreso`: el total leído directamente del texto del PDF con una
     regex (no por el modelo) — ver `core/ingesta/pdf_texto.py::total_impreso`.
     Si es `None` (no se pudo leer con la regex), ese control se omite en vez
     de fallar — la doble lectura es una capa extra, no la única.
     """
+    if tolerancia_total_ratio != 0:
+        raise ValueError("No se admite tolerancia porcentual para aprobar una factura.")
     items = []
     for i, c in enumerate(factura.conceptos):
-        esperado = c.cantidad * c.precio_unitario
-        ok = abs(esperado - c.importe) <= tolerancia_linea
-        items.append(ItemValidado(indice=i, ok=ok, importe_esperado=esperado))
+        esperado = Decimal(str(c.cantidad)) * Decimal(str(c.precio_unitario))
+        esperado_centavos = _centavos(esperado)
+        diferencia = (esperado_centavos - _centavos(c.importe)) / 100
+        ok = abs(diferencia) <= tolerancia_linea
+        items.append(
+            ItemValidado(indice=i, ok=ok, importe_esperado=esperado_centavos / 100,
+                         diferencia=diferencia)
+        )
 
     suma_conceptos = sum(c.importe for c in factura.conceptos)
     suma_impuestos = sum(i.importe for i in factura.impuestos)
@@ -135,21 +159,31 @@ def validar_factura(
     # que la factura se considere válida.
     subtotal_presente = factura.subtotal is not None
     subtotal_referencia = factura.subtotal if subtotal_presente else suma_conceptos
-    tol_subtotal = max(tolerancia_linea, abs(subtotal_referencia) * tolerancia_total_ratio)
-    subtotal_ok = abs(suma_conceptos - subtotal_referencia) <= tol_subtotal
+    diferencia_subtotal = (sum(_centavos(c.importe) for c in factura.conceptos)
+                           - _centavos(subtotal_referencia)) / 100
+    subtotal_ok = diferencia_subtotal == 0
 
     total_presente = factura.total is not None
     # Fórmula contable: los créditos/bonificaciones reducen el total exigible.
     total_calculado = subtotal_referencia + suma_impuestos + suma_recargos - suma_creditos
     total_referencia = factura.total if total_presente else total_calculado
-    tol_total = max(tolerancia_linea, abs(total_referencia) * tolerancia_total_ratio)
-    total_ok = abs(total_calculado - total_referencia) <= tol_total
+    diferencia_total = (
+        _centavos(subtotal_referencia)
+        + sum(_centavos(i.importe) for i in factura.impuestos)
+        + sum(_centavos(r.importe) for r in factura.recargos)
+        - sum(_centavos(c.importe) for c in factura.creditos)
+        - _centavos(total_referencia)
+    ) / 100
+    total_ok = diferencia_total == 0
 
     if total_impreso is None or factura.total is None:
         total_impreso_ok = True
     else:
-        tol_impreso = max(tolerancia_linea, abs(total_impreso) * tolerancia_total_ratio)
-        total_impreso_ok = abs(factura.total - total_impreso) <= tol_impreso
+        total_impreso_ok = _centavos(factura.total) == _centavos(total_impreso)
+    diferencia_impreso = (
+        (_centavos(factura.total) - _centavos(total_impreso)) / 100
+        if factura.total is not None and total_impreso is not None else 0.0
+    )
 
     return ResultadoValidacion(
         items=items,
@@ -163,4 +197,7 @@ def validar_factura(
         todas_las_lineas_ok=all(i.ok for i in items),
         subtotal_presente=subtotal_presente,
         total_presente=total_presente,
+        diferencia_subtotal=diferencia_subtotal,
+        diferencia_total=diferencia_total,
+        diferencia_impreso=diferencia_impreso,
     )

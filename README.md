@@ -75,7 +75,7 @@ la consola salvo los secrets:
    `afritocreator/Segurplus`. Render lee `render.yaml` y crea el servicio
    `segurplus-web` (plan gratis).
 2. Cargar en el panel de Render (Environment) las variables marcadas `sync: false` en
-   `render.yaml`: `APP_PASSWORD`, `GEMINI_API_KEY`, y `DATABASE_URL` si se usa Postgres
+   `render.yaml`: `APP_PASSWORD`, `GEMINI_API_KEY`, y `DATABASE_URL` si se usa PostgreSQL
    (sin ella, la app usa DuckDB local -- ver "El PDF original y la base" más abajo).
    `SECRET_KEY` la genera Render sola (`generateValue: true`), no hace falta cargarla.
 3. Deploy. Con `autoDeploy: true`, cada push a la rama de `render.yaml` (hoy

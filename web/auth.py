@@ -11,6 +11,8 @@ válida sin conocer una clave de firma que solo tiene el servidor."""
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -35,7 +37,7 @@ def _serializador() -> URLSafeTimedSerializer:
     # cookie: mismo criterio que ya usa APP_PASSWORD en `post_login`.
     clave = secret_key_configurada()
     if not clave:
-        if os.environ.get("SEGURPLUS_DEV") == "1":
+        if os.environ.get("SEGURPLUS_DEV") == "1" and os.environ.get("SEGURPLUS_PRODUCTION") != "1":
             clave = "clave-de-desarrollo-local-no-usar-en-produccion"
         else:
             raise RuntimeError(
@@ -50,7 +52,25 @@ def contrasena_configurada() -> str | None:
 
 
 def crear_cookie_sesion(*, usuario: str, rol: str) -> str:
-    return _serializador().dumps({"usuario": usuario, "rol": rol})
+    datos = {"usuario": usuario, "rol": rol}
+    return _serializador().dumps(datos)
+
+
+def crear_token_csrf(valor_cookie: str) -> str:
+    huella = hashlib.sha256(valor_cookie.encode()).hexdigest()
+    return URLSafeTimedSerializer(secret_key_configurada(), salt="segurplus-csrf").dumps(huella)
+
+
+def verificar_token_csrf(valor_cookie: str | None, token: str | None) -> bool:
+    if not valor_cookie or not token or not secret_key_configurada():
+        return False
+    try:
+        huella = URLSafeTimedSerializer(
+            secret_key_configurada(), salt="segurplus-csrf"
+        ).loads(token, max_age=DURACION_SEGUNDOS)
+    except BadSignature:
+        return False
+    return hmac.compare_digest(huella, hashlib.sha256(valor_cookie.encode()).hexdigest())
 
 
 def leer_sesion(valor_cookie: str | None) -> dict | None:
@@ -62,10 +82,14 @@ def leer_sesion(valor_cookie: str | None) -> dict | None:
     donde sí hay una pantalla para mostrar el error."""
     if not valor_cookie:
         return None
-    if not secret_key_configurada() and os.environ.get("SEGURPLUS_DEV") != "1":
+    if not secret_key_configurada() and (
+        os.environ.get("SEGURPLUS_DEV") != "1"
+        or os.environ.get("SEGURPLUS_PRODUCTION") == "1"
+    ):
         return None
     try:
-        return _serializador().loads(valor_cookie, max_age=DURACION_SEGUNDOS)
+        sesion = _serializador().loads(valor_cookie, max_age=DURACION_SEGUNDOS)
+        return sesion
     except BadSignature:
         return None
 
