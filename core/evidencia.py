@@ -30,11 +30,25 @@ def _cliente_s3():
         import boto3
     except ImportError as exc:  # pragma: no cover - depende del deploy
         raise RuntimeError("S3_BUCKET requiere instalar boto3.") from exc
-    return boto3.client(
-        "s3",
-        endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-        region_name=os.environ.get("S3_REGION") or None,
-    )
+    clave_acceso = os.environ.get("AWS_ACCESS_KEY_ID")
+    clave_secreta = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not clave_acceso or not clave_secreta:
+        raise RuntimeError("Faltan las credenciales S3 en el entorno de ejecución.")
+
+    parametros: dict[str, Any] = {
+        "endpoint_url": os.environ.get("S3_ENDPOINT_URL") or None,
+        "region_name": os.environ.get("S3_REGION") or None,
+        "aws_access_key_id": clave_acceso,
+        "aws_secret_access_key": clave_secreta,
+    }
+    try:
+        from botocore.config import Config
+    except ImportError:  # pragma: no cover - boto3 instala botocore en producción
+        pass
+    else:
+        # Supabase Storage requiere direccionamiento por ruta, no por subdominio.
+        parametros["config"] = Config(s3={"addressing_style": "path"})
+    return boto3.client("s3", **parametros)
 
 
 def uso_bucket_bytes(cliente: Any, bucket: str) -> int:
@@ -138,17 +152,9 @@ def leer_pdf(ruta_evidencia: str | None, *, con: Any = None) -> bytes | None:
     if not ruta_evidencia:
         return None
     if ruta_evidencia.startswith("s3://"):
-        try:
-            import boto3
-        except ImportError:
-            return None
         bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
         try:
-            cliente = boto3.client(
-                "s3",
-                endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-                region_name=os.environ.get("S3_REGION") or None,
-            )
+            cliente = _cliente_s3()
             return cliente.get_object(Bucket=bucket, Key=clave)["Body"].read()
         except Exception:  # noqa: BLE001 -- nunca romper la pantalla por esto
             return None
@@ -183,17 +189,9 @@ def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> None:
     if not ruta_evidencia:
         return
     if ruta_evidencia.startswith("s3://"):
-        try:
-            import boto3
-        except ImportError:
-            return
         bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
         try:
-            cliente = boto3.client(
-                "s3",
-                endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-                region_name=os.environ.get("S3_REGION") or None,
-            )
+            cliente = _cliente_s3()
             cliente.delete_object(Bucket=bucket, Key=clave)
         except Exception:  # noqa: BLE001 -- nunca bloquear el descarte por esto
             return

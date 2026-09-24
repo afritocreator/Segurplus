@@ -63,6 +63,8 @@ def test_s3_compatible_no_fuerza_cabecera_sse(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *_a, **_k: Cliente()))
     monkeypatch.setenv("S3_BUCKET", "privado")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "clave-de-prueba")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secreto-de-prueba")
     assert guardar_pdf("abc123", b"contenido") == "s3://privado/segurplus/documentos/abc123.pdf"
     assert "ServerSideEncryption" not in enviados
 
@@ -80,6 +82,8 @@ def test_produccion_bloquea_carga_antes_del_cupo(monkeypatch):
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *_a, **_k: Cliente()))
     monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
     monkeypatch.setenv("S3_BUCKET", "privado")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "clave-de-prueba")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secreto-de-prueba")
     with pytest.raises(RuntimeError, match="cupo gratuito"):
         guardar_pdf("abc123", b"contenido")
 
