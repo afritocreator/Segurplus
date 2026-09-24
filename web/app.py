@@ -14,6 +14,7 @@ cuenta de Google."""
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import tempfile
@@ -30,6 +31,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
+
+
+logger = logging.getLogger(__name__)
 
 from core.almacenamiento import (
     actualizar_caso_alerta,
@@ -388,6 +392,7 @@ def get_subir(request: Request):
     try:
         uso_evidencia = uso_evidencia_bytes()
     except Exception:  # noqa: BLE001 -- se muestra desconocido; la escritura bloquea si no mide
+        logger.exception("No se pudo medir el uso del bucket de evidencia")
         uso_evidencia = None
     return _render(
         request,
