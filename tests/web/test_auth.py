@@ -5,7 +5,6 @@ import pytest
 
 from web.auth import (
     contrasena_configurada,
-    correo_autorizado,
     crear_cookie_sesion,
     crear_token_csrf,
     intentar_login,
@@ -87,36 +86,17 @@ def test_leer_sesion_cookie_firmada_con_otra_clave_no_es_valida(monkeypatch):
     assert leer_sesion(cookie) is None
 
 
-def test_produccion_no_acepta_contrasena_compartida(monkeypatch):
+def test_produccion_acepta_contrasena_compartida(monkeypatch):
     monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
     monkeypatch.setenv("APP_PASSWORD", "correcta123")
     monkeypatch.setenv("SECRET_KEY", "clave-de-test")
-    assert intentar_login("correcta123") is None
-
-
-def test_oidc_requiere_correo_verificado_y_permitido(monkeypatch):
-    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "ana@example.com")
-    assert correo_autorizado("ANA@example.com", verificado=True)
-    assert not correo_autorizado("ana@example.com", verificado=False)
-    assert not correo_autorizado("otra@example.com", verificado=True)
-
-
-def test_produccion_revoca_cookie_si_se_quita_de_lista(monkeypatch):
-    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
-    monkeypatch.setenv("SECRET_KEY", "clave-de-test")
-    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "ana@example.com")
-    cookie = crear_cookie_sesion(
-        usuario="ana@example.com", rol="administrador", subject="google-sub"
-    )
-    assert leer_sesion(cookie) is not None
-    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "otra@example.com")
-    assert leer_sesion(cookie) is None
+    assert intentar_login("correcta123") is not None
 
 
 def test_csrf_esta_ligado_a_la_cookie_de_sesion(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "clave-de-test")
-    cookie = crear_cookie_sesion(usuario="ana@example.com", rol="administrador", subject="s1")
-    otra = crear_cookie_sesion(usuario="otra@example.com", rol="administrador", subject="s2")
+    cookie = crear_cookie_sesion(usuario="operador", rol="administrador")
+    otra = crear_cookie_sesion(usuario="otro-operador", rol="administrador")
     token = crear_token_csrf(cookie)
     assert verificar_token_csrf(cookie, token)
     assert not verificar_token_csrf(otra, token)
@@ -130,10 +110,7 @@ def test_accion_web_rechaza_csrf_ausente_en_produccion(monkeypatch):
 
     monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
     monkeypatch.setenv("SECRET_KEY", "clave-de-test")
-    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "ana@example.com")
-    cookie = crear_cookie_sesion(
-        usuario="ana@example.com", rol="administrador", subject="google-sub"
-    )
+    cookie = crear_cookie_sesion(usuario="operador", rol="administrador")
     cliente = TestClient(app)
     cliente.cookies.set("segurplus_sesion", cookie)
     assert cliente.post("/logout").status_code == 403

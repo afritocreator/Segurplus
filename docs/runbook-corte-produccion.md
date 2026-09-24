@@ -7,12 +7,12 @@ guardan solo en los paneles de sus proveedores; nunca en Git, logs o tickets.
 ## Precondiciones
 
 - La rama desplegable pasó `pytest -q` y `ruff check .`.
-- El servicio Render tiene una URL HTTPS estable. La URI OAuth será
-  `https://<host>/auth/google` y debe ser idéntica en Google Cloud y Render.
+- El servicio Render tiene una URL HTTPS estable y los secretos `APP_PASSWORD`
+  y `SECRET_KEY` configurados. El piloto interno usa una contraseña compartida;
+  no requiere una cuenta de Google.
 - Se creó `segurplus-documentos`, bucket privado de Supabase Storage. Se creó
   una clave S3 de servidor, y se anotaron endpoint, región y nombre del bucket
-  en el gestor de secretos de Render. Al 2026-09-24 este es un prerrequisito
-  pendiente, no una configuración ya realizada.
+  en el gestor de secretos de Render.
 - Existe una exportación externa cifrada reciente de base y PDFs, con fecha,
   conteo de facturas y lista de SHA-256. El destino externo queda bajo control
   del operador; no se sube al repositorio.
@@ -23,13 +23,12 @@ guardan solo en los paneles de sus proveedores; nunca en Git, logs o tickets.
 2. Ejecutar `python scripts/migrar_pdfs_a_bucket.py` **sin** `--aplicar`.
    Confirmar cantidad y MB esperados.
 3. Configurar en Render, sin eliminar todavía variables existentes:
-   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`,
-   `GOOGLE_ALLOWED_EMAILS`, `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_REGION`,
+   `APP_PASSWORD`, `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_REGION`,
    `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `DATABASE_URL`,
    `SECRET_KEY` y `SEGURPLUS_PRODUCTION=1`.
-4. Desplegar el commit aprobado. Verificar login Google con un correo
-   autorizado, rechazo de uno no autorizado, carga manual sintética y lectura
-   del PDF recién guardado. No enviar un PDF real a Gemini durante esta prueba.
+4. Desplegar el commit aprobado. Verificar inicio de sesión con la contraseña
+   compartida, rechazo de una contraseña incorrecta, carga manual sintética y
+   lectura del PDF recién guardado. No enviar un PDF real a Gemini durante esta prueba.
    La primera conexión de la aplicación aplica las migraciones aditivas en el
    esquema `segurplus`; el panel de Supabase no es dueño de esas tablas, por
    lo que no se debe intentar suplantar ese rol ni cambiar ownership para

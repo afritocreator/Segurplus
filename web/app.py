@@ -8,8 +8,9 @@ acá, todo pasa por `core/`. Corré con:
 
     uvicorn web.app:app --reload
 
-Producción requiere `DATABASE_URL`, `SECRET_KEY`, credenciales de Google OIDC
-y bucket de evidencia. `APP_PASSWORD` solo persiste en desarrollo local."""
+Producción requiere `DATABASE_URL`, `SECRET_KEY`, `APP_PASSWORD` y bucket de
+evidencia. El piloto interno usa una contraseña compartida; no depende de una
+cuenta de Google."""
 
 from __future__ import annotations
 
@@ -72,12 +73,9 @@ from core.relato import DatosRelato, generar_relato_determinista
 from core.reportes.excel import generar_reporte_excel
 from web.auth import (
     NOMBRE_COOKIE,
-    cliente_google,
     contrasena_configurada,
-    correo_autorizado,
     crear_cookie_sesion,
     crear_token_csrf,
-    google_configurado,
     intentar_login,
     leer_sesion,
     secret_key_configurada,
@@ -128,8 +126,7 @@ def _render(
     sesion = getattr(request.state, "sesion", None)
     base = {
         "usuario": sesion["usuario"] if sesion else None,
-        "google_configurado": google_configurado(),
-        "login_local": os.environ.get("SEGURPLUS_PRODUCTION") != "1",
+        "login_password": True,
         "csrf_token": (
             crear_token_csrf(request.cookies[NOMBRE_COOKIE])
             if sesion and NOMBRE_COOKIE in request.cookies and secret_key_configurada()
@@ -155,7 +152,7 @@ async def _gate_de_sesion(request: Request, call_next):
     if request.state.sesion and request.state.sesion.get("rol") != "administrador":
         request.state.sesion = None
     es_publica = request.url.path in {
-        "/login", "/login/google", "/auth/google"
+        "/login"
     } or request.url.path.startswith("/static")
     if not es_publica and not request.state.sesion:
         if os.environ.get("SEGURPLUS_DEV") == "1" and os.environ.get("SEGURPLUS_PRODUCTION") != "1":
@@ -191,51 +188,12 @@ def get_login(request: Request):
     return _render(
         request,
         "login.html",
-        {
-            "google_configurado": google_configurado(),
-            "login_local": os.environ.get("SEGURPLUS_PRODUCTION") != "1",
-        },
+        {"login_password": True},
     )
-
-
-@app.get("/login/google")
-async def login_google(request: Request):
-    if not google_configurado():
-        return Response("Google OIDC no está configurado.", status_code=503)
-    cliente = cliente_google()
-    return await cliente.authorize_redirect(request, os.environ["GOOGLE_REDIRECT_URI"])
-
-
-@app.get("/auth/google")
-async def auth_google(request: Request):
-    if not google_configurado():
-        return Response("Google OIDC no está configurado.", status_code=503)
-    try:
-        token = await cliente_google().authorize_access_token(request)
-        usuario = token["userinfo"]
-    except Exception:  # noqa: BLE001 -- no exponer detalles del proveedor ni tokens
-        return Response("No se pudo verificar el inicio de sesión.", status_code=401)
-    correo = usuario.get("email")
-    if not usuario.get("sub") or not correo_autorizado(
-        correo, verificado=usuario.get("email_verified") is True
-    ):
-        return Response("Cuenta no autorizada.", status_code=403)
-    respuesta = RedirectResponse("/subir", status_code=303)
-    respuesta.set_cookie(
-        NOMBRE_COOKIE,
-        crear_cookie_sesion(usuario=correo, rol="administrador", subject=usuario["sub"]),
-        httponly=True,
-        samesite="lax",
-        secure=os.environ.get("SEGURPLUS_PRODUCTION") == "1",
-        max_age=4 * 60 * 60,
-    )
-    return respuesta
 
 
 @app.post("/login")
 def post_login(request: Request, contrasena: str = Form(...)):
-    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
-        return Response("Usá Google para iniciar sesión.", status_code=403)
     falta = []
     if not contrasena_configurada() and os.environ.get("SEGURPLUS_DEV") != "1":
         falta.append("APP_PASSWORD")

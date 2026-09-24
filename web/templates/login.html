@@ -4,12 +4,7 @@
 <div class="tarjeta" style="max-width:360px;margin:3rem auto;">
   <h1>🧾 Segurplus</h1>
   <p style="color:var(--gris);font-size:0.9rem;">Acceso restringido a personas autorizadas.</p>
-  {% if google_configurado %}
-  <a class="primario" href="/login/google">Entrar con Google</a>
-  {% else %}
-  <div class="aviso advertencia">Google OIDC todavía no está configurado.</div>
-  {% endif %}
-  {% if login_local %}
+  {% if login_password %}
   <form class="formulario" method="post" action="/login">
     <label for="contrasena">Contraseña</label>
     <input type="password" id="contrasena" name="contrasena" autofocus>

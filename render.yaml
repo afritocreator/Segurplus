@@ -9,7 +9,7 @@ services:
     name: segurplus-web
     runtime: python
     plan: free
-    branch: claude/invoice-analysis-automation-7axk9u
+    branch: codex/auditoria-piloto-web
     autoDeploy: true
     buildCommand: pip install -e ".[s3]"
     # --proxy-headers: docs/auditoria-2026-09-web.md, E-18 -- sin esto,
@@ -24,13 +24,8 @@ services:
         value: 3.12.7
       - key: SECRET_KEY
         generateValue: true
-      - key: GOOGLE_CLIENT_ID
+      - key: APP_PASSWORD
         sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_ALLOWED_EMAILS
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
         sync: false
       - key: GEMINI_API_KEY
         sync: false
