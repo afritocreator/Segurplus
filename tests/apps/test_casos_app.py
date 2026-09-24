@@ -77,6 +77,7 @@ def test_actualizar_caso_persiste_estado_responsable_y_vencimiento(base_con_un_c
     at.text_input[0].input("compras@empresa.test")  # Responsable
     at.text_input[1].input("2026-12-31")  # Vencimiento
     at.text_area[0].input("Se resolvió hablando con el proveedor.")
+    at.text_input[2].input("Recargo confirmado y resuelto.")
     at.button[0].click().run()  # "Guardar caso" (form submit)
 
     assert not at.exception

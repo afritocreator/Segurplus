@@ -1,5 +1,18 @@
 # Estado del proyecto
 
+> **Rama de corrección `codex/auditoria-piloto-web` — no desplegada.** El
+> checkout se avanzó al remoto `40e16ec` antes de trabajar. La rama añade
+> transacciones, snapshots de facturas, exclusión de monedas no ARS,
+> clasificación de datos/carga manual, Google OIDC con allowlist/CSRF y
+> bloqueo de evidencia no durable en producción. Son cambios **probados
+> localmente**, no verificados en Render/Supabase. Faltan rotación de
+> credenciales, configuración de Google y bucket privado, backup/restauración,
+> pruebas PostgreSQL reales y los hallazgos aún pendientes de la
+> [reconciliación S-01–S-20](auditoria-estado-2026-09-23.md). No activar
+> auto-deploy de esta rama hasta superar esas puertas.
+> El orden operativo y la reversión están en
+> [runbook-corte-produccion.md](runbook-corte-produccion.md).
+
 Ver el plan completo en `docs/PLAN.md`. Esto es el resumen rápido de qué está construido
 y qué falta, para no tener que releer el plan entero cada vez.
 

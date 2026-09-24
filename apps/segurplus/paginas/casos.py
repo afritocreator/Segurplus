@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from apps.segurplus.autenticacion import requerir_rol
+from apps.segurplus.autenticacion import requerir_rol, usuario_actual
 from core.almacenamiento import actualizar_caso_alerta, conectar, listar_casos_alerta
 from core.analisis.alertas import etiqueta_tipo
 
@@ -63,7 +63,8 @@ try:
     ]
     st.dataframe(filas, width="stretch", hide_index=True)
     por_clave = {
-        f"{etiqueta_tipo(tipo)} · {mensaje[:70]}": clave for clave, tipo, _sev, mensaje, *_ in casos
+        f"{etiqueta_tipo(tipo)} · {mensaje[:70]} · {clave[:8]}": clave
+        for clave, tipo, _sev, mensaje, *_ in casos
     }
     seleccion = st.selectbox("Caso a actualizar", list(por_clave))
     clave = por_clave[seleccion]
@@ -79,17 +80,24 @@ try:
         responsable = st.text_input("Responsable", value=actual[6] or "")
         vencimiento = st.text_input("Vencimiento (YYYY-MM-DD)", value=actual[7] or "")
         evidencia = st.text_area("Evidencia o resolución", value=actual[8] or "")
+        motivo = st.text_input("Motivo del cambio")
         guardar = st.form_submit_button("Guardar caso")
     if guardar:
-        actualizar_caso_alerta(
-            con,
-            clave=clave,
-            estado=estado,
-            responsable=responsable or None,
-            vencimiento=vencimiento or None,
-            evidencia=evidencia or None,
-        )
-        st.success("Caso actualizado.")
-        st.rerun()
+        try:
+            actualizar_caso_alerta(
+                con,
+                clave=clave,
+                estado=estado,
+                responsable=responsable or None,
+                vencimiento=vencimiento or None,
+                evidencia=evidencia or None,
+                actor=usuario_actual(),
+                motivo=motivo or None,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Caso actualizado.")
+            st.rerun()
 finally:
     con.close()

@@ -22,6 +22,8 @@ Cáscara delgada sobre `core/ingesta/`, `core/extraccion/` y `core/analisis/`
 
 from __future__ import annotations
 
+import hashlib
+import os
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -31,20 +33,23 @@ from zoneinfo import ZoneInfo
 import duckdb
 
 from core.almacenamiento import (
+    _transaccional,
     factura_ya_procesada,
     guardar_alertas,
     guardar_factura,
     leer_borrador,
     llamadas_ultima_hora,
     proxima_ventana_libre,
+    registrar_clasificacion_documento,
     registrar_correccion_conocida,
     registrar_intento_gemini,
     sincronizar_casos_de_factura,
+    transaccion,
 )
 from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.homologacion import homologar_concepto
-from core.evidencia import guardar_pdf
+from core.evidencia import guardar_pdf, leer_pdf
 from core.extraccion.esquema import FacturaExtraida
 from core.extraccion.gemini import ExtraccionError, es_error_transitorio, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
@@ -108,7 +113,12 @@ def _borrador_vacio(hash_pdf: str, ruta: Path) -> FacturaExtraida:
 
 
 def procesar_pdf(
-    ruta: Path, con: duckdb.DuckDBPyConnection, *, api_key: str | None = None
+    ruta: Path,
+    con: duckdb.DuckDBPyConnection,
+    *,
+    api_key: str | None = None,
+    apto_gemini: bool | None = None,
+    actor: str = "sistema",
 ) -> ResultadoPipeline:
     """Procesa un único PDF: ingesta + extracción con Gemini, y deja un
     BORRADOR. No lanza excepciones para errores esperables del pipeline
@@ -133,6 +143,22 @@ def procesar_pdf(
 
     if factura_ya_procesada(con, documento.hash_sha256):
         return ResultadoPipeline(ruta, documento.hash_sha256, estado="ya_procesada")
+
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        if apto_gemini is not True or actor == "sistema":
+            return ResultadoPipeline(
+                ruta,
+                documento.hash_sha256,
+                estado="error_extraccion",
+                detalle="No se envió a Gemini: falta clasificación expresa del documento.",
+            )
+        registrar_clasificacion_documento(
+            con,
+            hash_pdf=documento.hash_sha256,
+            apto_gemini=True,
+            actor=actor,
+            via="gemini",
+        )
 
     tope = max_llamadas_gemini_por_hora()
     if llamadas_ultima_hora(con) >= tope:
@@ -200,6 +226,31 @@ def procesar_pdf(
         # vista -- Gemini no pudo leerla, pero el usuario sí puede.
         exc = ultimo_error
         factura = _borrador_vacio(documento.hash_sha256, ruta)
+        if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+            try:
+                with transaccion(con):
+                    factura.ruta_evidencia = guardar_pdf(
+                        documento.hash_sha256, contenido_pdf, con=con
+                    )
+                    evidencia = leer_pdf(factura.ruta_evidencia, con=con)
+                    if (
+                        evidencia is None
+                        or hashlib.sha256(evidencia).hexdigest() != factura.hash_pdf
+                    ):
+                        raise RuntimeError("No se pudo verificar el PDF guardado.")
+                    guardar_factura(
+                        con,
+                        factura,
+                        estado="borrador",
+                        actor=actor,
+                        motivo_carga=f"No se pudo leer con Gemini: {exc}",
+                        texto_extraido=documento.texto,
+                    )
+            except Exception as fallo:
+                return ResultadoPipeline(
+                    ruta, factura.hash_pdf, estado="error_extraccion", detalle=str(fallo)
+                )
+            return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=str(exc))
         try:
             factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
         except Exception:  # noqa: BLE001 -- un borrador vacío sin PDF sigue siendo mejor que nada
@@ -208,6 +259,7 @@ def procesar_pdf(
             con,
             factura,
             estado="borrador",
+            actor=actor,
             motivo_carga=f"No se pudo leer con Gemini: {exc}",
             texto_extraido=documento.texto,
         )
@@ -215,6 +267,21 @@ def procesar_pdf(
 
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        try:
+            with transaccion(con):
+                factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
+                evidencia = leer_pdf(factura.ruta_evidencia, con=con)
+                if evidencia is None or hashlib.sha256(evidencia).hexdigest() != factura.hash_pdf:
+                    raise RuntimeError("No se pudo verificar el PDF guardado.")
+                guardar_factura(
+                    con, factura, estado="borrador", actor=actor, texto_extraido=documento.texto
+                )
+        except Exception as fallo:
+            return ResultadoPipeline(
+                ruta, factura.hash_pdf, estado="error_extraccion", detalle=str(fallo)
+            )
+        return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador")
     try:
         factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
     except Exception as exc:  # noqa: BLE001 -- no se pierde una lectura exitosa por esto
@@ -229,6 +296,7 @@ def procesar_pdf(
             con,
             factura,
             estado="borrador",
+            actor=actor,
             motivo_carga=motivo,
             texto_extraido=documento.texto,
         )
@@ -237,10 +305,46 @@ def procesar_pdf(
         # igual que el PDF de evidencia no quedó guardado.
         return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=motivo)
 
-    guardar_factura(con, factura, estado="borrador", texto_extraido=documento.texto)
+    guardar_factura(con, factura, estado="borrador", actor=actor, texto_extraido=documento.texto)
     return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador")
 
 
+def procesar_pdf_manual(
+    ruta: Path, con: duckdb.DuckDBPyConnection, *, actor: str
+) -> ResultadoPipeline:
+    """Deja un borrador editable sin enviar contenido a ningún modelo."""
+    contenido = ruta.read_bytes()
+    hash_pdf = hashlib.sha256(contenido).hexdigest()
+    if factura_ya_procesada(con, hash_pdf):
+        return ResultadoPipeline(ruta, hash_pdf, estado="ya_procesada")
+    try:
+        texto = extraer_texto(ruta).texto
+    except Exception:  # noqa: BLE001 -- un escaneo puede completarse mirando el PDF
+        texto = ""
+    factura = _borrador_vacio(hash_pdf, ruta)
+    try:
+        with transaccion(con):
+            registrar_clasificacion_documento(
+                con, hash_pdf=hash_pdf, apto_gemini=False, actor=actor, via="manual"
+            )
+            factura.ruta_evidencia = guardar_pdf(hash_pdf, contenido, con=con)
+            evidencia = leer_pdf(factura.ruta_evidencia, con=con)
+            if evidencia is None or hashlib.sha256(evidencia).hexdigest() != hash_pdf:
+                raise RuntimeError("No se pudo verificar el PDF guardado.")
+            guardar_factura(
+                con,
+                factura,
+                estado="borrador",
+                actor=actor,
+                motivo_carga="Carga manual, sin envío a Gemini",
+                texto_extraido=texto,
+            )
+    except Exception as exc:
+        return ResultadoPipeline(ruta, hash_pdf, estado="error_extraccion", detalle=str(exc))
+    return ResultadoPipeline(ruta, hash_pdf, estado="borrador")
+
+
+@_transaccional
 def confirmar_factura(
     con: duckdb.DuckDBPyConnection,
     factura: FacturaExtraida,
@@ -290,8 +394,14 @@ def confirmar_factura(
     constancia en el propio motivo del evento "confirmacion"."""
     if factura.periodo_desde is None or factura.servicio is None:
         raise ValueError("No se puede confirmar sin período y servicio.")
+    if factura.moneda != "ARS":
+        raise ValueError("Solo se pueden confirmar facturas en ARS; revisá la moneda.")
 
     datos_borrador = leer_borrador(con, factura.hash_pdf)
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        evidencia = leer_pdf(datos_borrador["ruta_evidencia"], con=con)
+        if evidencia is None or hashlib.sha256(evidencia).hexdigest() != factura.hash_pdf:
+            raise ValueError("No se puede aprobar sin el PDF original verificable.")
 
     resultado_validacion = validar_factura(factura, total_impreso=total_impreso)
     if not resultado_validacion.factura_valida:

@@ -313,7 +313,9 @@ def factura_desde_json(
     conceptos = [
         Concepto(
             descripcion=c["descripcion"],
-            cantidad=float(c.get("cantidad", 1) or 1),
+            # Un cero explícito puede indicar una lectura defectuosa y debe
+            # llegar intacto a validación/revisión, nunca convertirse en 1.
+            cantidad=float(1 if c.get("cantidad") is None else c["cantidad"]),
             unidad=c.get("unidad"),
             precio_unitario=float(c["precio_unitario"]),
             importe=float(c["importe"]),

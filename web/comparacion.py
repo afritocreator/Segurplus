@@ -69,7 +69,8 @@ def _filas_del_periodo(con, *, servicio: str, periodo: str) -> list[FilaConcepto
     filas = con.execute(
         """SELECT c.concepto_normalizado, c.descripcion, c.cantidad, c.importe, c.unidad
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
+           WHERE f.servicio = ? AND f.periodo_desde = ?
+             AND f.estado = 'aprobada' AND f.moneda = 'ARS'""",
         [servicio, periodo],
     ).fetchall()
     return [FilaConcepto(cn, desc, cant, imp, unidad) for cn, desc, cant, imp, unidad in filas]

@@ -22,6 +22,42 @@ import os
 from pathlib import Path
 from typing import Any
 
+LIMITE_BORRADORES_BUCKET_BYTES = 800 * 1024 * 1024
+
+
+def _cliente_s3():
+    try:
+        import boto3
+    except ImportError as exc:  # pragma: no cover - depende del deploy
+        raise RuntimeError("S3_BUCKET requiere instalar boto3.") from exc
+    return boto3.client(
+        "s3",
+        endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
+        region_name=os.environ.get("S3_REGION") or None,
+    )
+
+
+def uso_bucket_bytes(cliente: Any, bucket: str) -> int:
+    """Cuenta todos los objetos del bucket; un error bloquea una nueva carga."""
+    total = 0
+    continuacion = None
+    while True:
+        parametros = {"Bucket": bucket}
+        if continuacion:
+            parametros["ContinuationToken"] = continuacion
+        pagina = cliente.list_objects_v2(**parametros)
+        total += sum(int(objeto["Size"]) for objeto in pagina.get("Contents", []))
+        if not pagina.get("IsTruncated"):
+            return total
+        continuacion = pagina.get("NextContinuationToken")
+        if not continuacion:
+            raise RuntimeError("No se pudo medir por completo el uso del bucket.")
+
+
+def uso_evidencia_bytes() -> int | None:
+    bucket = os.environ.get("S3_BUCKET")
+    return uso_bucket_bytes(_cliente_s3(), bucket) if bucket else None
+
 
 def persistencia_durable_configurada() -> bool:
     """True si la base transaccional (facturas, decisiones, casos) está en
@@ -53,24 +89,22 @@ def guardar_pdf(hash_pdf: str, contenido: bytes, *, con: Any = None) -> str | No
     vez de perderse (docs/auditoria-2026-09-web.md, E-4)."""
     bucket = os.environ.get("S3_BUCKET")
     if bucket:
-        try:
-            import boto3
-        except ImportError as exc:  # pragma: no cover - depende del deploy
-            raise RuntimeError("S3_BUCKET requiere instalar boto3.") from exc
-        cliente = boto3.client(
-            "s3",
-            endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
-            region_name=os.environ.get("S3_REGION") or None,
-        )
+        cliente = _cliente_s3()
+        if os.environ.get("SEGURPLUS_PRODUCTION") == "1" and (
+            uso_bucket_bytes(cliente, bucket) + len(contenido) > LIMITE_BORRADORES_BUCKET_BYTES
+        ):
+            raise RuntimeError("El bucket se acerca al cupo gratuito: se bloqueó la carga.")
         clave = f"segurplus/documentos/{hash_pdf}.pdf"
         cliente.put_object(
             Bucket=bucket,
             Key=clave,
             Body=contenido,
             ContentType="application/pdf",
-            ServerSideEncryption="AES256",
         )
         return f"s3://{bucket}/{clave}"
+
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        raise RuntimeError("Producción requiere un bucket privado para conservar el PDF.")
 
     directorio = os.environ.get("EVIDENCIA_DIR")
     if directorio:

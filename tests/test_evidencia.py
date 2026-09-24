@@ -4,6 +4,9 @@ está instalado por defecto, ver pyproject.toml extra "s3")."""
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from core.almacenamiento import conectar
 from core.evidencia import (
@@ -40,6 +43,45 @@ def test_guardar_pdf_sin_bucket_ni_directorio_no_guarda_nada(monkeypatch):
     monkeypatch.delenv("S3_BUCKET", raising=False)
     monkeypatch.delenv("EVIDENCIA_DIR", raising=False)
     assert guardar_pdf("abc123", b"contenido") is None
+
+
+def test_produccion_rechaza_pdf_sin_bucket(monkeypatch):
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    with pytest.raises(RuntimeError, match="bucket privado"):
+        guardar_pdf("abc123", b"contenido")
+
+
+def test_s3_compatible_no_fuerza_cabecera_sse(monkeypatch):
+    import sys
+
+    enviados = {}
+
+    class Cliente:
+        def put_object(self, **kwargs):
+            enviados.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *_a, **_k: Cliente()))
+    monkeypatch.setenv("S3_BUCKET", "privado")
+    assert guardar_pdf("abc123", b"contenido") == "s3://privado/segurplus/documentos/abc123.pdf"
+    assert "ServerSideEncryption" not in enviados
+
+
+def test_produccion_bloquea_carga_antes_del_cupo(monkeypatch):
+    import sys
+
+    class Cliente:
+        def list_objects_v2(self, **_kwargs):
+            return {"Contents": [{"Size": 800 * 1024 * 1024}], "IsTruncated": False}
+
+        def put_object(self, **_kwargs):
+            raise AssertionError("No debe subir el PDF")
+
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *_a, **_k: Cliente()))
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    monkeypatch.setenv("S3_BUCKET", "privado")
+    with pytest.raises(RuntimeError, match="cupo gratuito"):
+        guardar_pdf("abc123", b"contenido")
 
 
 def test_guardar_pdf_local_es_idempotente(tmp_path, monkeypatch):

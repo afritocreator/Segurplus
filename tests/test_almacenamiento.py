@@ -1,11 +1,13 @@
 """Tests del almacenamiento DuckDB contra un archivo temporal (nunca
 data/reales/facturas.duckdb real -- ver CLAUDE.md)."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import core.almacenamiento as almacenamiento_mod
 from core.almacenamiento import (
     actualizar_caso_alerta,
     alertas_del_periodo,
@@ -35,6 +37,7 @@ from core.almacenamiento import (
     registrar_intento_gemini,
     resumen_financiero_factura,
     sincronizar_casos_alertas,
+    totales_pagables_por_periodo,
 )
 from core.extraccion.esquema import Concepto, FacturaExtraida, Recargo
 from core.extraccion.validacion import validar_factura
@@ -76,6 +79,79 @@ def test_guardar_y_leer_factura(tmp_path):
         "SELECT concepto_normalizado, importe FROM conceptos WHERE hash_pdf = ?", [factura.hash_pdf]
     ).fetchone()
     assert concepto == ("abono_movil", 10000.0)
+    con.close()
+
+
+def test_guardar_factura_revierte_cabecera_si_fallan_las_lineas(tmp_path):
+    con = conectar(tmp_path / "rollback.duckdb")
+
+    class FallaAlBorrarConceptos:
+        def execute(self, sql, params=None):
+            if sql.startswith("DELETE FROM conceptos"):
+                raise RuntimeError("fallo inyectado")
+            return con.execute(sql, params)
+
+    with pytest.raises(RuntimeError, match="fallo inyectado"):
+        guardar_factura(FallaAlBorrarConceptos(), _factura("atomica"))
+    assert (
+        con.execute("SELECT count(*) FROM facturas WHERE hash_pdf = 'atomica'").fetchone()[0]
+        == 0
+    )
+    con.close()
+
+
+def test_produccion_no_usa_duckdb_si_falta_database_url(monkeypatch):
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        conectar()
+
+
+def test_decision_revierte_estado_si_falla_auditoria(tmp_path, monkeypatch):
+    con = conectar(tmp_path / "decision.duckdb")
+    guardar_factura(con, _factura("decision"), estado="requiere_revision")
+
+    def fallar(*_args, **_kwargs):
+        raise RuntimeError("sin auditoría")
+
+    monkeypatch.setattr(almacenamiento_mod, "_registrar_decision", fallar)
+    with pytest.raises(RuntimeError, match="sin auditoría"):
+        decision_factura(con, hash_pdf="decision", estado="aprobada", actor="ana", motivo="ok")
+    assert (
+        con.execute("SELECT estado FROM facturas WHERE hash_pdf = 'decision'").fetchone()[0]
+        == "requiere_revision"
+    )
+    con.close()
+
+
+def test_versiones_conservan_datos_anteriores_tras_corregir(tmp_path):
+    con = conectar(tmp_path / "versiones.duckdb")
+    guardar_factura(con, _factura("versionada"), estado="aprobada", actor="ana")
+    registrar_correccion(
+        con,
+        hash_pdf="versionada",
+        campo="emisor",
+        valor_nuevo="Nuevo emisor",
+        motivo="cotejado con PDF",
+        actor="ana",
+    )
+    versiones = con.execute(
+        "SELECT datos_json, actor FROM versiones_factura WHERE hash_pdf = ? ORDER BY creado_en",
+        ["versionada"],
+    ).fetchall()
+    assert len(versiones) == 2
+    assert [json.loads(fila[0])["emisor"] for fila in versiones] == ["Movistar", "Nuevo emisor"]
+    assert all(fila[1] == "ana" for fila in versiones)
+    con.close()
+
+
+def test_factura_historica_no_ars_no_contamina_totales_ars(tmp_path):
+    con = conectar(tmp_path / "monedas.duckdb")
+    guardar_factura(con, _factura("ars"), estado="aprobada")
+    guardar_factura(
+        con, replace(_factura("usd"), moneda="USD", total=50.0), estado="aprobada"
+    )
+    assert totales_pagables_por_periodo(con, servicio="telefonia") == {"2026-08-01": 12100.0}
     con.close()
 
 
@@ -1192,7 +1268,7 @@ def test_rechazar_una_factura_ya_aprobada(tmp_path):
     con.close()
 
 
-def test_rechazar_una_factura_aprobada_borra_sus_casos(tmp_path):
+def test_rechazar_una_factura_aprobada_descarta_sus_casos_sin_borrar_historia(tmp_path):
     from core.analisis.alertas import Alerta
 
     con = conectar(tmp_path / "test.duckdb")
@@ -1208,7 +1284,13 @@ def test_rechazar_una_factura_aprobada_borra_sus_casos(tmp_path):
     decision_factura(
         con, hash_pdf=factura.hash_pdf, estado="rechazada", actor="ana", motivo="mal leída"
     )
-    assert listar_casos_alerta(con) == []
+    caso = listar_casos_alerta(con)[0]
+    assert caso[5] == "descartado"
+    assert "Factura rechazada" in caso[8]
+    assert con.execute(
+        "SELECT accion, actor FROM eventos_caso WHERE clave = ? ORDER BY creado_en DESC LIMIT 1",
+        [caso[0]],
+    ).fetchone() == ("factura_rechazada", "ana")
     con.close()
 
 

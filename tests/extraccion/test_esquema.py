@@ -102,6 +102,15 @@ def test_factura_desde_json_normaliza_fechas_argentinas():
     assert factura.fecha_vencimiento == "2026-07-20"
 
 
+def test_factura_desde_json_no_transforma_cantidad_cero_en_uno():
+    datos = _datos_minimos(
+        conceptos=[
+            {"descripcion": "Consumo", "cantidad": 0, "precio_unitario": 100.0, "importe": 0.0}
+        ]
+    )
+    assert factura_desde_json(datos).conceptos[0].cantidad == 0.0
+
+
 def test_factura_desde_json_deja_none_una_fecha_no_interpretable():
     datos = _datos_minimos(fecha_emision="fecha ilegible")
     factura = factura_desde_json(datos)

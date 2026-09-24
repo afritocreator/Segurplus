@@ -7,19 +7,31 @@
   ninguna entra al análisis todavía, se revisa y confirma después en
   <a href="/revisar">Revisar</a>, con el PDF al lado.
 </p>
+{% if uso_evidencia_mb is not none %}
+<p>PDFs guardados: {{ uso_evidencia_mb }} MB de {{ limite_evidencia_mb }} MB permitidos para el piloto.</p>
+{% else %}
+<p class="aviso advertencia">No se pudo medir el espacio de evidencia; en producción las nuevas cargas se bloquearán hasta recuperarlo.</p>
+{% endif %}
 
 {% if not api_key_configurada %}
 <div class="aviso advertencia">
-  No hay ninguna clave de extracción configurada (ver <code>data/extraccion.yaml</code>
-  y las variables de entorno que pide, por ejemplo <code>GEMINI_API_KEY</code>).
-  Sin esto no se puede leer ninguna factura nueva.
+  Gemini no está configurado. Podés cargar la factura manualmente sin enviarla a un modelo.
 </div>
 {% endif %}
 
 <form class="tarjeta" method="post" action="/subir" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
   <input type="file" name="archivos" accept="application/pdf" multiple required>
+  <fieldset>
+    <legend>Forma de carga</legend>
+    <label><input type="radio" name="modo" value="manual" checked> Manual, sin Gemini</label>
+    <label><input type="radio" name="modo" value="gemini" {{ "disabled" if not api_key_configurada else "" }}> Leer con Gemini</label>
+  </fieldset>
+  <label><input type="checkbox" name="apto_gemini" value="si">
+    Confirmo que los PDFs enviados a Gemini no contienen datos sensibles, confidenciales ni personales.
+  </label>
   <br><br>
-  <button type="submit" class="primario" {{ "disabled" if not api_key_configurada else "" }}>
+  <button type="submit" class="primario">
     Procesar
   </button>
 </form>

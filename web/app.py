@@ -1,24 +1,20 @@
-"""App FastAPI de Segurplus -- reemplazo de `apps/segurplus/` (Streamlit),
-Bloque 4 del plan de rediseño de septiembre 2026. Tres pantallas: Subir,
-Revisar (antes "Confirmar carga") y Ver (antes "Evolución", ahora una sola
-pantalla sin pestañas). "Casos" y "Sin clasificar" quedan deliberadamente
-fuera de esta primera versión -- son pantallas de administración interna,
-no el camino principal que pidió el usuario.
+"""App FastAPI de Segurplus -- reemplazo de `apps/segurplus/` (Streamlit).
+
+El circuito principal es Subir, Revisar y Ver; la cola de Casos agrega el
+seguimiento operativo de las alertas sin escribir al abrir la pantalla.
 
 Cáscara fina (mismo criterio que `apps/segurplus/`): ningún cálculo vive
 acá, todo pasa por `core/`. Corré con:
 
     uvicorn web.app:app --reload
 
-Variables de entorno: `APP_PASSWORD` y `SECRET_KEY` (firma de la cookie de
-sesión) -- las dos obligatorias salvo `SEGURPLUS_DEV=1` (ver
-docs/auditoria-2026-09-web.md, E-17) --, `GEMINI_API_KEY` (o lo que pida
-`data/extraccion.yaml`), `DATABASE_URL` (Postgres, opcional -- sin ella usa
-DuckDB local, igual que el tablero Streamlit)."""
+Producción requiere `DATABASE_URL`, `SECRET_KEY`, credenciales de Google OIDC
+y bucket de evidencia. `APP_PASSWORD` solo persiste en desarrollo local."""
 
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 import time
 from collections import Counter
@@ -32,23 +28,30 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.sessions import SessionMiddleware
 
 from core.almacenamiento import (
+    actualizar_caso_alerta,
     componentes_financieros_periodo,
     conectar,
     contar_borradores,
     descartar_borrador,
+    filas_sin_clasificar_por_periodo,
     guardar_factura,
+    historial_caso,
+    importes_por_periodo,
     leer_borrador,
     listar_borradores,
+    listar_casos_alerta,
     totales_pagables_por_periodo,
 )
 from core.analisis.agregacion import etiqueta_legible
 from core.analisis.alertas import etiqueta_tipo, ordenar_por_severidad
+from core.analisis.calibracion import resumir_sin_clasificar, total_en_pesos_constantes
 from core.analisis.diccionario import cargar_diccionario
 from core.analisis.serie import serie_nominal_y_real
 from core.analisis.variacion import top_conceptos_por_variacion
-from core.evidencia import leer_pdf
+from core.evidencia import LIMITE_BORRADORES_BUCKET_BYTES, leer_pdf, uso_evidencia_bytes
 from core.extraccion.esquema import (
     SERVICIOS_CONOCIDOS,
     Concepto,
@@ -64,15 +67,21 @@ from core.extraccion.validacion import validar_factura
 from core.formato import mes_anio, nombre_servicio, pesos_ars
 from core.ingesta.pdf_texto import total_impreso
 from core.macro.ipc import leer_ipc
-from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf
+from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf, procesar_pdf_manual
 from core.relato import DatosRelato, generar_relato_determinista
 from core.reportes.excel import generar_reporte_excel
 from web.auth import (
     NOMBRE_COOKIE,
+    cliente_google,
     contrasena_configurada,
+    correo_autorizado,
+    crear_cookie_sesion,
+    crear_token_csrf,
+    google_configurado,
     intentar_login,
     leer_sesion,
     secret_key_configurada,
+    verificar_token_csrf,
 )
 from web.comparacion import calcular_comparacion
 
@@ -89,9 +98,17 @@ _TAMANIO_MAXIMO_PDF_BYTES = 10 * 1024 * 1024
 _MAXIMO_ARCHIVOS_POR_SUBIDA = 10
 
 app = FastAPI(title="Segurplus")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SECRET_KEY") or secrets.token_urlsafe(32),
+    same_site="lax",
+    https_only=os.environ.get("SEGURPLUS_PRODUCTION") == "1",
+    max_age=600,
+)
 _RAIZ = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=_RAIZ / "static"), name="static")
 templates = Jinja2Templates(directory=_RAIZ / "templates")
+templates.env.filters["pesos_ars"] = pesos_ars
 
 
 def _api_key_configurada() -> bool:
@@ -111,6 +128,13 @@ def _render(
     sesion = getattr(request.state, "sesion", None)
     base = {
         "usuario": sesion["usuario"] if sesion else None,
+        "google_configurado": google_configurado(),
+        "login_local": os.environ.get("SEGURPLUS_PRODUCTION") != "1",
+        "csrf_token": (
+            crear_token_csrf(request.cookies[NOMBRE_COOKIE])
+            if sesion and NOMBRE_COOKIE in request.cookies and secret_key_configurada()
+            else ""
+        ),
         "pagina_activa": pagina_activa,
         "mensajes": contexto.pop("mensajes", []),
     }
@@ -128,9 +152,13 @@ async def _gate_de_sesion(request: Request, call_next):
     `core/autenticacion.py`). `SEGURPLUS_DEV=1` salta el login para
     desarrollo local, igual que en el tablero Streamlit."""
     request.state.sesion = leer_sesion(request.cookies.get(NOMBRE_COOKIE))
-    es_publica = request.url.path == "/login" or request.url.path.startswith("/static")
+    if request.state.sesion and request.state.sesion.get("rol") != "administrador":
+        request.state.sesion = None
+    es_publica = request.url.path in {
+        "/login", "/login/google", "/auth/google"
+    } or request.url.path.startswith("/static")
     if not es_publica and not request.state.sesion:
-        if os.environ.get("SEGURPLUS_DEV") == "1":
+        if os.environ.get("SEGURPLUS_DEV") == "1" and os.environ.get("SEGURPLUS_PRODUCTION") != "1":
             request.state.sesion = {"usuario": "desarrollo-local", "rol": "administrador"}
         else:
             return RedirectResponse("/login", status_code=303)
@@ -160,11 +188,54 @@ def _intentos_recientes(ip: str) -> list[float]:
 def get_login(request: Request):
     if request.state.sesion:
         return RedirectResponse("/subir", status_code=303)
-    return _render(request, "login.html", {})
+    return _render(
+        request,
+        "login.html",
+        {
+            "google_configurado": google_configurado(),
+            "login_local": os.environ.get("SEGURPLUS_PRODUCTION") != "1",
+        },
+    )
+
+
+@app.get("/login/google")
+async def login_google(request: Request):
+    if not google_configurado():
+        return Response("Google OIDC no está configurado.", status_code=503)
+    cliente = cliente_google()
+    return await cliente.authorize_redirect(request, os.environ["GOOGLE_REDIRECT_URI"])
+
+
+@app.get("/auth/google")
+async def auth_google(request: Request):
+    if not google_configurado():
+        return Response("Google OIDC no está configurado.", status_code=503)
+    try:
+        token = await cliente_google().authorize_access_token(request)
+        usuario = token["userinfo"]
+    except Exception:  # noqa: BLE001 -- no exponer detalles del proveedor ni tokens
+        return Response("No se pudo verificar el inicio de sesión.", status_code=401)
+    correo = usuario.get("email")
+    if not usuario.get("sub") or not correo_autorizado(
+        correo, verificado=usuario.get("email_verified") is True
+    ):
+        return Response("Cuenta no autorizada.", status_code=403)
+    respuesta = RedirectResponse("/subir", status_code=303)
+    respuesta.set_cookie(
+        NOMBRE_COOKIE,
+        crear_cookie_sesion(usuario=correo, rol="administrador", subject=usuario["sub"]),
+        httponly=True,
+        samesite="lax",
+        secure=os.environ.get("SEGURPLUS_PRODUCTION") == "1",
+        max_age=4 * 60 * 60,
+    )
+    return respuesta
 
 
 @app.post("/login")
 def post_login(request: Request, contrasena: str = Form(...)):
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        return Response("Usá Google para iniciar sesión.", status_code=403)
     falta = []
     if not contrasena_configurada() and os.environ.get("SEGURPLUS_DEV") != "1":
         falta.append("APP_PASSWORD")
@@ -223,8 +294,18 @@ def post_login(request: Request, contrasena: str = Form(...)):
     return respuesta
 
 
+def _exigir_csrf(request: Request, token: str) -> Response | None:
+    if os.environ.get("SEGURPLUS_PRODUCTION") != "1":
+        return None
+    if verificar_token_csrf(request.cookies.get(NOMBRE_COOKIE), token):
+        return None
+    return Response("Solicitud inválida: token CSRF ausente o vencido.", status_code=403)
+
+
 @app.post("/logout")
-def post_logout():
+def post_logout(request: Request, csrf: str = Form("")):
+    if error := _exigir_csrf(request, csrf):
+        return error
     respuesta = RedirectResponse("/login", status_code=303)
     respuesta.delete_cookie(NOMBRE_COOKIE)
     return respuesta
@@ -235,21 +316,154 @@ def raiz(request: Request):
     return RedirectResponse("/subir", status_code=303)
 
 
+@app.get("/casos", response_class=HTMLResponse)
+def get_casos(request: Request, aviso: str | None = None):
+    """La navegación solo consulta: nunca genera casos por mirar la cola."""
+    con = conectar()
+    try:
+        filas = listar_casos_alerta(con)
+        casos = [
+            dict(zip(
+                ("clave", "tipo", "severidad", "mensaje", "concepto", "estado",
+                 "responsable", "vencimiento", "evidencia"),
+                fila,
+                strict=True,
+            ))
+            for fila in filas
+        ]
+        for caso in casos:
+            caso["historial"] = historial_caso(con, caso["clave"])
+    finally:
+        con.close()
+    return _render(
+        request,
+        "casos.html",
+        {"casos": casos, "mensajes": [(aviso, "exito")] if aviso else []},
+        pagina_activa="casos",
+    )
+
+
+@app.post("/casos/{clave}")
+def post_caso(
+    request: Request,
+    clave: str,
+    estado: str = Form(...),
+    responsable: str = Form(""),
+    vencimiento: str = Form(""),
+    evidencia: str = Form(""),
+    motivo: str = Form(""),
+    csrf: str = Form(""),
+):
+    if error := _exigir_csrf(request, csrf):
+        return error
+    con = conectar()
+    try:
+        actualizar_caso_alerta(
+            con,
+            clave=clave,
+            estado=estado,
+            responsable=responsable.strip() or None,
+            vencimiento=vencimiento.strip() or None,
+            evidencia=evidencia.strip() or None,
+            actor=request.state.sesion["usuario"],
+            motivo=motivo.strip() or None,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=422)
+    finally:
+        con.close()
+    return RedirectResponse("/casos?aviso=Caso+actualizado", status_code=303)
+
+
+@app.get("/sin-clasificar", response_class=HTMLResponse)
+def get_sin_clasificar(request: Request):
+    """Prioriza únicamente importes comparables en pesos constantes."""
+    con = conectar()
+    try:
+        filas_crudas = filas_sin_clasificar_por_periodo(con)
+        universo_crudo = importes_por_periodo(con)
+    finally:
+        con.close()
+    resumen = []
+    importe_real = porcentaje = fecha_base = None
+    error_ipc = None
+    if filas_crudas:
+        try:
+            filas = [
+                (servicio, descripcion, score, importe, date.fromisoformat(periodo))
+                for servicio, descripcion, score, importe, periodo in filas_crudas
+            ]
+            fecha_base = max(fila[4] for fila in filas)
+            ipc = leer_ipc()
+            resumen, importe_real = resumir_sin_clasificar(
+                filas, fecha_base=fecha_base, df_ipc=ipc
+            )
+            universo_real = total_en_pesos_constantes(
+                [(importe, date.fromisoformat(periodo)) for importe, periodo in universo_crudo],
+                fecha_base=fecha_base,
+                df_ipc=ipc,
+            )
+            porcentaje = importe_real / universo_real if universo_real else None
+        except (OSError, ValueError, requests.exceptions.RequestException) as exc:
+            error_ipc = str(exc)
+    return _render(
+        request,
+        "sin_clasificar.html",
+        {
+            "filas": resumen,
+            "total_conceptos": len({(fila[0], fila[1]) for fila in filas_crudas}),
+            "sin_medicion": sum(fila[2] is None for fila in filas_crudas),
+            "importe_real": pesos_ars(importe_real) if importe_real is not None else None,
+            "porcentaje": f"{porcentaje:.1%}" if porcentaje is not None else None,
+            "fecha_base": fecha_base,
+            "error_ipc": error_ipc,
+        },
+        pagina_activa="sin_clasificar",
+    )
+
+
 # --- Subir ---------------------------------------------------------------
 
 
 @app.get("/subir", response_class=HTMLResponse)
 def get_subir(request: Request):
+    try:
+        uso_evidencia = uso_evidencia_bytes()
+    except Exception:  # noqa: BLE001 -- se muestra desconocido; la escritura bloquea si no mide
+        uso_evidencia = None
     return _render(
         request,
         "subir.html",
-        {"api_key_configurada": _api_key_configurada()},
+        {
+            "api_key_configurada": _api_key_configurada(),
+            "uso_evidencia_mb": (
+                round(uso_evidencia / 1024**2, 1) if uso_evidencia is not None else None
+            ),
+            "limite_evidencia_mb": LIMITE_BORRADORES_BUCKET_BYTES // 1024**2,
+        },
         pagina_activa="subir",
     )
 
 
 @app.post("/subir", response_class=HTMLResponse)
-async def post_subir(request: Request, archivos: list[UploadFile]):
+async def post_subir(
+    request: Request,
+    archivos: list[UploadFile],
+    modo: str | None = Form(None),
+    apto_gemini: str | None = Form(None),
+    csrf: str = Form(""),
+):
+    if error := _exigir_csrf(request, csrf):
+        return error
+    if modo is None and os.environ.get("SEGURPLUS_PRODUCTION") != "1":
+        modo = "gemini"  # compatibilidad con clientes locales anteriores
+    if modo not in {"gemini", "manual"}:
+        return Response("Elegí lectura con Gemini o carga manual.", status_code=400)
+    if modo == "gemini" and (
+        not _api_key_configurada()
+        or (os.environ.get("SEGURPLUS_PRODUCTION") == "1" and apto_gemini != "si")
+    ):
+        return Response("No se autorizó el envío a Gemini.", status_code=400)
     if len(archivos) > _MAXIMO_ARCHIVOS_POR_SUBIDA:
         return _render(
             request,
@@ -296,7 +510,21 @@ async def post_subir(request: Request, archivos: list[UploadFile]):
                 # event loop del proceso, así que nadie más podría usar la
                 # app mientras tanto. `run_in_threadpool` lo corre en un
                 # hilo aparte sin tocar el resto del código de core/.
-                resultado = await run_in_threadpool(procesar_pdf, ruta_temporal, con)
+                if modo == "manual":
+                    resultado = await run_in_threadpool(
+                        procesar_pdf_manual,
+                        ruta_temporal,
+                        con,
+                        actor=request.state.sesion["usuario"],
+                    )
+                else:
+                    resultado = await run_in_threadpool(
+                        procesar_pdf,
+                        ruta_temporal,
+                        con,
+                        apto_gemini=apto_gemini == "si",
+                        actor=request.state.sesion["usuario"],
+                    )
             except Exception as exc:  # noqa: BLE001 -- un archivo roto no tumba el lote
                 resultado = ResultadoPipeline(
                     Path(archivo.filename or "archivo.pdf"),
@@ -726,7 +954,9 @@ def _error_de_formulario(
 
 
 @app.post("/revisar/{hash_pdf}/confirmar", response_class=HTMLResponse)
-async def post_confirmar(request: Request, hash_pdf: str):
+async def post_confirmar(request: Request, hash_pdf: str, csrf: str = Form("")):
+    if error := _exigir_csrf(request, csrf):
+        return error
     con = conectar()
     try:
         datos = _leer_borrador_o_none(con, hash_pdf)
@@ -789,7 +1019,9 @@ async def post_confirmar(request: Request, hash_pdf: str):
 
 
 @app.post("/revisar/{hash_pdf}/guardar")
-async def post_guardar(request: Request, hash_pdf: str):
+async def post_guardar(request: Request, hash_pdf: str, csrf: str = Form("")):
+    if error := _exigir_csrf(request, csrf):
+        return error
     con = conectar()
     try:
         datos = _leer_borrador_o_none(con, hash_pdf)
@@ -872,7 +1104,9 @@ def _factura_como_un_renglon(hash_pdf: str, datos: dict) -> FacturaExtraida:
 
 
 @app.post("/revisar/{hash_pdf}/un_renglon")
-def post_un_renglon(request: Request, hash_pdf: str):
+def post_un_renglon(request: Request, hash_pdf: str, csrf: str = Form("")):
+    if error := _exigir_csrf(request, csrf):
+        return error
     con = conectar()
     try:
         datos = _leer_borrador_o_none(con, hash_pdf)
@@ -898,7 +1132,9 @@ def post_un_renglon(request: Request, hash_pdf: str):
 
 
 @app.post("/revisar/{hash_pdf}/descartar")
-def post_descartar(hash_pdf: str):
+def post_descartar(request: Request, hash_pdf: str, csrf: str = Form("")):
+    if error := _exigir_csrf(request, csrf):
+        return error
     con = conectar()
     try:
         try:
@@ -939,7 +1175,7 @@ def _servicios_con_facturas_aprobadas(con) -> list[str]:
         r[0]
         for r in con.execute(
             "SELECT DISTINCT servicio FROM facturas "
-            "WHERE servicio IS NOT NULL AND estado = 'aprobada' ORDER BY 1"
+            "WHERE servicio IS NOT NULL AND estado = 'aprobada' AND moneda = 'ARS' ORDER BY 1"
         ).fetchall()
     ]
 
@@ -947,7 +1183,8 @@ def _servicios_con_facturas_aprobadas(con) -> list[str]:
 def _periodos_del_servicio(con, servicio: str) -> list[tuple[str, str | None]]:
     return con.execute(
         "SELECT periodo_desde, max(periodo_hasta) FROM facturas "
-        "WHERE servicio = ? AND periodo_desde IS NOT NULL AND estado = 'aprobada' "
+        "WHERE servicio = ? AND periodo_desde IS NOT NULL "
+        "AND estado = 'aprobada' AND moneda = 'ARS' "
         "GROUP BY periodo_desde ORDER BY 1",
         [servicio],
     ).fetchall()

@@ -13,10 +13,13 @@
       <a href="/subir" class="{{ 'activo' if pagina_activa == 'subir' else '' }}">Subir</a>
       <a href="/revisar" class="{{ 'activo' if pagina_activa == 'revisar' else '' }}">Revisar</a>
       <a href="/ver" class="{{ 'activo' if pagina_activa == 'ver' else '' }}">Ver</a>
+      <a href="/casos" class="{{ 'activo' if pagina_activa == 'casos' else '' }}">Casos</a>
+      <a href="/sin-clasificar" class="{{ 'activo' if pagina_activa == 'sin_clasificar' else '' }}">Sin clasificar</a>
     </div>
     <div class="usuario">
       {{ usuario }} ·
       <form action="/logout" method="post" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
         <button type="submit" style="background:none;color:white;padding:0;font-size:0.85rem;text-decoration:underline;">salir</button>
       </form>
     </div>

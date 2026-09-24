@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block titulo %}Sin clasificar · Segurplus{% endblock %}
+{% block contenido %}
+<h1>Conceptos sin clasificar</h1>
+<p>Solo facturas aprobadas en ARS. Los importes de distintos períodos se comparan en pesos constantes del último período cargado.</p>
+{% if total_conceptos == 0 %}
+<p>No hay conceptos sin clasificar.</p>
+{% else %}
+<p>{{ total_conceptos }} conceptos distintos · {{ sin_medicion }} filas sin score medido.</p>
+{% if sin_medicion %}<p>Re-homologá estas filas para medir su similitud; un score sin medición no equivale a cero.</p>{% endif %}
+{% if error_ipc %}
+<div class="aviso error">No se puede priorizar entre períodos: falta IPC o un período válido. No se presenta un ranking nominal como sustituto.</div>
+{% else %}
+<p>Referencia: {{ fecha_base }} · Importe real sin clasificar: <strong>{{ importe_real }}</strong> · Porcentaje real del consumo comparable: <strong>{{ porcentaje or 'no calculable' }}</strong>.</p>
+<table>
+  <thead><tr><th>Servicio</th><th>Descripción</th><th>Score</th><th>Importe real</th><th>Veces</th><th>Último período</th></tr></thead>
+  <tbody>
+  {% for fila in filas %}
+  <tr>
+    <td>{{ fila.servicio or '(sin servicio)' }}</td>
+    <td>{{ fila.descripcion }}</td>
+    <td>{{ 'sin medición' if fila.score is none else '%.3f' | format(fila.score) }}</td>
+    <td>{{ fila.importe_real | pesos_ars }}</td>
+    <td>{{ fila.veces }}</td>
+    <td>{{ fila.ultimo_periodo }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+{% endblock %}

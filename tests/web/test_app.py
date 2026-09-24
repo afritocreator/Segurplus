@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 import core.almacenamiento as almacenamiento_mod
 import core.pipeline as pipeline_mod
 import web.app as web_app_mod
+from core.analisis.alertas import Alerta
 from core.extraccion.esquema import Concepto, FacturaExtraida, Impuesto, Recargo
 from core.pipeline import confirmar_factura
 from web.app import app
@@ -84,6 +85,61 @@ def test_login_correcto_da_acceso(cliente_logueado):
     r = cliente_logueado.get("/subir")
     assert r.status_code == 200
     assert "Subir facturas" in r.text
+
+
+def test_casos_web_lectura_y_cierre_con_historial(cliente_logueado):
+    con = almacenamiento_mod.conectar()
+    try:
+        almacenamiento_mod.sincronizar_casos_alertas(
+            con,
+            referencia="comparacion:prueba",
+            alertas=[Alerta(tipo="recargo", severidad="alta", mensaje="Recargo de prueba")],
+        )
+        clave = almacenamiento_mod.listar_casos_alerta(con)[0][0]
+        eventos_antes = len(almacenamiento_mod.historial_caso(con, clave))
+    finally:
+        con.close()
+    assert cliente_logueado.get("/casos").status_code == 200
+    con = almacenamiento_mod.conectar()
+    try:
+        assert len(almacenamiento_mod.historial_caso(con, clave)) == eventos_antes
+    finally:
+        con.close()
+    sin_motivo = cliente_logueado.post(
+        f"/casos/{clave}", data={"estado": "resuelto", "evidencia": "PDF revisado"}
+    )
+    assert sin_motivo.status_code == 422
+    respuesta = cliente_logueado.post(
+        f"/casos/{clave}",
+        data={
+            "estado": "resuelto", "responsable": "operador@example.com",
+            "evidencia": "PDF revisado", "motivo": "Recargo confirmado",
+        },
+        follow_redirects=True,
+    )
+    assert respuesta.status_code == 200
+    assert "Recargo confirmado" in respuesta.text
+    assert "resuelto" in respuesta.text
+
+
+def test_sin_clasificar_web_vacia(cliente_logueado):
+    respuesta = cliente_logueado.get("/sin-clasificar")
+    assert respuesta.status_code == 200
+    assert "No hay conceptos sin clasificar" in respuesta.text
+
+
+def test_subida_manual_no_llama_a_gemini(cliente_logueado, monkeypatch):
+    def no_llamar(*_args, **_kwargs):
+        raise AssertionError("La carga manual no debe llamar a Gemini")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", no_llamar)
+    respuesta = cliente_logueado.post(
+        "/subir",
+        data={"modo": "manual"},
+        files={"archivos": ("energia.pdf", _FIXTURE_ENERGIA.read_bytes(), "application/pdf")},
+    )
+    assert respuesta.status_code == 200
+    assert "lista(s) para confirmar" in respuesta.text
 
 
 def test_logout_saca_el_acceso(cliente_logueado):

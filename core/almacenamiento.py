@@ -24,9 +24,13 @@ archivo temporal sin tocar la base real.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
+from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +158,23 @@ CREATE TABLE IF NOT EXISTS correcciones_factura (
     actor VARCHAR,
     creado_en TIMESTAMP DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS versiones_factura (
+    id VARCHAR PRIMARY KEY,
+    hash_pdf VARCHAR,
+    estado VARCHAR,
+    datos_json VARCHAR,
+    actor VARCHAR,
+    motivo VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS clasificaciones_documento (
+    id VARCHAR PRIMARY KEY,
+    hash_pdf VARCHAR,
+    apto_gemini BOOLEAN,
+    actor VARCHAR,
+    via VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS casos_alerta (
     clave VARCHAR PRIMARY KEY,
     -- hash_pdf NO siempre es un hash de PDF (docs/auditoria-2026-09-piloto.md,
@@ -174,6 +195,16 @@ CREATE TABLE IF NOT EXISTS casos_alerta (
     evidencia VARCHAR,
     creado_en TIMESTAMP DEFAULT now(),
     actualizado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS eventos_caso (
+    id VARCHAR PRIMARY KEY,
+    clave VARCHAR,
+    accion VARCHAR,
+    actor VARCHAR,
+    motivo VARCHAR,
+    antes_json VARCHAR,
+    despues_json VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
 );
 -- Un registro por cada llamada REAL a Gemini (docs/auditoria-2026-09-facturas-reales.md,
 -- hallazgos B-4 y B-5), haya salido bien o mal. Antes, un fallo de
@@ -250,6 +281,49 @@ class ConexionPostgres:
         self._con.close()
 
 
+_transacciones = threading.local()
+
+
+@contextmanager
+def transaccion(con: duckdb.DuckDBPyConnection | ConexionPostgres):
+    """Agrupa una operación de negocio completa en una transacción.
+
+    Las llamadas anidadas comparten la transacción exterior. PostgreSQL usa
+    autocommit para lecturas y el DDL legado, pero nunca para una escritura
+    operativa iniciada por este contexto.
+    """
+    profundidades = getattr(_transacciones, "profundidades", None)
+    if profundidades is None:
+        profundidades = {}
+        _transacciones.profundidades = profundidades
+    clave = id(con)
+    exterior = clave not in profundidades
+    if exterior:
+        con.execute("BEGIN TRANSACTION")
+    profundidades[clave] = profundidades.get(clave, 0) + 1
+    try:
+        yield
+        if exterior:
+            con.execute("COMMIT")
+    except BaseException:
+        if exterior:
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        profundidades[clave] -= 1
+        if profundidades[clave] == 0:
+            del profundidades[clave]
+
+
+def _transaccional(funcion: Callable) -> Callable:
+    @wraps(funcion)
+    def ejecutar(con, *args, **kwargs):
+        with transaccion(con):
+            return funcion(con, *args, **kwargs)
+
+    return ejecutar
+
+
 def _ejecutar_ddl(con: duckdb.DuckDBPyConnection | ConexionPostgres) -> None:
     """Ejecuta migraciones aditivas una instrucción por vez."""
     for sentencia in _DDL.split(";"):
@@ -319,6 +393,8 @@ def conectar(
         con = ConexionPostgres(url)
         _asegurar_ddl(con, url, forzar_ddl=forzar_ddl)
         return con
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
+        raise RuntimeError("Producción requiere DATABASE_URL; DuckDB local no es durable.")
     RUTA_BASE.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(RUTA_BASE))
     _asegurar_ddl(con, str(RUTA_BASE.resolve()), forzar_ddl=forzar_ddl)
@@ -490,6 +566,72 @@ def _registrar_decision(
     )
 
 
+@_transaccional
+def registrar_clasificacion_documento(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    hash_pdf: str,
+    apto_gemini: bool,
+    actor: str,
+    via: str,
+) -> None:
+    if via not in {"gemini", "manual"} or not actor or actor == "sistema":
+        raise ValueError("La clasificación requiere una vía y un operador identificable.")
+    con.execute(
+        "INSERT INTO clasificaciones_documento "
+        "(id, hash_pdf, apto_gemini, actor, via) VALUES (?, ?, ?, ?, ?)",
+        [_id_auditoria(hash_pdf, "clasificacion"), hash_pdf, apto_gemini, actor, via],
+    )
+
+
+def _registrar_version(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    hash_pdf: str,
+    *,
+    actor: str,
+    motivo: str,
+) -> None:
+    """Conserva una instantánea completa luego de cada decisión financiera.
+
+    Nunca se actualizan estas filas; `facturas` y sus tablas de detalle son
+    solamente la proyección vigente para las consultas existentes.
+    """
+    columnas = (*_CAMPOS_BORRADOR, "estado")
+    cabecera = con.execute(
+        f"SELECT {', '.join(columnas)} FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchone()
+    if cabecera is None:
+        raise ValueError("No existe la factura a versionar.")
+    datos = {"hash_pdf": hash_pdf, **dict(zip(columnas, cabecera, strict=True))}
+    for tabla, columnas_detalle in (
+        (
+            "conceptos",
+            "orden, descripcion, concepto_normalizado, cantidad, unidad, "
+            "precio_unitario, importe, score_homologacion, motivo_homologacion, "
+            "candidatos_empatados, concepto_sugerido",
+        ),
+        ("impuestos", "orden, nombre, importe"),
+        ("recargos", "orden, nombre, importe"),
+        ("creditos", "orden, nombre, importe"),
+    ):
+        datos[tabla] = con.execute(
+            f"SELECT {columnas_detalle} FROM {tabla} WHERE hash_pdf = ? ORDER BY orden",
+            [hash_pdf],
+        ).fetchall()
+    con.execute(
+        "INSERT INTO versiones_factura (id, hash_pdf, estado, datos_json, actor, motivo) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            _id_auditoria(hash_pdf, "version"),
+            hash_pdf,
+            datos["estado"],
+            json.dumps(datos, ensure_ascii=False, default=str),
+            actor,
+            motivo,
+        ],
+    )
+
+
 _ESTADOS_DECIDIBLES = frozenset({"requiere_revision", "aprobada"})
 
 
@@ -581,6 +723,7 @@ def leer_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: s
     return datos
 
 
+@_transaccional
 def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str) -> None:
     """Borra un borrador entero (cabecera y líneas) y libera el hash --
     `factura_ya_procesada` deja de bloquearlo, así que se puede volver a
@@ -611,7 +754,10 @@ _TABLAS_OPERATIVAS = (
     "cuarentena",
     "decisiones_factura",
     "correcciones_factura",
+    "versiones_factura",
+    "clasificaciones_documento",
     "casos_alerta",
+    "eventos_caso",
     "intentos_gemini",
     "documentos_pdf",
     "facturas",
@@ -654,6 +800,7 @@ def listar_facturas_aprobadas(
     ).fetchall()
 
 
+@_transaccional
 def decision_factura(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
     *,
@@ -682,10 +829,43 @@ def decision_factura(
         [estado, hash_pdf],
     )
     _registrar_decision(con, hash_pdf, estado, actor, motivo)
+    _registrar_version(con, hash_pdf, actor=actor, motivo=motivo)
     if estado == "aprobada":
         sincronizar_casos_de_factura(con, hash_pdf)
     elif estado == "rechazada":
-        con.execute("DELETE FROM casos_alerta WHERE hash_pdf = ?", [hash_pdf])
+        casos = con.execute(
+            "SELECT clave, estado, responsable, vencimiento, evidencia "
+            "FROM casos_alerta WHERE hash_pdf = ?",
+            [hash_pdf],
+        ).fetchall()
+        for clave, estado_caso, responsable, vencimiento, evidencia in casos:
+            if estado_caso in {"resuelto", "descartado"}:
+                continue
+            nueva_evidencia = f"Factura rechazada: {motivo}"
+            con.execute(
+                "UPDATE casos_alerta SET estado = 'descartado', evidencia = ?, "
+                "actualizado_en = now() WHERE clave = ?",
+                [nueva_evidencia, clave],
+            )
+            _registrar_evento_caso(
+                con,
+                clave=clave,
+                accion="factura_rechazada",
+                actor=actor,
+                motivo=motivo,
+                antes={
+                    "estado": estado_caso,
+                    "responsable": responsable,
+                    "vencimiento": vencimiento,
+                    "evidencia": evidencia,
+                },
+                despues={
+                    "estado": "descartado",
+                    "responsable": responsable,
+                    "vencimiento": vencimiento,
+                    "evidencia": nueva_evidencia,
+                },
+            )
 
 
 def aprobar_pendientes(
@@ -712,6 +892,7 @@ def aprobar_pendientes(
     return len(pendientes)
 
 
+@_transaccional
 def registrar_correccion(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
     *,
@@ -795,6 +976,7 @@ def registrar_correccion(
         ],
     )
     _registrar_decision(con, hash_pdf, "correccion", actor, motivo)
+    _registrar_version(con, hash_pdf, actor=actor, motivo=motivo)
 
 
 def registrar_correccion_conocida(
@@ -875,7 +1057,8 @@ def componentes_financieros_periodo(
             con.execute(
                 f"""SELECT coalesce(sum(x.importe), 0) FROM {tabla} x
                    JOIN facturas f ON f.hash_pdf = x.hash_pdf
-                   WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
+                   WHERE f.servicio = ? AND f.periodo_desde = ?
+                     AND f.estado = 'aprobada' AND f.moneda = 'ARS'""",
                 [servicio, periodo_desde],
             ).fetchone()[0]
         )
@@ -888,6 +1071,7 @@ def componentes_financieros_periodo(
     return resultado
 
 
+@_transaccional
 def guardar_factura(
     con: duckdb.DuckDBPyConnection,
     factura: FacturaExtraida,
@@ -1030,6 +1214,7 @@ def guardar_factura(
     accion = "carga" if estado == "borrador" else "confirmacion"
     motivo = motivo_decision if motivo_decision is not None else f"estado: {estado}"
     _registrar_decision(con, factura.hash_pdf, accion, actor, motivo)
+    _registrar_version(con, factura.hash_pdf, actor=actor, motivo=motivo)
 
 
 def conceptos_sin_clasificar(
@@ -1054,7 +1239,8 @@ def conceptos_sin_clasificar(
         f"""SELECT f.servicio, c.descripcion, max(c.score_homologacion),
                    sum(c.importe), count(*), max(f.periodo_desde)
             FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-            WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada' {condicion}
+            WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada'
+              AND f.moneda = 'ARS' {condicion}
             GROUP BY f.servicio, c.descripcion
             ORDER BY sum(c.importe) DESC""",
         parametros,
@@ -1072,7 +1258,7 @@ def filas_sin_clasificar_por_periodo(
         """SELECT f.servicio, c.descripcion, c.score_homologacion, c.importe, f.periodo_desde
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
            WHERE c.concepto_normalizado IS NULL AND f.periodo_desde IS NOT NULL
-             AND f.estado = 'aprobada'"""
+             AND f.estado = 'aprobada' AND f.moneda = 'ARS'"""
     ).fetchall()
 
 
@@ -1124,7 +1310,7 @@ def metricas_por_proveedor(
         con.execute(
             """SELECT f.emisor, count(*)
                FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-               WHERE f.estado = 'aprobada'
+               WHERE f.estado = 'aprobada' AND f.moneda = 'ARS'
                GROUP BY f.emisor"""
         ).fetchall()
     )
@@ -1133,6 +1319,7 @@ def metricas_por_proveedor(
             """SELECT f.emisor, count(*)
                FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
                WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada'
+                 AND f.moneda = 'ARS'
                GROUP BY f.emisor"""
         ).fetchall()
     )
@@ -1141,6 +1328,7 @@ def metricas_por_proveedor(
             """SELECT f.emisor, sum(c.importe)
                FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
                WHERE c.concepto_normalizado IS NULL AND f.estado = 'aprobada'
+                 AND f.moneda = 'ARS'
                GROUP BY f.emisor"""
         ).fetchall()
     )
@@ -1207,7 +1395,8 @@ def importes_por_periodo(con: duckdb.DuckDBPyConnection) -> list[tuple[float, st
     return con.execute(
         """SELECT c.importe, f.periodo_desde FROM conceptos c
            JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE f.periodo_desde IS NOT NULL AND f.estado = 'aprobada'"""
+           WHERE f.periodo_desde IS NOT NULL AND f.estado = 'aprobada'
+             AND f.moneda = 'ARS'"""
     ).fetchall()
 
 
@@ -1227,7 +1416,8 @@ def totales_por_periodo(con: duckdb.DuckDBPyConnection, *, servicio: str) -> dic
     filas = con.execute(
         """SELECT f.periodo_desde, sum(c.importe)
            FROM conceptos c JOIN facturas f ON f.hash_pdf = c.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde IS NOT NULL AND f.estado = 'aprobada'
+           WHERE f.servicio = ? AND f.periodo_desde IS NOT NULL
+             AND f.estado = 'aprobada' AND f.moneda = 'ARS'
            GROUP BY f.periodo_desde""",
         [servicio],
     ).fetchall()
@@ -1250,7 +1440,8 @@ def totales_pagables_por_periodo(
     (docs/auditoria-2026-09-web.md, E-11)."""
     filas = con.execute(
         """SELECT periodo_desde, sum(total) FROM facturas
-           WHERE servicio = ? AND periodo_desde IS NOT NULL AND estado = 'aprobada'
+           WHERE servicio = ? AND periodo_desde IS NOT NULL
+             AND estado = 'aprobada' AND moneda = 'ARS'
            GROUP BY periodo_desde""",
         [servicio],
     ).fetchall()
@@ -1266,7 +1457,8 @@ def recargos_del_periodo(
     filas = con.execute(
         """SELECT r.nombre, r.importe FROM recargos r
            JOIN facturas f ON f.hash_pdf = r.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
+           WHERE f.servicio = ? AND f.periodo_desde = ?
+             AND f.estado = 'aprobada' AND f.moneda = 'ARS'""",
         [servicio, periodo_desde],
     ).fetchall()
     return [(nombre, importe) for nombre, importe in filas]
@@ -1286,9 +1478,37 @@ def guardar_alertas(con: duckdb.DuckDBPyConnection, hash_pdf: str, alertas: list
         )
 
 
-def _clave_caso(hash_pdf: str, alerta: Alerta) -> str:
-    base = "|".join([hash_pdf, alerta.tipo, alerta.concepto or "", alerta.mensaje])
+def _clave_caso(hash_pdf: str, alerta: Alerta, ocurrencia: int = 0) -> str:
+    # El texto y el importe de un mensaje pueden cambiar sin que cambie el
+    # hecho económico. La ocurrencia distingue dos alertas del mismo tipo.
+    base = "|".join([hash_pdf, alerta.tipo, alerta.concepto or "", str(ocurrencia)])
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def _registrar_evento_caso(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    clave: str,
+    accion: str,
+    actor: str,
+    motivo: str | None,
+    antes: dict | None,
+    despues: dict,
+) -> None:
+    con.execute(
+        "INSERT INTO eventos_caso "
+        "(id, clave, accion, actor, motivo, antes_json, despues_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            _id_auditoria(clave, "caso"),
+            clave,
+            accion,
+            actor,
+            motivo,
+            json.dumps(antes, ensure_ascii=False) if antes is not None else None,
+            json.dumps(despues, ensure_ascii=False),
+        ],
+    )
 
 
 def sincronizar_casos_de_factura(
@@ -1317,6 +1537,7 @@ def sincronizar_casos_de_factura(
     )
 
 
+@_transaccional
 def sincronizar_casos_alertas(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
     *,
@@ -1342,7 +1563,13 @@ def sincronizar_casos_alertas(
     es siempre un hash de PDF, ver el comentario en el `_DDL`."""
     if not alertas:
         return
-    claves = [_clave_caso(referencia, alerta) for alerta in alertas]
+    ocurrencias: dict[tuple[str, str | None], int] = {}
+    claves = []
+    for alerta in alertas:
+        identidad = (alerta.tipo, alerta.concepto)
+        ocurrencia = ocurrencias.get(identidad, 0)
+        claves.append(_clave_caso(referencia, alerta, ocurrencia))
+        ocurrencias[identidad] = ocurrencia + 1
     marcadores = ", ".join(["?"] * len(claves))
     existentes = {
         clave: (severidad, mensaje)
@@ -1369,6 +1596,19 @@ def sincronizar_casos_alertas(
                 alerta.concepto,
             ],
         )
+        _registrar_evento_caso(
+            con,
+            clave=clave,
+            accion="creado" if clave not in existentes else "actualizado",
+            actor="sistema",
+            motivo="alerta calculada",
+            antes=(
+                {"severidad": existentes[clave][0], "mensaje": existentes[clave][1]}
+                if clave in existentes
+                else None
+            ),
+            despues={"severidad": alerta.severidad, "mensaje": alerta.mensaje},
+        )
 
 
 def listar_casos_alerta(
@@ -1384,6 +1624,18 @@ def listar_casos_alerta(
     ).fetchall()
 
 
+def historial_caso(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, clave: str
+) -> list[tuple[str, str, str | None, str, str | None, str]]:
+    """Eventos inmutables del caso, del más reciente al más antiguo."""
+    return con.execute(
+        "SELECT accion, actor, motivo, antes_json, despues_json, creado_en "
+        "FROM eventos_caso WHERE clave = ? ORDER BY creado_en DESC, id DESC",
+        [clave],
+    ).fetchall()
+
+
+@_transaccional
 def actualizar_caso_alerta(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
     *,
@@ -1392,14 +1644,44 @@ def actualizar_caso_alerta(
     responsable: str | None,
     vencimiento: str | None,
     evidencia: str | None,
+    actor: str = "sistema",
+    motivo: str | None = None,
 ) -> None:
     """Asigna y cierra un caso sin borrar su historia operativa."""
     if estado not in ESTADOS_CASO:
         raise ValueError(f"Estado de caso inválido: {estado}")
+    if os.environ.get("SEGURPLUS_PRODUCTION") == "1" and actor == "sistema":
+        raise ValueError("La actualización de un caso requiere identidad individual.")
+    if estado in {"resuelto", "descartado"} and (not motivo or not evidencia):
+        raise ValueError("Cerrar o descartar un caso requiere motivo y evidencia.")
+    if estado in {"resuelto", "descartado"} and not responsable:
+        raise ValueError("Cerrar o descartar un caso requiere responsable asignado.")
+    anterior = con.execute(
+        "SELECT estado, responsable, vencimiento, evidencia FROM casos_alerta WHERE clave = ?",
+        [clave],
+    ).fetchone()
+    if anterior is None:
+        raise ValueError("No existe el caso a actualizar.")
+    antes = dict(zip(("estado", "responsable", "vencimiento", "evidencia"), anterior, strict=True))
+    despues = {
+        "estado": estado,
+        "responsable": responsable,
+        "vencimiento": vencimiento,
+        "evidencia": evidencia,
+    }
     con.execute(
         """UPDATE casos_alerta SET estado = ?, responsable = ?, vencimiento = ?, evidencia = ?,
            actualizado_en = now() WHERE clave = ?""",
         [estado, responsable, vencimiento, evidencia, clave],
+    )
+    _registrar_evento_caso(
+        con,
+        clave=clave,
+        accion="revision",
+        actor=actor,
+        motivo=motivo,
+        antes=antes,
+        despues=despues,
     )
 
 
@@ -1412,7 +1694,8 @@ def alertas_del_periodo(
     filas = con.execute(
         """SELECT a.tipo, a.severidad, a.mensaje, a.concepto FROM alertas a
            JOIN facturas f ON f.hash_pdf = a.hash_pdf
-           WHERE f.servicio = ? AND f.periodo_desde = ? AND f.estado = 'aprobada'""",
+           WHERE f.servicio = ? AND f.periodo_desde = ?
+             AND f.estado = 'aprobada' AND f.moneda = 'ARS'""",
         [servicio, periodo_desde],
     ).fetchall()
     return [

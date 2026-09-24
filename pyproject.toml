@@ -20,6 +20,7 @@ dependencies = [
     "jinja2>=3.1",  # plantillas de web/, ya era dependencia transitiva de Streamlit
     "python-multipart>=0.0.9",  # FastAPI lo necesita para los formularios de web/subir
     "itsdangerous>=2.2",  # cookie de sesión firmada, web/auth.py
+    "authlib>=1.8,<1.9",  # Google OIDC; solo identidad individual, sin scopes de datos
     "uvicorn>=0.30",  # servidor ASGI para correr web/app.py
 ]
 

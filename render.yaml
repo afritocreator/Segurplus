@@ -11,20 +11,38 @@ services:
     plan: free
     branch: claude/invoice-analysis-automation-7axk9u
     autoDeploy: true
-    buildCommand: pip install -e .
+    buildCommand: pip install -e ".[s3]"
     # --proxy-headers: docs/auditoria-2026-09-web.md, E-18 -- sin esto,
     # uvicorn no ve que la request original llegó por HTTPS (Render
     # termina el TLS en su proxy), y la cookie de sesión nunca saldría
     # con `secure=True`.
     startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT --proxy-headers
     envVars:
+      - key: SEGURPLUS_PRODUCTION
+        value: "1"
       - key: PYTHON_VERSION
         value: 3.12.7
       - key: SECRET_KEY
         generateValue: true
-      - key: APP_PASSWORD
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ALLOWED_EMAILS
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
         sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: DATABASE_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
         sync: false
