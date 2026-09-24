@@ -26,7 +26,6 @@ services:
         generateValue: true
       - key: APP_PASSWORD
         sync: false
-        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: DATABASE_URL

@@ -32,6 +32,7 @@ import json
 import os
 
 from core.extraccion.esquema import FacturaExtraida, esquema_json_para_modelo, factura_desde_json
+from core.operacion import timeout_gemini_segundos
 
 MODELO = "gemini-3.6-flash"  # fijo, no "latest" -- ver docstring del módulo
 # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: el prompt sumó dos reglas
@@ -167,7 +168,9 @@ def extraer_con_gemini(
         )
     contenidos.append({"inline_data": {"data": pdf_bytes, "mime_type": "application/pdf"}})
 
-    cliente = genai.Client(api_key=api_key)
+    cliente = genai.Client(
+        api_key=api_key, http_options={"timeout": timeout_gemini_segundos() * 1000}
+    )
     try:
         respuesta = cliente.models.generate_content(
             model=MODELO,

@@ -100,13 +100,14 @@
     hoy (descontada la inflación).
   </p>
   {% if serie %}
+  {% if error_serie %}<p class="aviso advertencia">{{ error_serie }}</p>{% endif %}
   <table>
     <tr><th>Período</th><th>Nominal</th><th>Real (pesos de hoy)</th></tr>
     {% for p in serie %}
     <tr>
       <td>{{ p.periodo }}</td>
       <td class="numero">{{ p.nominal }}</td>
-      <td class="numero">{{ p.real }}</td>
+      <td class="numero">{{ p.real or 'No calculable' }}</td>
     </tr>
     {% endfor %}
   </table>
@@ -157,7 +158,7 @@
   </table>
 </div>
 
-<a class="boton" href="/ver/excel?servicio={{ servicio }}&periodo_0={{ periodo_0 }}&periodo_1={{ periodo_1 }}">
+<a class="boton" href="/ver/excel?servicio={{ servicio }}&periodo_0={{ periodo_0 }}&periodo_1={{ periodo_1 }}&snapshot={{ snapshot }}">
   ⬇️ Descargar reporte en Excel
 </a>
 {% endblock %}

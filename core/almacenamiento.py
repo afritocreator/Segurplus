@@ -26,7 +26,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
+import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -246,6 +248,28 @@ CREATE TABLE IF NOT EXISTS documentos_pdf (
     contenido_b64 VARCHAR,
     creado_en TIMESTAMP DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS evidencias_pendientes_borrar (
+    ruta_evidencia VARCHAR PRIMARY KEY,
+    creado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS excepciones_duplicado (
+    hash_pdf VARCHAR PRIMARY KEY,
+    hash_coincidente VARCHAR,
+    actor VARCHAR,
+    motivo VARCHAR,
+    creado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS comparaciones_pendientes (
+    servicio VARCHAR PRIMARY KEY,
+    ticket VARCHAR NOT NULL,
+    actualizado_en TIMESTAMP DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS publicaciones_ipc (
+    hash_contenido VARCHAR PRIMARY KEY,
+    serie_id VARCHAR NOT NULL,
+    datos_json VARCHAR NOT NULL,
+    capturado_en TIMESTAMP DEFAULT now()
+);
 """
 
 ESTADOS_FACTURA = frozenset(
@@ -446,6 +470,51 @@ def registrar_intento_gemini(
     )
 
 
+_reserva_gemini_lock = threading.Lock()
+
+
+def reservar_intento_gemini(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    *,
+    hash_pdf: str,
+    ruta_pdf: str,
+    tope: int,
+) -> str | None:
+    """Reserva una llamada antes de enviarla; los fallos también consumen cuota.
+
+    PostgreSQL serializa reservas entre procesos mediante advisory lock. El
+    lock local cubre DuckDB en los tests y el modo de escritorio.
+    """
+    with _reserva_gemini_lock, transaccion(con):
+        if isinstance(con, ConexionPostgres):
+            con.execute("SELECT pg_advisory_xact_lock(830174021)")
+        if llamadas_ultima_hora(con) >= tope:
+            return None
+        identificador = _id_auditoria(hash_pdf, "intento_gemini")
+        con.execute(
+            """INSERT INTO intentos_gemini (id, hash_pdf, ruta_pdf, exito, mensaje)
+               VALUES (?, ?, ?, NULL, 'reservado')""",
+            [identificador, hash_pdf, ruta_pdf],
+        )
+        return identificador
+
+
+@_transaccional
+def finalizar_intento_gemini(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    identificador: str,
+    *,
+    exito: bool,
+    mensaje: str = "",
+    respuesta_cruda: str | None = None,
+) -> None:
+    con.execute(
+        """UPDATE intentos_gemini SET exito = ?, mensaje = ?, respuesta_cruda = ?
+           WHERE id = ? AND exito IS NULL""",
+        [exito, mensaje, respuesta_cruda, identificador],
+    )
+
+
 def llamadas_ultima_hora(con: duckdb.DuckDBPyConnection) -> int:
     """Cuenta cuántas llamadas REALES a Gemini se hicieron en la última hora
     (tabla `intentos_gemini`, ver `registrar_intento_gemini`), para hacer
@@ -550,6 +619,29 @@ def factura_ya_procesada(con: duckdb.DuckDBPyConnection, hash_pdf: str) -> bool:
         "SELECT 1 FROM cuarentena WHERE hash_pdf = ?", [hash_pdf]
     ).fetchone()
     return en_facturas is not None or en_cuarentena is not None
+
+
+def duplicado_de_negocio(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    factura: FacturaExtraida,
+) -> str | None:
+    """Hash aprobado de otro PDF con igual CUIT, comprobante y período."""
+    cuit = re.sub(r"\D", "", factura.cuit or "")
+    numero = re.sub(r"\W", "", (factura.numero_comprobante or "").upper())
+    if not cuit or not numero or not factura.periodo_desde:
+        return None
+    candidatos = con.execute(
+        """SELECT hash_pdf, cuit, numero_comprobante FROM facturas
+           WHERE periodo_desde = ? AND estado = 'aprobada' AND hash_pdf <> ?""",
+        [factura.periodo_desde, factura.hash_pdf],
+    ).fetchall()
+    for hash_pdf, cuit_guardado, numero_guardado in candidatos:
+        if (
+            re.sub(r"\D", "", cuit_guardado or "") == cuit
+            and re.sub(r"\W", "", (numero_guardado or "").upper()) == numero
+        ):
+            return hash_pdf
+    return None
 
 
 def _id_auditoria(hash_pdf: str, accion: str) -> str:
@@ -728,7 +820,6 @@ def leer_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: s
     return datos
 
 
-@_transaccional
 def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str) -> None:
     """Borra un borrador entero (cabecera y líneas) y libera el hash --
     `factura_ya_procesada` deja de bloquearlo, así que se puede volver a
@@ -740,14 +831,45 @@ def descartar_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_p
     evidencia (`core.evidencia.borrar_pdf`) -- antes quedaba huérfano en el
     disco del servidor o en el bucket, sin ninguna fila que lo
     referenciara, cada vez que se descartaba un borrador."""
-    fila = con.execute(
-        "SELECT estado, ruta_evidencia FROM facturas WHERE hash_pdf = ?", [hash_pdf]
-    ).fetchone()
-    if fila is None or fila[0] != "borrador":
-        raise ValueError("Solo se puede descartar una factura en estado borrador.")
-    borrar_pdf(fila[1], con=con)
-    for tabla in ("conceptos", "impuestos", "recargos", "creditos", "alertas", "facturas"):
-        con.execute(f"DELETE FROM {tabla} WHERE hash_pdf = ?", [hash_pdf])
+    with transaccion(con):
+        fila = con.execute(
+            "SELECT estado, ruta_evidencia FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+        ).fetchone()
+        if fila is None or fila[0] != "borrador":
+            raise ValueError("Solo se puede descartar una factura en estado borrador.")
+        ruta_evidencia = fila[1]
+        if ruta_evidencia:
+            con.execute(
+                "INSERT INTO evidencias_pendientes_borrar (ruta_evidencia) VALUES (?) "
+                "ON CONFLICT (ruta_evidencia) DO NOTHING",
+                [ruta_evidencia],
+            )
+        for tabla in ("conceptos", "impuestos", "recargos", "creditos", "alertas", "facturas"):
+            con.execute(f"DELETE FROM {tabla} WHERE hash_pdf = ?", [hash_pdf])
+    # El objeto externo se elimina recién después del COMMIT. Si S3 falla,
+    # la cola conserva la URI y se puede reintentar sin perder la evidencia.
+    if ruta_evidencia:
+        procesar_borrados_pendientes(con)
+
+
+def procesar_borrados_pendientes(con: duckdb.DuckDBPyConnection | ConexionPostgres) -> int:
+    """Reintenta la limpieza post-commit; nunca borra un PDF aún referenciado."""
+    pendientes = con.execute(
+        "SELECT ruta_evidencia FROM evidencias_pendientes_borrar"
+    ).fetchall()
+    borrados = 0
+    for (ruta,) in pendientes:
+        referencia = con.execute(
+            "SELECT 1 FROM facturas WHERE ruta_evidencia = ? LIMIT 1", [ruta]
+        ).fetchone()
+        if referencia:
+            continue
+        if borrar_pdf(ruta, con=con):
+            con.execute(
+                "DELETE FROM evidencias_pendientes_borrar WHERE ruta_evidencia = ?", [ruta]
+            )
+            borrados += 1
+    return borrados
 
 
 _TABLAS_OPERATIVAS = (
@@ -824,7 +946,9 @@ def decision_factura(
     dejar trabajo operativo colgado sobre alertas que ya no cuentan."""
     if estado not in {"aprobada", "rechazada"}:
         raise ValueError("Una decisión solo puede aprobar o rechazar una factura.")
-    fila = con.execute("SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]).fetchone()
+    fila = con.execute(
+        "SELECT estado, servicio FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchone()
     if fila is None:
         raise ValueError("No existe la factura a decidir.")
     if fila[0] not in _ESTADOS_DECIDIBLES:
@@ -835,6 +959,7 @@ def decision_factura(
     )
     _registrar_decision(con, hash_pdf, estado, actor, motivo)
     _registrar_version(con, hash_pdf, actor=actor, motivo=motivo)
+    encolar_comparaciones(con, fila[1])
     if estado == "aprobada":
         sincronizar_casos_de_factura(con, hash_pdf)
     elif estado == "rechazada":
@@ -1067,11 +1192,16 @@ def componentes_financieros_periodo(
                 [servicio, periodo_desde],
             ).fetchone()[0]
         )
-    resultado["total_pagable"] = (
-        resultado["consumos"]
-        + resultado["impuestos"]
-        + resultado["recargos"]
-        - resultado["creditos"]
+    # La cifra canónica es el total impreso y confirmado. La descomposición
+    # se conserva para detectar diferencias históricas, no para mostrar
+    # otra cifra como total del mismo mes.
+    resultado["total_pagable"] = float(
+        con.execute(
+            """SELECT coalesce(sum(f.total), 0) FROM facturas f
+               WHERE f.servicio = ? AND f.periodo_desde = ?
+                 AND f.estado = 'aprobada' AND f.moneda = 'ARS'""",
+            [servicio, periodo_desde],
+        ).fetchone()[0]
     )
     return resultado
 
@@ -1117,6 +1247,19 @@ def guardar_factura(
     corregidas, además del cambio de estado."""
     if estado not in ESTADOS_FACTURA:
         raise ValueError(f"Estado de factura inválido: {estado}")
+    if isinstance(con, ConexionPostgres):
+        clave_lock = int.from_bytes(
+            hashlib.sha256((factura.hash_pdf or "").encode()).digest()[:8],
+            "big", signed=True,
+        )
+        con.execute("SELECT pg_advisory_xact_lock(?)", [clave_lock])
+    existente = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [factura.hash_pdf]
+    ).fetchone()
+    if existente and existente[0] in {"aprobada", "requiere_revision"}:
+        if existente[0] == estado and estado == "aprobada":
+            return  # reprocesar el mismo hash jamás pisa una aprobación
+        raise ValueError("Una carga no puede sobrescribir una factura ya confirmada.")
     conceptos_normalizados = conceptos_normalizados or {}
     scores_homologacion = scores_homologacion or {}
     motivos_homologacion = motivos_homologacion or {}
@@ -1542,6 +1685,20 @@ def sincronizar_casos_de_factura(
     )
 
 
+def encolar_comparaciones(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, servicio: str | None
+) -> None:
+    """Marca el servicio para recálculo post-commit, sin red en la transacción."""
+    if not servicio:
+        return
+    con.execute(
+        """INSERT INTO comparaciones_pendientes (servicio, ticket, actualizado_en)
+           VALUES (?, ?, now()) ON CONFLICT (servicio) DO UPDATE SET
+           ticket = excluded.ticket, actualizado_en = now()""",
+        [servicio, uuid.uuid4().hex],
+    )
+
+
 @_transaccional
 def sincronizar_casos_alertas(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
@@ -1566,8 +1723,6 @@ def sincronizar_casos_alertas(
     `evolucion.py` la llama con un identificador sintético de comparación
     (ej. "comparacion:telefonia:2026-08-01:2026-09-01") -- esa columna no
     es siempre un hash de PDF, ver el comentario en el `_DDL`."""
-    if not alertas:
-        return
     ocurrencias: dict[tuple[str, str | None], int] = {}
     claves = []
     for alerta in alertas:
@@ -1575,23 +1730,44 @@ def sincronizar_casos_alertas(
         ocurrencia = ocurrencias.get(identidad, 0)
         claves.append(_clave_caso(referencia, alerta, ocurrencia))
         ocurrencias[identidad] = ocurrencia + 1
-    marcadores = ", ".join(["?"] * len(claves))
+    cierre_automatico = "Alerta ya no vigente tras recalcular datos aprobados."
     existentes = {
-        clave: (severidad, mensaje)
-        for clave, severidad, mensaje in con.execute(
-            f"SELECT clave, severidad, mensaje FROM casos_alerta WHERE clave IN ({marcadores})",
-            claves,
+        clave: (severidad, mensaje, estado, evidencia)
+        for clave, severidad, mensaje, estado, evidencia in con.execute(
+            """SELECT clave, severidad, mensaje, estado, evidencia
+               FROM casos_alerta WHERE hash_pdf = ?""",
+            [referencia],
         ).fetchall()
     }
+    for clave, (severidad, mensaje, estado, evidencia) in existentes.items():
+        if clave in claves or estado not in {"abierto", "en_analisis"}:
+            continue
+        con.execute(
+            """UPDATE casos_alerta SET estado = 'descartado', evidencia = ?,
+               actualizado_en = now() WHERE clave = ?""",
+            [cierre_automatico, clave],
+        )
+        _registrar_evento_caso(
+            con, clave=clave, accion="alerta_no_vigente", actor="sistema",
+            motivo=cierre_automatico,
+            antes={"estado": estado, "evidencia": evidencia},
+            despues={"estado": "descartado", "evidencia": cierre_automatico},
+        )
     for alerta, clave in zip(alertas, claves, strict=True):
-        if existentes.get(clave) == (alerta.severidad, alerta.mensaje):
+        anterior = existentes.get(clave)
+        reabrir = bool(
+            anterior and anterior[2] == "descartado" and anterior[3] == cierre_automatico
+        )
+        if anterior and anterior[:2] == (alerta.severidad, alerta.mensaje) and not reabrir:
             continue  # sin cambios -- no reescribir actualizado_en en vano
         con.execute(
             """INSERT INTO casos_alerta
-               (clave, hash_pdf, tipo, severidad, mensaje, concepto, actualizado_en)
-               VALUES (?, ?, ?, ?, ?, ?, now())
+               (clave, hash_pdf, tipo, severidad, mensaje, concepto,
+                estado, evidencia, actualizado_en)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
                ON CONFLICT (clave) DO UPDATE SET severidad = excluded.severidad,
-                 mensaje = excluded.mensaje, actualizado_en = now()""",
+                 mensaje = excluded.mensaje, estado = excluded.estado,
+                 evidencia = excluded.evidencia, actualizado_en = now()""",
             [
                 clave,
                 referencia,
@@ -1599,20 +1775,25 @@ def sincronizar_casos_alertas(
                 alerta.severidad,
                 alerta.mensaje,
                 alerta.concepto,
+                "abierto" if reabrir or anterior is None else anterior[2],
+                None if reabrir or anterior is None else anterior[3],
             ],
         )
         _registrar_evento_caso(
             con,
             clave=clave,
-            accion="creado" if clave not in existentes else "actualizado",
+            accion="creado" if anterior is None else ("reabierto" if reabrir else "actualizado"),
             actor="sistema",
             motivo="alerta calculada",
             antes=(
-                {"severidad": existentes[clave][0], "mensaje": existentes[clave][1]}
-                if clave in existentes
+                {"severidad": anterior[0], "mensaje": anterior[1], "estado": anterior[2]}
+                if anterior
                 else None
             ),
-            despues={"severidad": alerta.severidad, "mensaje": alerta.mensaje},
+            despues={
+                "severidad": alerta.severidad, "mensaje": alerta.mensaje,
+                "estado": "abierto" if reabrir or anterior is None else anterior[2],
+            },
         )
 
 

@@ -74,6 +74,28 @@ def espera_reintento_gemini_segundos() -> float:
     return float(datos["espera_reintento_gemini_segundos"])
 
 
+def timeout_gemini_segundos() -> int:
+    """Límite de red para un intento de extracción, configurado en YAML."""
+    datos = yaml.safe_load(RUTA_OPERACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "timeout_gemini_segundos" not in datos:
+        raise ValueError(f"{RUTA_OPERACION} no tiene 'timeout_gemini_segundos'")
+    valor = int(datos["timeout_gemini_segundos"])
+    if valor <= 0:
+        raise ValueError("timeout_gemini_segundos debe ser positivo")
+    return valor
+
+
+def tamano_maximo_pdf_bytes() -> int:
+    """Máximo de bytes aceptados antes de abrir o enviar un PDF."""
+    datos = yaml.safe_load(RUTA_OPERACION.read_text(encoding="utf-8"))
+    if not isinstance(datos, dict) or "tamano_maximo_pdf_bytes" not in datos:
+        raise ValueError(f"{RUTA_OPERACION} no tiene 'tamano_maximo_pdf_bytes'")
+    valor = int(datos["tamano_maximo_pdf_bytes"])
+    if valor <= 0:
+        raise ValueError("tamano_maximo_pdf_bytes debe ser positivo")
+    return valor
+
+
 def zona_horaria() -> str:
     """Nombre de zona horaria IANA del equipo que usa el tablero (docs/
     auditoria-2026-09-facturas-reales.md, hallazgo C-8) -- para mostrar "a

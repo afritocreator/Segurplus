@@ -11,15 +11,21 @@ en pantalla para la misma comparación. Ahora las dos pantallas llaman a
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
+import polars as pl
 import requests
 
 from core.almacenamiento import (
     alertas_del_periodo,
     componentes_financieros_periodo,
     recargos_del_periodo,
+    sincronizar_casos_alertas,
+    transaccion,
 )
 from core.analisis.agregacion import (
     PREFIJO_SIN_HOMOLOGAR,
@@ -43,7 +49,7 @@ from core.analisis.variacion import (
     top_conceptos_por_variacion,
 )
 from core.extraccion.esquema import FacturaExtraida, Recargo
-from core.macro.ipc import leer_ipc
+from core.macro.ipc import CACHE_PATH, SERIE_ID, leer_ipc
 from core.relato import DatosRelato, generar_relato_determinista
 
 
@@ -63,6 +69,64 @@ class ResultadoComparacion:
     alertas: list[Alerta]
     relato: str
     avisos_calculo: list[str]
+
+
+def snapshot_comparacion(con, *, servicio: str, periodo_0: str, periodo_1: str) -> str:
+    """Identifica datos aprobados, reglas e IPC usados por Ver y Excel.
+
+    Es una función de lectura: abrir ``Ver`` nunca escribe ni descarga
+    datos. La persistencia de publicaciones IPC sucede durante el recálculo
+    operativo de casos.
+    """
+    digest = hashlib.sha256()
+    parametros = [servicio, periodo_0, periodo_1]
+    facturas = con.execute(
+        """SELECT * FROM facturas WHERE servicio = ? AND estado = 'aprobada'
+           AND periodo_desde IN (?, ?)""",
+        parametros,
+    ).fetchall()
+    hashes = sorted(str(fila[0]) for fila in facturas)
+    digest.update(json.dumps(sorted(repr(fila) for fila in facturas)).encode())
+    for tabla in ("conceptos", "impuestos", "recargos", "creditos", "alertas"):
+        if not hashes:
+            continue
+        marcadores = ", ".join("?" for _ in hashes)
+        filas = con.execute(
+            f"SELECT * FROM {tabla} WHERE hash_pdf IN ({marcadores})", hashes
+        ).fetchall()
+        digest.update(tabla.encode())
+        digest.update(json.dumps(sorted(repr(fila) for fila in filas)).encode())
+    raiz = Path(__file__).resolve().parent.parent
+    reglas = [
+        raiz / "data" / nombre
+        for nombre in ("alertas.yaml", "homologacion.yaml", "operacion.yaml")
+    ]
+    reglas.extend(sorted((raiz / "data" / "conceptos").glob("*.yaml")))
+    reglas.extend(sorted((raiz / "core" / "analisis").glob("*.py")))
+    for ruta in reglas:
+        digest.update(str(ruta.relative_to(raiz)).encode())
+        digest.update(ruta.read_bytes())
+    if CACHE_PATH.exists():
+        datos_json = pl.read_parquet(CACHE_PATH).write_json()
+        hash_ipc = hashlib.sha256(datos_json.encode()).hexdigest()
+        digest.update(hash_ipc.encode())
+    else:
+        digest.update(b"sin-ipc")
+    return digest.hexdigest()
+
+
+def registrar_publicacion_ipc(con) -> str | None:
+    """Guarda una copia versionada de IPC como parte de un recálculo escrito."""
+    if not CACHE_PATH.exists():
+        return None
+    datos_json = pl.read_parquet(CACHE_PATH).write_json()
+    hash_ipc = hashlib.sha256(datos_json.encode()).hexdigest()
+    con.execute(
+        """INSERT INTO publicaciones_ipc (hash_contenido, serie_id, datos_json)
+           VALUES (?, ?, ?) ON CONFLICT (hash_contenido) DO NOTHING""",
+        [hash_ipc, SERIE_ID, datos_json],
+    )
+    return hash_ipc
 
 
 def _filas_del_periodo(con, *, servicio: str, periodo: str) -> list[FilaConcepto]:
@@ -226,3 +290,62 @@ def calcular_comparacion(
         relato=relato,
         avisos_calculo=avisos_calculo,
     )
+
+
+def sincronizar_casos_pendientes(con, *, servicio: str | None = None) -> int:
+    """Materializa comparaciones aprobadas post-commit, nunca desde un GET.
+
+    Un ticket cambiado mientras se calcula impide publicar un resultado
+    obsoleto. Si falta IPC, quedan los casos no dependientes de él y la cola
+    sigue pendiente para reintentar cuando exista una publicación válida.
+    """
+    filtro = "WHERE servicio = ?" if servicio else ""
+    pendientes = con.execute(
+        f"SELECT servicio, ticket FROM comparaciones_pendientes {filtro}",
+        [servicio] if servicio else [],
+    ).fetchall()
+    procesados = 0
+    for nombre_servicio, ticket in pendientes:
+        periodos = con.execute(
+            """SELECT periodo_desde, max(periodo_hasta) FROM facturas
+               WHERE servicio = ? AND estado = 'aprobada' AND moneda = 'ARS'
+                 AND periodo_desde IS NOT NULL
+               GROUP BY periodo_desde ORDER BY periodo_desde""",
+            [nombre_servicio],
+        ).fetchall()
+        calculados = []
+        ipc_completo = True
+        for (base, _), (siguiente, _) in zip(periodos, periodos[1:]):
+            referencia = f"comparacion:{nombre_servicio}:{base}:{siguiente}"
+            resultado = calcular_comparacion(
+                con, servicio=nombre_servicio, periodo_0=base, periodo_1=siguiente,
+                periodos_del_servicio=periodos,
+            )
+            ipc_completo &= resultado.ipc_periodo_pct is not None
+            calculados.append((referencia, resultado.alertas))
+        with transaccion(con):
+            actual = con.execute(
+                "SELECT ticket FROM comparaciones_pendientes WHERE servicio = ?",
+                [nombre_servicio],
+            ).fetchone()
+            if actual is None or actual[0] != ticket:
+                continue
+            referencias = {ref for ref, _ in calculados}
+            anteriores = con.execute(
+                """SELECT DISTINCT hash_pdf FROM casos_alerta
+                   WHERE hash_pdf LIKE ?""",
+                [f"comparacion:{nombre_servicio}:%"],
+            ).fetchall()
+            for referencia, alertas in calculados:
+                sincronizar_casos_alertas(con, referencia=referencia, alertas=alertas)
+            for (referencia,) in anteriores:
+                if referencia not in referencias:
+                    sincronizar_casos_alertas(con, referencia=referencia, alertas=[])
+            if ipc_completo:
+                registrar_publicacion_ipc(con)
+                con.execute(
+                    "DELETE FROM comparaciones_pendientes WHERE servicio = ? AND ticket = ?",
+                    [nombre_servicio, ticket],
+                )
+            procesados += 1
+    return procesados

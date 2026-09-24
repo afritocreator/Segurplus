@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 import tempfile
 import time
 from collections import Counter
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from itertools import zip_longest
 from pathlib import Path
 
 import requests
@@ -31,9 +34,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
-
-
-logger = logging.getLogger(__name__)
 
 from core.almacenamiento import (
     actualizar_caso_alerta,
@@ -72,27 +72,33 @@ from core.extraccion.validacion import validar_factura
 from core.formato import mes_anio, nombre_servicio, pesos_ars
 from core.ingesta.pdf_texto import total_impreso
 from core.macro.ipc import leer_ipc
+from core.operacion import tamano_maximo_pdf_bytes
 from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf, procesar_pdf_manual
 from core.relato import DatosRelato, generar_relato_determinista
 from core.reportes.excel import generar_reporte_excel
 from web.auth import (
     NOMBRE_COOKIE,
     contrasena_configurada,
-    crear_cookie_sesion,
     crear_token_csrf,
     intentar_login,
     leer_sesion,
     secret_key_configurada,
     verificar_token_csrf,
 )
-from web.comparacion import calcular_comparacion
+from web.comparacion import (
+    calcular_comparacion,
+    sincronizar_casos_pendientes,
+    snapshot_comparacion,
+)
+
+logger = logging.getLogger(__name__)
 
 TOP_N_CONCEPTOS = 12
 # docs/auditoria-2026-09-web.md, E-4/E-3 del plan de arreglos: sin
 # EVIDENCIA_DIR ni S3_BUCKET, el PDF se guarda en la base (base64, en una
 # columna VARCHAR) -- un PDF escaneado sin tope llenaría el plan gratis de
 # Supabase (500 MB) en pocas facturas grandes.
-_TAMANIO_MAXIMO_PDF_BYTES = 10 * 1024 * 1024
+_TAMANIO_MAXIMO_PDF_BYTES = tamano_maximo_pdf_bytes()
 # docs/auditoria-2026-09-web.md, E-8: subir muchas facturas juntas es una
 # sola request de varios minutos (cada una tarda 15-35s contra Gemini,
 # según el banco de medición), expuesta al corte del proxy de Render --
@@ -387,25 +393,24 @@ def get_sin_clasificar(request: Request):
 # --- Subir ---------------------------------------------------------------
 
 
-@app.get("/subir", response_class=HTMLResponse)
-def get_subir(request: Request):
+def _contexto_uso_evidencia() -> dict:
     try:
         uso_evidencia = uso_evidencia_bytes()
     except Exception:  # noqa: BLE001 -- se muestra desconocido; la escritura bloquea si no mide
         logger.exception("No se pudo medir el uso del bucket de evidencia")
         uso_evidencia = None
-    return _render(
-        request,
-        "subir.html",
-        {
-            "api_key_configurada": _api_key_configurada(),
-            "uso_evidencia_mb": (
-                round(uso_evidencia / 1024**2, 1) if uso_evidencia is not None else None
-            ),
-            "limite_evidencia_mb": LIMITE_BORRADORES_BUCKET_BYTES // 1024**2,
-        },
-        pagina_activa="subir",
-    )
+    return {
+        "api_key_configurada": _api_key_configurada(),
+        "uso_evidencia_mb": (
+            round(uso_evidencia / 1024**2, 1) if uso_evidencia is not None else None
+        ),
+        "limite_evidencia_mb": LIMITE_BORRADORES_BUCKET_BYTES // 1024**2,
+    }
+
+
+@app.get("/subir", response_class=HTMLResponse)
+def get_subir(request: Request):
+    return _render(request, "subir.html", _contexto_uso_evidencia(), pagina_activa="subir")
 
 
 @app.post("/subir", response_class=HTMLResponse)
@@ -432,7 +437,7 @@ async def post_subir(
             request,
             "subir.html",
             {
-                "api_key_configurada": _api_key_configurada(),
+                **_contexto_uso_evidencia(),
                 "mensajes": [
                     (
                         f"Subiste {len(archivos)} archivos -- el máximo por tanda es "
@@ -448,7 +453,7 @@ async def post_subir(
     resultados: list[ResultadoPipeline] = []
     try:
         for archivo in archivos:
-            contenido = await archivo.read()
+            contenido = await archivo.read(_TAMANIO_MAXIMO_PDF_BYTES + 1)
             if len(contenido) > _TAMANIO_MAXIMO_PDF_BYTES:
                 resultados.append(
                     ResultadoPipeline(
@@ -512,7 +517,7 @@ async def post_subir(
         request,
         "subir.html",
         {
-            "api_key_configurada": _api_key_configurada(),
+            **_contexto_uso_evidencia(),
             "resultados": {
                 "borradores": borradores,
                 "repetidas": repetidas,
@@ -825,16 +830,34 @@ def _contexto_detalle_completo(con, hash_pdf: str, datos: dict) -> dict:
 
 def _num_desde_texto(texto: str) -> float | None:
     texto = (texto or "").strip()
+    if texto.startswith("$"):
+        texto = texto[1:].strip()
     if not texto:
         return None
+    if "," in texto:
+        if not re.fullmatch(r"-?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{1,2})?", texto):
+            raise ValueError(f"importe inválido: {texto!r}")
+        normalizado = texto.replace(".", "").replace(",", ".")
+    else:
+        if not re.fullmatch(r"-?\d+(?:\.\d{1,2})?", texto):
+            raise ValueError(f"importe inválido: {texto!r}")
+        normalizado = texto
     try:
-        return float(texto.replace(",", "."))
-    except ValueError:
-        return None
+        valor = Decimal(normalizado)
+    except InvalidOperation as exc:
+        raise ValueError(f"importe inválido: {texto!r}") from exc
+    return float(valor)
 
 
 async def _factura_desde_form(request: Request, hash_pdf: str, datos: dict) -> FacturaExtraida:
     form = await request.form()
+
+    def _numero_campo(nombre: str, texto: str, indice: int | None = None) -> float | None:
+        try:
+            return _num_desde_texto(texto)
+        except ValueError as exc:
+            ubicacion = f" (línea {indice + 1})" if indice is not None else ""
+            raise ValueError(f"{nombre}{ubicacion}: {exc}") from exc
 
     def _campo(nombre: str) -> str | None:
         valor = (form.get(nombre) or "").strip()
@@ -843,38 +866,49 @@ async def _factura_desde_form(request: Request, hash_pdf: str, datos: dict) -> F
     conceptos_filas = [
         {
             "descripcion": d,
-            "cantidad": _num_desde_texto(c),
+            "cantidad": _numero_campo("Cantidad", c, indice),
             "unidad": u,
-            "precio_unitario": _num_desde_texto(p),
-            "importe": _num_desde_texto(i),
+            "precio_unitario": _numero_campo("Precio unitario", p, indice),
+            "importe": _numero_campo("Importe", i, indice),
         }
-        for d, c, u, p, i in zip(
+        for indice, (d, c, u, p, i) in enumerate(zip(
             form.getlist("concepto_descripcion"),
             form.getlist("concepto_cantidad"),
             form.getlist("concepto_unidad"),
             form.getlist("concepto_precio_unitario"),
             form.getlist("concepto_importe"),
             strict=True,
-        )
+        ))
     ]
     impuestos_filas = [
-        {"nombre": n, "importe": _num_desde_texto(i)}
-        for n, i in zip(
+        {"nombre": n, "importe": _numero_campo("Impuesto", i, indice)}
+        for indice, (n, i) in enumerate(zip(
             form.getlist("impuesto_nombre"), form.getlist("impuesto_importe"), strict=True
-        )
+        ))
     ]
     recargos_filas = [
-        {"nombre": n, "importe": _num_desde_texto(i)}
-        for n, i in zip(
+        {"nombre": n, "importe": _numero_campo("Recargo", i, indice)}
+        for indice, (n, i) in enumerate(zip(
             form.getlist("recargo_nombre"), form.getlist("recargo_importe"), strict=True
-        )
+        ))
     ]
     creditos_filas = [
-        {"nombre": n, "importe": _num_desde_texto(i)}
-        for n, i in zip(
+        {"nombre": n, "importe": _numero_campo("Crédito", i, indice)}
+        for indice, (n, i) in enumerate(zip(
             form.getlist("credito_nombre"), form.getlist("credito_importe"), strict=True
-        )
+        ))
     ]
+
+    conceptos = conceptos_desde_filas(conceptos_filas)
+    for indice, concepto in enumerate(conceptos):
+        if indice >= len(datos["conceptos"]):
+            continue
+        anterior = datos["conceptos"][indice]
+        if (
+            concepto.descripcion, concepto.cantidad, concepto.unidad,
+            concepto.precio_unitario, concepto.importe,
+        ) == anterior[:5]:
+            concepto.concepto_sugerido = anterior[5]
 
     return FacturaExtraida(
         emisor=_campo("emisor"),
@@ -886,12 +920,12 @@ async def _factura_desde_form(request: Request, hash_pdf: str, datos: dict) -> F
         fecha_vencimiento=_normalizar_fecha(_campo("fecha_vencimiento") or ""),
         numero_comprobante=_campo("numero_comprobante"),
         moneda=_campo("moneda") or "ARS",
-        conceptos=conceptos_desde_filas(conceptos_filas),
+        conceptos=conceptos,
         impuestos=montos_desde_filas(impuestos_filas, Impuesto),
         recargos=montos_desde_filas(recargos_filas, Recargo),
         creditos=montos_desde_filas(creditos_filas, Credito),
-        subtotal=_num_desde_texto(form.get("subtotal") or ""),
-        total=_num_desde_texto(form.get("total") or ""),
+        subtotal=_numero_campo("Subtotal", form.get("subtotal") or ""),
+        total=_numero_campo("Total", form.get("total") or ""),
         hash_pdf=hash_pdf,
         ruta_pdf=datos["ruta_pdf"],
         ruta_evidencia=datos["ruta_evidencia"],
@@ -902,7 +936,7 @@ async def _factura_desde_form(request: Request, hash_pdf: str, datos: dict) -> F
     )
 
 
-def _error_de_formulario(
+async def _error_de_formulario(
     request: Request, con, hash_pdf: str, datos: dict, mensaje: str
 ) -> HTMLResponse:
     """E-15: `_factura_desde_form` puede lanzar `ValueError` si las listas
@@ -912,6 +946,27 @@ def _error_de_formulario(
     contexto = _contexto_detalle(
         hash_pdf, datos, con=con, errores_aritmetica=[], aritmetica_ok=False
     )
+    form = await request.form()
+    for campo in (
+        "emisor", "cuit", "servicio", "moneda", "periodo_desde", "periodo_hasta",
+        "fecha_emision", "fecha_vencimiento", "numero_comprobante",
+    ):
+        contexto["f"][campo] = form.get(campo) or ""
+    contexto["f"]["subtotal_texto"] = form.get("subtotal") or ""
+    contexto["f"]["total_texto"] = form.get("total") or ""
+    for destino, columnas in (
+        ("filas_conceptos", ("descripcion", "cantidad", "unidad", "precio_unitario", "importe")),
+        ("filas_impuestos", ("nombre", "importe")),
+        ("filas_recargos", ("nombre", "importe")),
+        ("filas_creditos", ("nombre", "importe")),
+    ):
+        prefijo = destino.removeprefix("filas_").removesuffix("s")
+        listas = [form.getlist(f"{prefijo}_{columna}") for columna in columnas]
+        filas = [
+            dict(zip(columnas, valores, strict=True))
+            for valores in zip_longest(*listas, fillvalue="")
+        ]
+        contexto[destino] = _filas_con_blancos(filas, columnas=columnas)
     contexto["mensajes"] = [(mensaje, "error")]
     return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
 
@@ -928,7 +983,7 @@ async def post_confirmar(request: Request, hash_pdf: str, csrf: str = Form("")):
         try:
             factura = await _factura_desde_form(request, hash_pdf, datos)
         except ValueError as exc:
-            return _error_de_formulario(
+            return await _error_de_formulario(
                 request, con, hash_pdf, datos, f"No se pudo leer el formulario: {exc}"
             )
         try:
@@ -940,7 +995,14 @@ async def post_confirmar(request: Request, hash_pdf: str, csrf: str = Form("")):
                 diccionario=diccionario,
                 total_impreso=total_impreso_valor,
                 actor=request.state.sesion["usuario"],
+                permitir_duplicado=(await request.form()).get("permitir_duplicado") == "si",
+                motivo_duplicado=(await request.form()).get("motivo_duplicado") or None,
             )
+            if estado_final == "aprobada":
+                try:
+                    sincronizar_casos_pendientes(con, servicio=factura.servicio)
+                except Exception:  # noqa: BLE001 -- la aprobación ya confirmó en DB
+                    logger.exception("Quedó pendiente sincronizar casos comparativos")
         except ValueError as exc:
             resultado = validar_factura(
                 factura, total_impreso=total_impreso(datos["texto_extraido"] or "")
@@ -993,7 +1055,7 @@ async def post_guardar(request: Request, hash_pdf: str, csrf: str = Form("")):
         try:
             factura = await _factura_desde_form(request, hash_pdf, datos)
         except ValueError as exc:
-            return _error_de_formulario(
+            return await _error_de_formulario(
                 request, con, hash_pdf, datos, f"No se pudo leer el formulario: {exc}"
             )
         guardar_factura(
@@ -1297,6 +1359,9 @@ def _analisis(
             periodo_1=periodo_1,
             periodos_del_servicio=filas_periodos,
         )
+        snapshot = snapshot_comparacion(
+            con, servicio=servicio, periodo_0=periodo_0, periodo_1=periodo_1
+        )
 
         total_pagable_0 = resultado.componentes_0["total_pagable"]
         total_pagable_1 = resultado.componentes_1["total_pagable"]
@@ -1329,6 +1394,21 @@ def _analisis(
             veredicto = "No hubo variación nominal entre los períodos seleccionados."
 
         avisos_calculo = list(resultado.avisos_calculo)
+        for periodo, componentes in (
+            (periodo_0, resultado.componentes_0),
+            (periodo_1, resultado.componentes_1),
+        ):
+            desglose = (
+                componentes["consumos"] + componentes["impuestos"]
+                + componentes["recargos"] - componentes["creditos"]
+            )
+            diferencia = desglose - componentes["total_pagable"]
+            if abs(diferencia) >= 0.005:
+                avisos_calculo.append(
+                    f"El desglose histórico de {periodo} difiere del total confirmado en "
+                    f"{pesos_ars(diferencia, signo=True)}. Requiere revisión; la cifra "
+                    "principal usa el total confirmado."
+                )
         principales = top_conceptos_por_variacion(resultado.descomposiciones, TOP_N_CONCEPTOS)
         if len(principales) < len(resultado.descomposiciones):
             avisos_calculo.append(
@@ -1368,24 +1448,21 @@ def _analisis(
                 date.fromisoformat(p): total
                 for p, total in totales_pagables_por_periodo(con, servicio=servicio).items()
             }
+            serie = [
+                {"periodo": fecha.isoformat(), "nominal": pesos_ars(total), "real": None}
+                for fecha, total in sorted(totales_por_fecha.items())
+            ]
             df_ipc_serie = leer_ipc()
             puntos = serie_nominal_y_real(
                 totales_por_fecha, fecha_base=fecha_base, df_ipc=df_ipc_serie
             )
-            serie = [
-                {
-                    "periodo": p.periodo.isoformat(),
-                    "nominal": pesos_ars(p.total_nominal),
-                    "real": pesos_ars(p.total_real),
-                }
-                for p in puntos
-            ]
+            reales = {p.periodo.isoformat(): pesos_ars(p.total_real) for p in puntos}
+            for fila in serie:
+                fila["real"] = reales.get(fila["periodo"])
         except requests.exceptions.RequestException as exc:
-            error_serie = (
-                f"No se pudo descargar el IPC para la serie histórica (problema de red): {exc}"
-            )
+            error_serie = f"Los valores reales no son calculables: falta IPC ({exc})."
         except ValueError as exc:
-            error_serie = f"No se pudo calcular la serie histórica: {exc}"
+            error_serie = f"Los valores reales no son calculables: {exc}"
 
         ordenadas = ordenar_por_severidad(resultado.alertas)
         conteo = Counter(a.severidad for a in ordenadas)
@@ -1396,6 +1473,7 @@ def _analisis(
         "servicio": servicio,
         "periodo_0": periodo_0,
         "periodo_1": periodo_1,
+        "snapshot": snapshot,
         # docs/auditoria-2026-09-web.md, E-13: el slug (`servicio`) y las
         # fechas ISO (`periodo_0`/`periodo_1`) se conservan tal cual para
         # los links que arman query params (Excel, "Cambiar servicio o
@@ -1476,9 +1554,18 @@ def _analisis(
 
 
 @app.get("/ver/excel")
-def get_ver_excel(servicio: str, periodo_0: str, periodo_1: str):
+def get_ver_excel(servicio: str, periodo_0: str, periodo_1: str, snapshot: str | None = None):
     con = conectar()
     try:
+        actual = snapshot_comparacion(
+            con, servicio=servicio, periodo_0=periodo_0, periodo_1=periodo_1
+        )
+        if snapshot is not None and snapshot != actual:
+            return Response(
+                "La comparación cambió desde que abriste Ver. "
+                "Actualizá la página antes de descargar.",
+                status_code=409,
+            )
         borradores_pendientes = contar_borradores(con, servicio=servicio)
         filas_periodos = _periodos_del_servicio(con, servicio)
 

@@ -49,6 +49,32 @@ Cada semana el operador exporta la base y todos los objetos de
 `segurplus-documentos` a un destino externo cifrado. La evidencia mínima es:
 fecha, tamaño, hashes, cantidad de facturas, decisiones y casos.
 
+Usar desde la PC controlada del operador, con PostgreSQL client tools
+instaladas y las variables de Render disponibles solo durante la ejecución:
+
+```powershell
+python scripts/respaldo_operador.py E:\Respaldos\Segurplus
+```
+
+El script solicita una contraseña de cifrado dos veces, produce un archivo
+`*.zip.aes` y no deja el ZIP sin cifrar fuera de una carpeta temporal. No
+guardar esa contraseña junto al archivo ni en Render. Registrar fuera de Git:
+fecha, nombre del archivo, cantidad de PDFs y hashes del `manifest.json`.
+
+Para el ensayo mensual, copiar el archivo a una PC aislada, descifrarlo con
+la contraseña guardada por el operador y verificarlo sin conectar a producción:
+
+```powershell
+python scripts/verificar_respaldo.py E:\Respaldos\Segurplus\segurplus-respaldo-AAAA.zip.aes --extraer E:\Prueba\Segurplus
+```
+
+El parámetro `--extraer` debe ser una carpeta vacía de una PC aislada. Solo
+después de que informe integridad, restaurar **sobre una base de prueba vacía**
+con `pg_restore --dbname <URL-DE-PRUEBA> segurplus.dump`. Luego
+comparar `manifest.json` contra los PDFs restaurados y los conteos por estado
+de `facturas`, `decisiones_factura`, `correcciones_factura` y `casos_alerta`.
+Nunca usar una URL de producción como destino de `pg_restore`.
+
 Una vez por mes se restaura una copia en un entorno aislado o una base de
 prueba, sin sobrescribir producción. Se comparan los hashes de PDF, conteos de
 facturas por estado, decisiones, correcciones y casos. Si no concilian, el

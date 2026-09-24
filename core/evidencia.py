@@ -177,7 +177,7 @@ def leer_pdf(ruta_evidencia: str | None, *, con: Any = None) -> bytes | None:
         return None
 
 
-def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> None:
+def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> bool:
     """Borra el PDF original a partir de la URI que devolvió `guardar_pdf`
     -- usada por `core.almacenamiento.descartar_borrador` (docs/auditoria-
     2026-09-confirmacion.md, D-11): antes, descartar un borrador borraba
@@ -187,25 +187,26 @@ def borrar_pdf(ruta_evidencia: str | None, *, con: Any = None) -> None:
     el borrado falla por cualquier motivo, no debe bloquear el descarte del
     borrador en sí."""
     if not ruta_evidencia:
-        return
+        return True
     if ruta_evidencia.startswith("s3://"):
         bucket, _, clave = ruta_evidencia.removeprefix("s3://").partition("/")
         try:
             cliente = _cliente_s3()
             cliente.delete_object(Bucket=bucket, Key=clave)
         except Exception:  # noqa: BLE001 -- nunca bloquear el descarte por esto
-            return
-        return
+            return False
+        return True
     if ruta_evidencia.startswith("db://"):
         if con is None:
-            return
+            return False
         hash_pdf = ruta_evidencia.removeprefix("db://")
         try:
             con.execute("DELETE FROM documentos_pdf WHERE hash_pdf = ?", [hash_pdf])
         except Exception:  # noqa: BLE001 -- nunca bloquear el descarte por esto
-            return
-        return
+            return False
+        return True
     try:
         Path(ruta_evidencia).unlink(missing_ok=True)
     except OSError:
-        pass
+        return False
+    return True

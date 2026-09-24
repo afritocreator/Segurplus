@@ -12,6 +12,7 @@ pdfplumber>=0.11
 google-genai>=0.3
 psycopg[binary]>=3.2  # Postgres gratis (Neon/Supabase), ver ADR-003
 pandas>=2.0  # solo para st.data_editor en apps/segurplus/paginas/confirmar.py
+cryptography>=42  # respaldo cifrado externo del operador
 # boto3 NO va acá: solo hace falta si se configura S3_BUCKET real para el PDF
 # (ver core/evidencia.py). El default del piloto guarda el PDF en una carpeta
 # local (EVIDENCIA_DIR). Si algún día se activa S3, agregar "boto3>=1.35" acá.

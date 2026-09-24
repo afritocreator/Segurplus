@@ -62,6 +62,27 @@ web instaladas temporalmente; los omitidos incluyen integraciones que no
 pueden certificarse aquí. Ningún cambio de esta rama se desplegó ni se
 ejecutó contra facturas reales o credenciales productivas.
 
+### Actualización 2026-09-24: cierre de N-01 a N-18
+
+La rama `codex/cierre-auditoria-piloto` incorpora el cierre local de los
+hallazgos operativos posteriores: aritmética exacta en centavos (sin tolerancia
+general), validación de períodos/moneda/formato ARS, bloqueo de empates y de
+duplicados CUIT-comprobante-período, snapshots de cálculo para pantalla y
+Excel, IPC versionado, y cola post-commit que materializa comparaciones y
+casos sin escribir al abrir una pantalla. Las operaciones de PDF ahora
+verifican SHA-256, compensan una escritura de objeto que no llega a confirmar
+en SQL y posponen borrados; Gemini reserva y registra cada intento antes de
+la llamada, con límite de tamaño y timeout configurables.
+
+Se agregaron `scripts/respaldo_operador.py` y
+`scripts/verificar_respaldo.py`: generan y verifican, respectivamente, un
+archivo cifrado con base, PDFs y manifiesto de hashes. Son un procedimiento
+para el operador, no una afirmación de que exista ya una copia ni una
+restauración comprobada. La batería `pytest -q` y `ruff check .` se ejecutó
+limpia en local. Sigue pendiente la verificación de integración PostgreSQL/S3,
+la primera exportación y restauración aislada, y el corte de Render; por eso
+estos cierres aún no equivalen a validación de producción.
+
 **Fecha:** 2026-09-23. **Base examinada:** `11ad46deee45ac82f2766607dbbc6cb81c80845a`, branch local `claude/invoice-analysis-automation-7axk9u`. **Alcance:** código, tests, CI y documentación; no se abrieron facturas ni bases de `data/reales/`, no se usaron credenciales, no se modificó código. No se pudo refrescar `origin` porque el entorno denegó escritura en `.git/FETCH_HEAD`; por eso «actual» significa el checkout local, no una afirmación sobre el servidor ni sobre el despliegue.
 
 ## Veredicto

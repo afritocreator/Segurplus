@@ -1,15 +1,14 @@
 # Estado del proyecto
 
-> **Rama de corrección `codex/auditoria-piloto-web` — no desplegada.** El
-> checkout se avanzó al remoto `40e16ec` antes de trabajar. La rama añade
-> transacciones, snapshots de facturas, exclusión de monedas no ARS,
-> clasificación de datos/carga manual, Google OIDC con allowlist/CSRF y
-> bloqueo de evidencia no durable en producción. Son cambios **probados
-> localmente**, no verificados en Render/Supabase. Faltan rotación de
-> credenciales, configuración de Google y bucket privado, backup/restauración,
-> pruebas PostgreSQL reales y los hallazgos aún pendientes de la
-> [reconciliación S-01–S-20](auditoria-estado-2026-09-23.md). No activar
-> auto-deploy de esta rama hasta superar esas puertas.
+> **Rama de corrección `codex/cierre-auditoria-piloto` — no desplegada.** El
+> cierre de N-01–N-18 está **implementado y probado localmente**: cálculo
+> exacto al centavo, bloqueo de duplicados de negocio, evidencia verificable,
+> reserva de intentos Gemini, snapshots para pantalla/Excel y materialización
+> post-commit de casos. El piloto mantiene contraseña compartida; Google OIDC
+> no forma parte de esta etapa. Falta verificar con el rol de aplicación en
+> PostgreSQL/Supabase, bucket privado, backup/restauración externa y Render.
+> Ninguno de esos pasos se hizo desde este checkout ni se debe habilitar
+> auto-deploy antes del corte controlado.
 > El orden operativo y la reversión están en
 > [runbook-corte-produccion.md](runbook-corte-produccion.md).
 
