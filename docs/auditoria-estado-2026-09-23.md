@@ -32,6 +32,29 @@
 | S-19 | Dependiente de muestras | A-27 fue corregido con `periodo_hasta`; A-26 y excepciones de periodicidad requieren PDFs autorizados. |
 | S-20 | En corrección | Esta reconciliación actualiza el diagnóstico; README, estado y ADRs aún deben quedar alineados con el despliegue. |
 
+### Verificación de infraestructura (2026-09-24)
+
+La fuente de verdad remota no es un proyecto independiente: es el esquema
+`segurplus` del proyecto Supabase `klerico`, separado de las tablas de
+Klericó. El esquema está vacío y mantiene el conjunto histórico de tablas,
+pero aún no contiene `versiones_factura`, `clasificaciones_documento`,
+`eventos_caso` ni `documentos_pdf` que requiere esta rama.
+
+El intento de aplicar esa migración aditiva desde la integración de Supabase
+fue rechazado con `must be owner of table conceptos`: el rol de administración
+disponible no es dueño de las tablas creadas por el rol de la aplicación. No
+se reintentó ni se modificó ningún permiso. La migración debe correr con la
+misma conexión de aplicación que usa Render, dentro del corte controlado.
+
+El asesor de seguridad de Supabase informó que las 11 tablas existentes del
+esquema tienen RLS desactivado. Mientras el esquema esté expuesto por Data
+API, una clave `anon`/`authenticated` con permisos podría acceder a las filas.
+**No se habilitó RLS automáticamente**: hacerlo sin políticas explícitas puede
+bloquear el rol servidor que usa Render. El corte productivo debe incluir una
+migración aditiva para las tablas nuevas y una política de acceso de mínimo
+privilegio, verificada contra el rol de la aplicación, antes de cargar datos.
+La base quedó en cero filas durante la verificación.
+
 La suite remota en este checkout pasó **554 tests, 4 omitidos** con dependencias
 web instaladas temporalmente; los omitidos incluyen integraciones que no
 pueden certificarse aquí. Ningún cambio de esta rama se desplegó ni se

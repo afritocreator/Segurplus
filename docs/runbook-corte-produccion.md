@@ -29,6 +29,10 @@ guardan solo en los paneles de sus proveedores; nunca en Git, logs o tickets.
 4. Desplegar el commit aprobado. Verificar login Google con un correo
    autorizado, rechazo de uno no autorizado, carga manual sintética y lectura
    del PDF recién guardado. No enviar un PDF real a Gemini durante esta prueba.
+   La primera conexión de la aplicación aplica las migraciones aditivas en el
+   esquema `segurplus`; el panel de Supabase no es dueño de esas tablas, por
+   lo que no se debe intentar suplantar ese rol ni cambiar ownership para
+   sortearlo.
 5. Ejecutar `python scripts/migrar_pdfs_a_bucket.py --aplicar` una vez que el
    bucket y el acceso estén comprobados. Cada objeto se valida con SHA-256; el
    script conserva la copia de base y se interrumpe ante la primera diferencia.

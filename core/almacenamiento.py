@@ -267,6 +267,11 @@ class ConexionPostgres:
         except ImportError as exc:  # pragma: no cover - depende del deploy
             raise RuntimeError("DATABASE_URL requiere instalar psycopg.") from exc
         self._con = psycopg.connect(url, autocommit=True)
+        # El proyecto Supabase también aloja otros productos. La URL de
+        # Render ya apunta a este esquema, pero fijarlo en cada conexión es
+        # defensa en profundidad: un cambio accidental de URL nunca debe
+        # hacer que una consulta sin calificar toque `public` u otro esquema.
+        self._con.execute("SET search_path TO segurplus")
 
     def execute(self, sql: str, params: list[Any] | None = None) -> Any:
         """Reemplazo textual `?`->`%s`, sin parsear el SQL -- RESTRICCIÓN:
