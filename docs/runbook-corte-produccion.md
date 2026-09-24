@@ -9,9 +9,10 @@ guardan solo en los paneles de sus proveedores; nunca en Git, logs o tickets.
 - La rama desplegable pasó `pytest -q` y `ruff check .`.
 - El servicio Render tiene una URL HTTPS estable. La URI OAuth será
   `https://<host>/auth/google` y debe ser idéntica en Google Cloud y Render.
-- Existe `segurplus-documentos`, bucket privado de Supabase Storage. Se creó
+- Se creó `segurplus-documentos`, bucket privado de Supabase Storage. Se creó
   una clave S3 de servidor, y se anotaron endpoint, región y nombre del bucket
-  en el gestor de secretos de Render.
+  en el gestor de secretos de Render. Al 2026-09-24 este es un prerrequisito
+  pendiente, no una configuración ya realizada.
 - Existe una exportación externa cifrada reciente de base y PDFs, con fecha,
   conteo de facturas y lista de SHA-256. El destino externo queda bajo control
   del operador; no se sube al repositorio.

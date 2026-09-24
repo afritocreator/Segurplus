@@ -47,12 +47,14 @@ se reintentó ni se modificó ningún permiso. La migración debe correr con la
 misma conexión de aplicación que usa Render, dentro del corte controlado.
 
 El asesor de seguridad de Supabase informó que las 11 tablas existentes del
-esquema tienen RLS desactivado. Mientras el esquema esté expuesto por Data
-API, una clave `anon`/`authenticated` con permisos podría acceder a las filas.
+esquema tienen RLS desactivado. La comprobación directa posterior confirmó que
+los roles de Data API `anon` y `authenticated` no tienen `USAGE` sobre
+`segurplus` ni privilegios sobre sus tablas: no hay exposición pública actual.
 **No se habilitó RLS automáticamente**: hacerlo sin políticas explícitas puede
-bloquear el rol servidor que usa Render. El corte productivo debe incluir una
-migración aditiva para las tablas nuevas y una política de acceso de mínimo
-privilegio, verificada contra el rol de la aplicación, antes de cargar datos.
+bloquear el rol servidor que usa Render. RLS sigue siendo una defensa en
+profundidad para el corte productivo, junto con una política de mínimo
+privilegio probada contra el rol de la aplicación; no es una corrección de
+emergencia sobre datos expuestos.
 La base quedó en cero filas durante la verificación.
 
 La suite remota en este checkout pasó **554 tests, 4 omitidos** con dependencias
