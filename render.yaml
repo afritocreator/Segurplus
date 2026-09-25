@@ -9,7 +9,7 @@ services:
     name: segurplus-web
     runtime: python
     plan: free
-    branch: codex/auditoria-piloto-web
+    branch: main
     autoDeploy: true
     buildCommand: pip install -e ".[s3]"
     # --proxy-headers: docs/auditoria-2026-09-web.md, E-18 -- sin esto,

@@ -1,0 +1,33 @@
+{
+  "description": "Protecciones y feedback rápido para el trabajo de Codex en Segurplus.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|exec_command|apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -X utf8 \"$(git rev-parse --show-toplevel)/.codex/hooks/guard_facturas.py\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/run_python_hook.ps1') -Script guard_facturas.py -FailClosed\"",
+            "timeout": 10,
+            "statusMessage": "Protegiendo datos reales de facturas"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -X utf8 \"$(git rev-parse --show-toplevel)/.codex/hooks/ruff_after_edit.py\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/run_python_hook.ps1') -Script ruff_after_edit.py\"",
+            "timeout": 30,
+            "statusMessage": "Revisando Python editado con Ruff"
+          }
+        ]
+      }
+    ]
+  }
+}

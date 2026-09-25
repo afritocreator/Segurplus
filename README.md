@@ -78,14 +78,13 @@ la consola salvo los secrets:
    `render.yaml`: `APP_PASSWORD`, `GEMINI_API_KEY`, y `DATABASE_URL` si se usa PostgreSQL
    (sin ella, la app usa DuckDB local -- ver "El PDF original y la base" más abajo).
    `SECRET_KEY` la genera Render sola (`generateValue: true`), no hace falta cargarla.
-3. Deploy. Con `autoDeploy: true`, cada push a la rama de `render.yaml` (hoy
-   `claude/invoice-analysis-automation-7axk9u`, `main` cuando se mergee -- ver más
-   abajo) dispara un deploy solo; mientras tanto, después de cada push hay que apretar
-   **Manual Deploy** en el panel.
+3. Deploy. Con `autoDeploy: true`, cada push a `main`, la rama declarada en
+   `render.yaml`, dispara un deploy. Las ramas de trabajo no se despliegan
+   automáticamente; se verifican y se mergean mediante el corte controlado.
 
-**Actualizar después de mergear a `main`**: cambiar `branch:` en `render.yaml` (y
-volver a conectar el blueprint, o editar el servicio en el panel de Render) para que
-apunte a `main` en vez de la rama de trabajo -- Render no lo hace solo.
+Si el servicio existente conserva otra rama configurada en el panel de Render, alinearla
+con `main` durante el corte controlado; modificar el blueprint no cambia retroactivamente
+la configuración de un servicio ya creado.
 
 **El PDF original y la base**: sin `S3_BUCKET` ni un disco persistente montado (Render
 free no tiene disco persistente), el PDF se guarda directamente en la misma base de

@@ -17,8 +17,8 @@ y qué falta, para no tener que releer el plan entero cada vez.
 
 ## Construido (Fases 0-5 del plan completas)
 
-- **Fase 0** — andamiaje: `pyproject.toml`, CI, protección de `data/reales/` (hook de
-  Claude Code + pre-commit real de git), subagente `revisor-financiero`, generador de
+- **Fase 0** — andamiaje: `pyproject.toml`, CI, protección de `data/reales/` (hooks de
+  Codex y Claude Code + pre-commit real de git), skill `revisor-financiero`, generador de
   facturas sintéticas (`docs/fixtures/generar_fixtures.py`).
 - **Fase 1** — extracción: esquema canónico (`core/extraccion/esquema.py`), llamada a
   Gemini (`core/extraccion/gemini.py`, port de Kleric-), validación aritmética
