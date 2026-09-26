@@ -43,7 +43,6 @@ from core.almacenamiento import (
     guardar_alertas,
     guardar_factura,
     leer_borrador,
-    llamadas_ultima_hora,
     proxima_ventana_libre,
     registrar_clasificacion_documento,
     registrar_correccion_conocida,
