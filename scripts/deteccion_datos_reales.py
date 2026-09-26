@@ -92,12 +92,14 @@ def archivos_de_reales_en_stage(cwd: str | None = None) -> list[str]:
             ["git", "diff", "--cached", "--name-only"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             cwd=cwd,
         )
     except Exception:
         return []
-    staged = resultado.stdout.splitlines()
+    staged = (resultado.stdout or "").splitlines()
     return [f for f in staged if f.startswith("data/reales/") and f != "data/reales/README.md"]
 
 
@@ -108,12 +110,14 @@ def cuit_en_diff_staged(cwd: str | None = None) -> str | None:
             ["git", "diff", "--cached"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             cwd=cwd,
         )
     except Exception:
         return None
-    diff = resultado.stdout
+    diff = resultado.stdout or ""
     agregadas = "\n".join(
         linea
         for linea in diff.splitlines()
