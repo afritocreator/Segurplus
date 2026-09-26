@@ -4,8 +4,8 @@
 <p><a href="/revisar">← Volver a la lista</a></p>
 <h1>🧾 Confirmar carga</h1>
 
-{% if motivo_carga %}
-<div class="aviso advertencia">No se pudo leer automáticamente: {{ motivo_carga }}</div>
+{% if aviso_carga %}
+<div class="aviso {{ tipo_aviso_carga }}">{{ aviso_carga }}</div>
 {% endif %}
 
 <div class="dos-columnas">
@@ -34,6 +34,7 @@
           <input type="text" name="cuit" value="{{ f.cuit or '' }}">
         </div>
       </div>
+
       <div class="fila-2">
         <div>
           <label>Servicio</label>
@@ -132,6 +133,16 @@
         </div>
       </div>
 
+      {% if requiere_total_manual %}
+      <div class="aviso info">
+        Este PDF no ofrece una lectura automática independiente del total. Miralo en el
+        documento de la izquierda y escribilo nuevamente; no copies el valor extraído por Gemini.
+      </div>
+      <label>Total leído visualmente del PDF</label>
+      <input type="text" name="total_impreso_manual" value="{{ total_impreso_manual_texto }}"
+             inputmode="decimal" autocomplete="off" required>
+      {% endif %}
+
       <h3>Control aritmético</h3>
       {% for e in errores_aritmetica %}
         <div class="aviso error">{{ e }}</div>
@@ -148,9 +159,22 @@
 
       <div style="display:flex;gap:0.75rem;margin-top:1rem;">
         <button type="submit" class="primario">Confirmar factura</button>
-        <button type="submit" formaction="/revisar/{{ hash_pdf }}/guardar">Guardar cambios sin confirmar</button>
+        <button type="submit" formaction="/revisar/{{ hash_pdf }}/guardar" formnovalidate>
+          Guardar cambios sin confirmar
+        </button>
       </div>
     </form>
+
+    {% if puede_reintentar %}
+    <form method="post" action="/revisar/{{ hash_pdf }}/reintentar" style="margin-top:0.75rem;"
+          onsubmit="return confirm('Si Gemini responde correctamente reemplazará los campos actuales del borrador. ¿Continuar?');">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button type="submit">Reintentar lectura con Gemini</button>
+      <span style="color:var(--gris);font-size:0.85rem;">
+        Usa el mismo PDF guardado y conserva el historial de versiones.
+      </span>
+    </form>
+    {% endif %}
 
     {% if mostrar_boton_un_renglon %}
     <form method="post" action="/revisar/{{ hash_pdf }}/un_renglon" style="margin-top:0.75rem;">
@@ -168,8 +192,7 @@
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button type="submit" class="peligro">Descartar borrador</button>
       <span style="color:var(--gris);font-size:0.85rem;">
-        Si Gemini no pudo leerla bien, esta es la forma de que la vuelva a intentar:
-        después de descartar, subí el mismo PDF de nuevo en Subir.
+        Borra el borrador y su evidencia; no hace falta descartarlo para reintentar Gemini.
       </span>
     </form>
   </div>

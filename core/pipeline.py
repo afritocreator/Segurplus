@@ -34,6 +34,7 @@ import duckdb
 
 from core.almacenamiento import (
     _transaccional,
+    actualizar_fallo_extraccion_borrador,
     factura_ya_procesada,
     guardar_alertas,
     guardar_factura,
@@ -45,6 +46,7 @@ from core.almacenamiento import (
     registrar_intento_gemini,
     sincronizar_casos_de_factura,
     transaccion,
+    ultima_clasificacion_documento,
 )
 from core.analisis.alertas import alertas_por_item_duplicado
 from core.analisis.diccionario import cargar_diccionario
@@ -53,7 +55,7 @@ from core.evidencia import guardar_pdf, leer_pdf
 from core.extraccion.esquema import FacturaExtraida
 from core.extraccion.gemini import ExtraccionError, es_error_transitorio, extraer_con_gemini
 from core.extraccion.validacion import validar_factura
-from core.ingesta.pdf_texto import PdfSinTextoError, extraer_texto
+from core.ingesta.pdf_texto import extraer_texto
 from core.operacion import (
     espera_reintento_gemini_segundos,
     intentos_gemini_por_llamada,
@@ -67,11 +69,11 @@ from core.operacion import (
 class ResultadoPipeline:
     ruta: Path
     hash_pdf: str
-    # "ya_procesada" | "borrador" | "error_extraccion" -- el pipeline ya NO
+    # "ya_procesada" | "ya_extraida" | "borrador" | "error_extraccion" -- el pipeline ya NO
     # decide si una factura entra al análisis (ver docstring del módulo).
     # "error_extraccion" queda reservado para lo que ni siquiera se llegó a
-    # INTENTAR leer (tope de llamadas por hora, PDF ilegible o sin texto):
-    # ahí no hay nada que mostrar en la pantalla de confirmación.
+    # INTENTAR leer (PDF corrupto o evidencia no verificable). Un PDF válido
+    # sin texto y un tope de cuota sí dejan borrador para revisión/reintento.
     estado: str
     detalle: str = ""
 
@@ -112,6 +114,78 @@ def _borrador_vacio(hash_pdf: str, ruta: Path) -> FacturaExtraida:
     )
 
 
+def _mensaje_operativo_gemini(exc: ExtraccionError | None) -> str:
+    """Traduce errores del proveedor sin exponer su payload en la interfaz.
+
+    El detalle completo ya queda en `intentos_gemini.mensaje` y
+    `respuesta_cruda`; `motivo_carga` es deliberadamente texto operativo.
+    """
+    if exc is None:
+        return "Gemini no pudo leer el documento. Podés reintentarlo desde este borrador."
+    detalle = str(exc).lower()
+    if "503" in detalle or "unavailable" in detalle or "high demand" in detalle:
+        return "Gemini está temporalmente saturado. Reintentá desde este borrador más tarde."
+    if "429" in detalle or "resource_exhausted" in detalle or "quota" in detalle:
+        return "Gemini alcanzó temporalmente su cuota. Reintentá desde este borrador más tarde."
+    if "api key" in detalle or "unauthorized" in detalle or "permission" in detalle:
+        return "Gemini no está disponible por un problema de configuración."
+    if "json" in detalle or "esquema" in detalle:
+        return "Gemini respondió, pero no se pudo interpretar la extracción."
+    return "Gemini no pudo leer el documento. Podés reintentarlo desde este borrador."
+
+
+def _mensaje_tope_gemini(con: duckdb.DuckDBPyConnection, *, tope: int) -> str:
+    destrabe = proxima_ventana_libre(con, tope=tope)
+    detalle = f"Se alcanzó el tope de {tope} llamadas a Gemini por hora"
+    if destrabe is not None:
+        hora_local = datetime.now(ZoneInfo(zona_horaria())) + destrabe
+        return detalle + f". Reintentá después de las {hora_local.strftime('%H:%M')}."
+    return detalle + ". Reintentá más tarde."
+
+
+def _extraer_con_reintentos(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    hash_pdf: str,
+    ruta_pdf: str,
+    contenido_pdf: bytes,
+    texto_extraido: str,
+    api_key: str | None,
+) -> tuple[FacturaExtraida | None, str | None]:
+    """Ejecuta Gemini respetando reintentos y cuota antes de cada llamada."""
+    intentos_max = intentos_gemini_por_llamada()
+    espera_base = espera_reintento_gemini_segundos()
+    tope = max_llamadas_gemini_por_hora()
+    ultimo_error: ExtraccionError | None = None
+
+    for intento in range(1, intentos_max + 1):
+        if llamadas_ultima_hora(con) >= tope:
+            return None, _mensaje_tope_gemini(con, tope=tope)
+        try:
+            factura = extraer_con_gemini(
+                contenido_pdf, api_key=api_key, texto_extraido=texto_extraido
+            )
+            registrar_intento_gemini(
+                con, hash_pdf=hash_pdf, ruta_pdf=ruta_pdf, exito=True
+            )
+            return factura, None
+        except ExtraccionError as exc:
+            ultimo_error = exc
+            registrar_intento_gemini(
+                con,
+                hash_pdf=hash_pdf,
+                ruta_pdf=ruta_pdf,
+                exito=False,
+                mensaje=str(exc),
+                respuesta_cruda=getattr(exc, "respuesta_cruda", None),
+            )
+            if intento < intentos_max and es_error_transitorio(exc):
+                time.sleep(espera_base * intento)
+                continue
+            break
+    return None, _mensaje_operativo_gemini(ultimo_error)
+
+
 def procesar_pdf(
     ruta: Path,
     con: duckdb.DuckDBPyConnection,
@@ -126,9 +200,7 @@ def procesar_pdf(
     `ResultadoPipeline`, no cortan el procesamiento de los demás PDFs de un
     lote."""
     try:
-        documento = extraer_texto(ruta)
-    except PdfSinTextoError as exc:
-        return ResultadoPipeline(ruta, hash_pdf="", estado="error_extraccion", detalle=str(exc))
+        documento = extraer_texto(ruta, permitir_sin_texto=True)
     except Exception as exc:
         # docs/auditoria-2026-09.md, hallazgo A-18: antes solo se atrapaba
         # PdfSinTextoError -- un PDF corrupto o mal formado (no "sin texto",
@@ -160,63 +232,15 @@ def procesar_pdf(
             via="gemini",
         )
 
-    tope = max_llamadas_gemini_por_hora()
-    if llamadas_ultima_hora(con) >= tope:
-        # docs/auditoria-2026-09.md, hallazgo A-7 -- y docs/auditoria-2026-
-        # 09-facturas-reales.md, B-4/C-8/C-11: el tope se hace cumplir
-        # contra llamadas REALES, y el mensaje dice a qué hora reintentar,
-        # en la zona horaria del usuario.
-        destrabe = proxima_ventana_libre(con, tope=tope)
-        detalle = f"Se alcanzó el tope de {tope} llamadas a Gemini por hora"
-        if destrabe is not None:
-            hora_local = datetime.now(ZoneInfo(zona_horaria())) + destrabe
-            detalle += f" -- probá de nuevo después de las {hora_local.strftime('%H:%M')}."
-        else:
-            detalle += " -- probá de nuevo más tarde."
-        return ResultadoPipeline(
-            ruta, documento.hash_sha256, estado="error_extraccion", detalle=detalle
-        )
-
     contenido_pdf = ruta.read_bytes()
-    factura: FacturaExtraida | None = None
-    ultimo_error: ExtraccionError | None = None
-    intentos_max = intentos_gemini_por_llamada()
-    espera_base = espera_reintento_gemini_segundos()
-    for intento in range(1, intentos_max + 1):
-        try:
-            # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-3: se le pasa también
-            # el texto que `extraer_texto` ya sacó del mismo PDF -- una segunda
-            # vista, además del PDF nativo, para las facturas con layout a dos
-            # columnas o líneas de impuesto con dos montos.
-            factura = extraer_con_gemini(
-                contenido_pdf, api_key=api_key, texto_extraido=documento.texto
-            )
-            # docs/auditoria-2026-09-facturas-reales.md, hallazgo C-10: en un
-            # intento EXITOSO no se manda respuesta_cruda -- esa misma cadena
-            # ya va a facturas.respuesta_extraida vía guardar_factura más abajo.
-            registrar_intento_gemini(
-                con, hash_pdf=documento.hash_sha256, ruta_pdf=str(ruta), exito=True
-            )
-            break
-        except ExtraccionError as exc:
-            ultimo_error = exc
-            # docs/auditoria-2026-09-facturas-reales.md, hallazgo B-5/C-2: el
-            # intento queda registrado igual, con el JSON crudo si Gemini llegó
-            # a responder -- CADA intento, no solo el último, así el tope por
-            # hora (max_llamadas_gemini_por_hora) sigue contando llamadas
-            # reales (docs/auditoria-2026-09-web.md, E-6).
-            registrar_intento_gemini(
-                con,
-                hash_pdf=documento.hash_sha256,
-                ruta_pdf=str(ruta),
-                exito=False,
-                mensaje=str(exc),
-                respuesta_cruda=getattr(exc, "respuesta_cruda", None),
-            )
-            if intento < intentos_max and es_error_transitorio(exc):
-                time.sleep(espera_base * intento)
-                continue
-            break
+    factura, detalle_fallo = _extraer_con_reintentos(
+        con,
+        hash_pdf=documento.hash_sha256,
+        ruta_pdf=str(ruta),
+        contenido_pdf=contenido_pdf,
+        texto_extraido=documento.texto,
+        api_key=api_key,
+    )
 
     if factura is None:
         # E-6: 503/429/timeout ya se reintentaron y siguieron fallando, o
@@ -224,7 +248,6 @@ def procesar_pdf(
         # se reintenta. A diferencia de antes, la factura NO se pierde: se
         # deja un borrador vacío para completar a mano, con el PDF a la
         # vista -- Gemini no pudo leerla, pero el usuario sí puede.
-        exc = ultimo_error
         factura = _borrador_vacio(documento.hash_sha256, ruta)
         if os.environ.get("SEGURPLUS_PRODUCTION") == "1":
             try:
@@ -243,14 +266,16 @@ def procesar_pdf(
                         factura,
                         estado="borrador",
                         actor=actor,
-                        motivo_carga=f"No se pudo leer con Gemini: {exc}",
+                        motivo_carga=detalle_fallo,
                         texto_extraido=documento.texto,
                     )
             except Exception as fallo:
                 return ResultadoPipeline(
                     ruta, factura.hash_pdf, estado="error_extraccion", detalle=str(fallo)
                 )
-            return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=str(exc))
+            return ResultadoPipeline(
+                ruta, factura.hash_pdf, estado="borrador", detalle=detalle_fallo or ""
+            )
         try:
             factura.ruta_evidencia = guardar_pdf(documento.hash_sha256, contenido_pdf, con=con)
         except Exception:  # noqa: BLE001 -- un borrador vacío sin PDF sigue siendo mejor que nada
@@ -260,10 +285,12 @@ def procesar_pdf(
             factura,
             estado="borrador",
             actor=actor,
-            motivo_carga=f"No se pudo leer con Gemini: {exc}",
+            motivo_carga=detalle_fallo,
             texto_extraido=documento.texto,
         )
-        return ResultadoPipeline(ruta, factura.hash_pdf, estado="borrador", detalle=str(exc))
+        return ResultadoPipeline(
+            ruta, factura.hash_pdf, estado="borrador", detalle=detalle_fallo or ""
+        )
 
     factura.hash_pdf = documento.hash_sha256
     factura.ruta_pdf = str(ruta)
@@ -344,6 +371,78 @@ def procesar_pdf_manual(
     return ResultadoPipeline(ruta, hash_pdf, estado="borrador")
 
 
+def reintentar_extraccion_borrador(
+    con: duckdb.DuckDBPyConnection,
+    hash_pdf: str,
+    *,
+    actor: str,
+    api_key: str | None = None,
+) -> ResultadoPipeline:
+    """Reintenta Gemini sobre la evidencia inmutable del mismo borrador.
+
+    Un fallo actualiza solamente el diagnóstico. Un éxito reemplaza la
+    extracción del borrador, pero conserva su hash y PDF; `guardar_factura`
+    deja la nueva versión y la decisión en el historial.
+    """
+    datos = leer_borrador(con, hash_pdf)
+    ruta = Path(datos["ruta_pdf"] or f"{hash_pdf}.pdf")
+    if datos["extraccion_gemini_exitosa"]:
+        return ResultadoPipeline(ruta, hash_pdf, estado="ya_extraida")
+
+    clasificacion = ultima_clasificacion_documento(con, hash_pdf)
+    if (
+        clasificacion is None
+        or clasificacion["via"] != "gemini"
+        or clasificacion["apto_gemini"] is not True
+    ):
+        raise ValueError("Este documento no fue autorizado para enviarse a Gemini.")
+
+    contenido_pdf = leer_pdf(datos["ruta_evidencia"], con=con)
+    if contenido_pdf is None or hashlib.sha256(contenido_pdf).hexdigest() != hash_pdf:
+        raise ValueError("No se puede reintentar sin el PDF original verificable.")
+
+    factura, detalle_fallo = _extraer_con_reintentos(
+        con,
+        hash_pdf=hash_pdf,
+        ruta_pdf=str(ruta),
+        contenido_pdf=contenido_pdf,
+        texto_extraido=datos["texto_extraido"] or "",
+        api_key=api_key,
+    )
+    if factura is None:
+        try:
+            actualizar_fallo_extraccion_borrador(
+                con,
+                hash_pdf,
+                mensaje=detalle_fallo or _mensaje_operativo_gemini(None),
+                actor=actor,
+            )
+        except ValueError:
+            return ResultadoPipeline(ruta, hash_pdf, estado="ya_procesada")
+        return ResultadoPipeline(
+            ruta, hash_pdf, estado="borrador", detalle=detalle_fallo or ""
+        )
+
+    # Gemini corre fuera de una transacción. Antes de aplicar el resultado se
+    # vuelve a cerrar la ventana de una confirmación/descartado concurrente.
+    try:
+        datos_vigentes = leer_borrador(con, hash_pdf)
+    except ValueError:
+        return ResultadoPipeline(ruta, hash_pdf, estado="ya_procesada")
+    factura.hash_pdf = hash_pdf
+    factura.ruta_pdf = datos_vigentes["ruta_pdf"]
+    factura.ruta_evidencia = datos_vigentes["ruta_evidencia"]
+    guardar_factura(
+        con,
+        factura,
+        estado="borrador",
+        actor=actor,
+        texto_extraido=datos_vigentes["texto_extraido"],
+        motivo_decision="reintento Gemini exitoso",
+    )
+    return ResultadoPipeline(ruta, hash_pdf, estado="borrador")
+
+
 @_transaccional
 def confirmar_factura(
     con: duckdb.DuckDBPyConnection,
@@ -351,6 +450,7 @@ def confirmar_factura(
     *,
     diccionario: dict[str, list[str]] | None = None,
     total_impreso: float | None = None,
+    fuente_total_impreso: str = "automatica",
     actor: str = "sistema",
 ) -> str:
     """Guarda como DEFINITIVA una factura editada en la pantalla de
@@ -392,6 +492,8 @@ def confirmar_factura(
     anterior); las líneas de conceptos/impuestos/recargos/créditos no
     tienen tabla de corrección propia, así que si cambiaron se deja
     constancia en el propio motivo del evento "confirmacion"."""
+    if fuente_total_impreso not in {"automatica", "manual"}:
+        raise ValueError("Fuente de verificación del total inválida.")
     if factura.periodo_desde is None or factura.servicio is None:
         raise ValueError("No se puede confirmar sin período y servicio.")
     if factura.moneda != "ARS":
@@ -484,7 +586,7 @@ def confirmar_factura(
                 motivos_homologacion[i] = "sugerido_por_modelo"
 
     estado = "requiere_revision" if revision_humana_obligatoria() else "aprobada"
-    motivo_decision = "confirmado"
+    motivo_decision = f"confirmado, doble lectura {fuente_total_impreso} del total"
     if lineas_corregidas:
         motivo_decision += ", con líneas de conceptos o montos corregidas"
     guardar_factura(
