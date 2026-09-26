@@ -11,6 +11,7 @@ from core.ingesta.pdf_texto import (
     PdfSinTextoError,
     extraer_texto,
     hash_archivo,
+    parsear_monto,
     total_impreso,
 )
 
@@ -38,6 +39,28 @@ def test_total_impreso_de_factura_con_recargo():
 
 def test_total_impreso_sin_coincidencia_devuelve_none():
     assert total_impreso("un texto cualquiera sin ningún total") is None
+
+
+@pytest.mark.parametrize(
+    ("token", "esperado"),
+    [("1.502,99", 1502.99), ("1,502.99", 1502.99)],
+)
+def test_parsear_monto_publico_acepta_formatos_argentino_y_estadounidense(token, esperado):
+    assert parsear_monto(token) == pytest.approx(esperado)
+
+
+def test_pdf_valido_sin_texto_se_puede_reservar_para_lector_multimodal(tmp_path):
+    ruta = tmp_path / "visual.pdf"
+    pdf = canvas.Canvas(str(ruta), pagesize=A4)
+    pdf.rect(20, 20, 100, 100)
+    pdf.save()
+
+    with pytest.raises(PdfSinTextoError):
+        extraer_texto(ruta)
+    documento = extraer_texto(ruta, permitir_sin_texto=True)
+
+    assert documento.texto == ""
+    assert documento.hash_sha256 == hash_archivo(ruta)
 
 
 def test_total_impreso_de_factura_de_gas_con_periodo_mes_anio():

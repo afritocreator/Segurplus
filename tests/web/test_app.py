@@ -141,6 +141,86 @@ def test_subida_manual_no_llama_a_gemini(cliente_logueado, monkeypatch):
     assert respuesta.status_code == 200
     assert "lista(s) para confirmar" in respuesta.text
 
+    con = almacenamiento_mod.conectar()
+    try:
+        hash_pdf = almacenamiento_mod.listar_borradores(con)[0][0]
+    finally:
+        con.close()
+    detalle = cliente_logueado.get(f"/revisar/{hash_pdf}")
+    assert "Carga manual elegida por el operador" in detalle.text
+    assert "No se pudo leer automáticamente" not in detalle.text
+
+
+def test_error_503_se_sanitiza_y_se_reintenta_desde_el_mismo_borrador(
+    cliente_logueado, monkeypatch
+):
+    from core.extraccion.gemini import ExtraccionError
+
+    def _falla(*_args, **_kwargs):
+        raise ExtraccionError(
+            "Error llamando a Gemini: 503 UNAVAILABLE {'code': 503, 'status': 'UNAVAILABLE'}"
+        )
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _falla)
+    monkeypatch.setattr(pipeline_mod.time, "sleep", lambda _segundos: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "clave-falsa")
+    cliente_logueado.post(
+        "/subir",
+        data={"modo": "gemini", "apto_gemini": "si"},
+        files={"archivos": ("energia.pdf", _FIXTURE_ENERGIA.read_bytes(), "application/pdf")},
+    )
+
+    con = almacenamiento_mod.conectar()
+    try:
+        hash_pdf = almacenamiento_mod.listar_borradores(con)[0][0]
+        almacenamiento_mod.registrar_clasificacion_documento(
+            con,
+            hash_pdf=hash_pdf,
+            apto_gemini=True,
+            actor="operador",
+            via="gemini",
+        )
+    finally:
+        con.close()
+
+    detalle = cliente_logueado.get(f"/revisar/{hash_pdf}")
+    assert "temporalmente saturado" in detalle.text
+    assert "'code': 503" not in detalle.text
+    assert "Reintentar lectura con Gemini" in detalle.text
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "extraer_con_gemini",
+        lambda *_a, **_k: FacturaExtraida(
+            emisor="Reintentada",
+            cuit=None,
+            servicio="energia",
+            periodo_desde="2026-07-01",
+            periodo_hasta=None,
+            fecha_emision=None,
+            fecha_vencimiento=None,
+            numero_comprobante=None,
+            moneda="ARS",
+        ),
+    )
+    respuesta = cliente_logueado.post(
+        f"/revisar/{hash_pdf}/reintentar", follow_redirects=False
+    )
+    assert respuesta.status_code == 303
+    assert respuesta.headers["location"].endswith("reintento=exito")
+
+    con = almacenamiento_mod.conectar()
+    try:
+        assert almacenamiento_mod.leer_borrador(con, hash_pdf)["emisor"] == "Reintentada"
+    finally:
+        con.close()
+
+
+def test_reintentar_exige_csrf_en_produccion(cliente_logueado, monkeypatch):
+    monkeypatch.setenv("SEGURPLUS_PRODUCTION", "1")
+    respuesta = cliente_logueado.post("/revisar/cualquier-hash/reintentar")
+    assert respuesta.status_code == 403
+
 
 def test_logout_saca_el_acceso(cliente_logueado):
     cliente_logueado.post("/logout")
@@ -177,7 +257,9 @@ def _borrador_gas_con_lineas_rotas(con, hash_pdf: str) -> None:
         total=363.0,
         hash_pdf=hash_pdf,
     )
-    almacenamiento_mod.guardar_factura(con, factura, estado="borrador")
+    almacenamiento_mod.guardar_factura(
+        con, factura, estado="borrador", texto_extraido="TOTAL: $ 363,00"
+    )
 
 
 def test_revisar_detalle_de_gas_con_lineas_rotas_ofrece_un_solo_renglon(cliente_logueado):
@@ -278,6 +360,111 @@ def test_un_renglon_sin_unidad_m3_usa_cantidad_uno(cliente_logueado):
     assert fila == (1.0, None, 300.0, 300.0)
 
 
+def _borrador_sin_total_textual(con, hash_pdf: str) -> None:
+    factura = FacturaExtraida(
+        emisor="Proveedor visual",
+        cuit="30-1",
+        servicio="energia",
+        periodo_desde="2026-07-01",
+        periodo_hasta="2026-07-31",
+        fecha_emision="2026-08-01",
+        fecha_vencimiento=None,
+        numero_comprobante="V-1",
+        moneda="ARS",
+        conceptos=[Concepto("Servicio", 1, None, 1502.99, 1502.99)],
+        subtotal=1502.99,
+        total=1502.99,
+        hash_pdf=hash_pdf,
+    )
+    almacenamiento_mod.guardar_factura(con, factura, estado="borrador", texto_extraido="")
+
+
+def _formulario_total_visual(total_manual: str) -> dict:
+    return {
+        "emisor": "Proveedor visual",
+        "cuit": "30-1",
+        "servicio": "energia",
+        "moneda": "ARS",
+        "periodo_desde": "2026-07-01",
+        "periodo_hasta": "2026-07-31",
+        "fecha_emision": "2026-08-01",
+        "fecha_vencimiento": "",
+        "numero_comprobante": "V-1",
+        "concepto_descripcion": ["Servicio"],
+        "concepto_cantidad": ["1"],
+        "concepto_unidad": [""],
+        "concepto_precio_unitario": ["1502.99"],
+        "concepto_importe": ["1502.99"],
+        "impuesto_nombre": [""],
+        "impuesto_importe": [""],
+        "recargo_nombre": [""],
+        "recargo_importe": [""],
+        "credito_nombre": [""],
+        "credito_importe": [""],
+        "subtotal": "1502.99",
+        "total": "1502.99",
+        "total_impreso_manual": total_manual,
+    }
+
+
+def test_confirmar_sin_texto_exige_total_visual_independiente(cliente_logueado):
+    con = almacenamiento_mod.conectar()
+    try:
+        _borrador_sin_total_textual(con, "visual-falta")
+    finally:
+        con.close()
+
+    detalle = cliente_logueado.get("/revisar/visual-falta")
+    assert "Total leído visualmente del PDF" in detalle.text
+
+    sin_total = cliente_logueado.post(
+        "/revisar/visual-falta/confirmar", data=_formulario_total_visual("")
+    )
+    assert "Ingresá por separado el total" in sin_total.text
+
+    distinto = cliente_logueado.post(
+        "/revisar/visual-falta/confirmar", data=_formulario_total_visual("1.400,00")
+    )
+    assert "no cierra aritméticamente" in distinto.text
+
+
+@pytest.mark.parametrize(
+    ("total_manual", "hash_pdf"),
+    [("1.502,99", "visual-ar"), ("1,502.99", "visual-us")],
+)
+def test_confirmar_total_visual_acepta_ambos_formatos(
+    cliente_logueado, total_manual, hash_pdf
+):
+    con = almacenamiento_mod.conectar()
+    try:
+        _borrador_sin_total_textual(con, hash_pdf)
+    finally:
+        con.close()
+
+    respuesta = cliente_logueado.post(
+        f"/revisar/{hash_pdf}/confirmar",
+        data=_formulario_total_visual(total_manual),
+        follow_redirects=False,
+    )
+    assert respuesta.status_code == 303
+
+    con = almacenamiento_mod.conectar()
+    try:
+        estado = con.execute(
+            "SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+        ).fetchone()[0]
+        motivo = con.execute(
+            """SELECT motivo FROM decisiones_factura
+               WHERE hash_pdf = ? AND accion = 'confirmacion'
+               ORDER BY creado_en DESC LIMIT 1""",
+            [hash_pdf],
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert estado == "aprobada"
+    assert "doble lectura manual" in motivo
+
+
 def test_un_renglon_no_hace_nada_si_la_factura_no_califica(cliente_logueado):
     """docs/auditoria-2026-09-web.md, E-14: `post_un_renglon` revalida
     server-side las mismas condiciones que muestran el botón -- un POST a
@@ -358,6 +545,8 @@ def test_subir_archivo_de_mas_de_10mb_se_rechaza_sin_procesar(cliente_logueado, 
     )
     assert r.status_code == 200
     assert "más de 10 MB" in r.text
+    assert "PDFs guardados: MB de MB" not in r.text
+    assert "No se pudo medir el espacio de evidencia" in r.text
 
 
 def test_subir_mas_de_10_archivos_se_rechaza_sin_procesar(cliente_logueado, monkeypatch):
@@ -378,6 +567,8 @@ def test_subir_mas_de_10_archivos_se_rechaza_sin_procesar(cliente_logueado, monk
     )
     assert r.status_code == 200
     assert "el máximo por tanda es 10" in r.text
+    assert "PDFs guardados: MB de MB" not in r.text
+    assert "No se pudo medir el espacio de evidencia" in r.text
 
 
 def test_flujo_completo_subir_revisar_confirmar(cliente_logueado, monkeypatch):

@@ -9,6 +9,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 import core.pipeline as pipeline_mod
 from core.almacenamiento import conectar, guardar_factura
@@ -19,7 +21,12 @@ from core.extraccion.esquema import (
     conceptos_desde_filas,
     montos_desde_filas,
 )
-from core.pipeline import confirmar_factura, procesar_pdf, procesar_pdf_manual
+from core.pipeline import (
+    confirmar_factura,
+    procesar_pdf,
+    procesar_pdf_manual,
+    reintentar_extraccion_borrador,
+)
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "fixtures" / "sintetico"
 
@@ -141,6 +148,31 @@ def test_factura_valida_queda_como_borrador(tmp_path, monkeypatch):
         "SELECT emisor, total, estado FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
     ).fetchone()
     assert fila == ("Comunicaciones Sur S.A.", 12584.0, "borrador")
+    con.close()
+
+
+def test_pdf_visual_valido_llega_a_gemini_con_texto_auxiliar_vacio(tmp_path, monkeypatch):
+    ruta = tmp_path / "factura-visual.pdf"
+    pdf = canvas.Canvas(str(ruta), pagesize=A4)
+    pdf.rect(20, 20, 100, 100)
+    pdf.save()
+    recibido = {}
+
+    def _extraer(contenido, *, api_key=None, texto_extraido=None):
+        recibido["contenido"] = contenido
+        recibido["texto"] = texto_extraido
+        return _factura_telefonia_julio()
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _extraer)
+    con = conectar(tmp_path / "visual.duckdb")
+    resultado = procesar_pdf(ruta, con, api_key="fake")
+
+    assert resultado.estado == "borrador"
+    assert recibido == {"contenido": ruta.read_bytes(), "texto": ""}
+    texto_guardado = con.execute(
+        "SELECT texto_extraido FROM facturas WHERE hash_pdf = ?", [resultado.hash_pdf]
+    ).fetchone()[0]
+    assert texto_guardado == ""
     con.close()
 
 
@@ -321,8 +353,8 @@ def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
     # docs/auditoria-2026-09.md, hallazgo A-7: el tope estaba declarado y
     # nunca se usaba. docs/auditoria-2026-09-facturas-reales.md, B-4: ahora
     # vive en data/operacion.yaml (core.operacion.max_llamadas_gemini_por_hora),
-    # no hardcodeado. Sin llegar a llamar a Gemini, no hay nada que dejar
-    # como borrador -- sigue siendo error_extraccion.
+    # no hardcodeado. El PDF ya fue aceptado y por eso queda disponible
+    # como borrador para reintentar cuando se libere la cuota.
     monkeypatch.setattr(pipeline_mod, "max_llamadas_gemini_por_hora", lambda: 0)
     llamado = False
 
@@ -336,7 +368,7 @@ def test_tope_de_llamadas_por_hora_se_hace_cumplir(tmp_path, monkeypatch):
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "error_extraccion"
+    assert resultado.estado == "borrador"
     assert "tope" in resultado.detalle
     assert not llamado  # ni siquiera se intentó llamar a Gemini
     con.close()
@@ -358,7 +390,7 @@ def test_tope_de_llamadas_dice_a_que_hora_reintentar(tmp_path, monkeypatch):
 
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
-    assert resultado.estado == "error_extraccion"
+    assert resultado.estado == "borrador"
     assert "tope" in resultado.detalle
     assert "después de las" in resultado.detalle
     con.close()
@@ -389,7 +421,8 @@ def test_intento_fallido_de_extraccion_deja_un_borrador_vacio(tmp_path, monkeypa
     ).fetchone()
     assert fila[0] == "borrador"
     assert fila[1] is None  # nada que extraer -- vacío para completar a mano
-    assert "JSON" in fila[2]
+    assert "interpretar" in fila[2]
+    assert "JSON" not in fila[2]
 
     from core.almacenamiento import intentos_gemini_fallidos_recientes
 
@@ -451,12 +484,119 @@ def test_503_agota_los_reintentos_y_deja_borrador_vacio(tmp_path, monkeypatch):
     resultado = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
 
     assert resultado.estado == "borrador"
-    assert "503" in resultado.detalle
+    assert "saturado" in resultado.detalle
+    assert "503" not in resultado.detalle
 
     from core.almacenamiento import intentos_gemini_fallidos_recientes, llamadas_ultima_hora
 
     assert len(intentos_gemini_fallidos_recientes(con)) == 3
     assert llamadas_ultima_hora(con) == 3
+    con.close()
+
+
+def test_reintento_exitoso_actualiza_el_mismo_borrador_y_no_se_duplica(tmp_path, monkeypatch):
+    from core.almacenamiento import registrar_clasificacion_documento
+    from core.extraccion.gemini import ExtraccionError
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "extraer_con_gemini",
+        lambda *a, **k: (_ for _ in ()).throw(ExtraccionError("JSON inválido")),
+    )
+    con = conectar(tmp_path / "reintento.duckdb")
+    inicial = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    registrar_clasificacion_documento(
+        con,
+        hash_pdf=inicial.hash_pdf,
+        apto_gemini=True,
+        actor="ana@example.com",
+        via="gemini",
+    )
+
+    llamadas = []
+
+    def _exito(*a, **k):
+        llamadas.append(1)
+        return _factura_telefonia_julio()
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _exito)
+    resultado = reintentar_extraccion_borrador(
+        con, inicial.hash_pdf, actor="ana@example.com", api_key="fake"
+    )
+    segundo = reintentar_extraccion_borrador(
+        con, inicial.hash_pdf, actor="ana@example.com", api_key="fake"
+    )
+
+    assert resultado.estado == "borrador"
+    assert segundo.estado == "ya_extraida"
+    assert llamadas == [1]
+    assert con.execute("SELECT count(*) FROM facturas").fetchone()[0] == 1
+    assert con.execute("SELECT emisor FROM facturas").fetchone()[0] == "Comunicaciones Sur S.A."
+    con.close()
+
+
+def test_reintento_fallido_preserva_campos_editados(tmp_path, monkeypatch):
+    from core.almacenamiento import registrar_clasificacion_documento
+    from core.extraccion.gemini import ExtraccionError
+
+    def _falla(*a, **k):
+        raise ExtraccionError("Error llamando a Gemini: 503 UNAVAILABLE")
+
+    monkeypatch.setattr(pipeline_mod, "extraer_con_gemini", _falla)
+    monkeypatch.setattr(pipeline_mod.time, "sleep", lambda _segundos: None)
+    con = conectar(tmp_path / "reintento-fallido.duckdb")
+    inicial = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    registrar_clasificacion_documento(
+        con,
+        hash_pdf=inicial.hash_pdf,
+        apto_gemini=True,
+        actor="ana@example.com",
+        via="gemini",
+    )
+    con.execute(
+        "UPDATE facturas SET emisor = 'Corregido a mano' WHERE hash_pdf = ?",
+        [inicial.hash_pdf],
+    )
+
+    resultado = reintentar_extraccion_borrador(
+        con, inicial.hash_pdf, actor="ana@example.com", api_key="fake"
+    )
+
+    assert resultado.estado == "borrador"
+    assert con.execute("SELECT emisor FROM facturas").fetchone()[0] == "Corregido a mano"
+    con.close()
+
+
+def test_reintento_rechaza_evidencia_alterada_y_carga_manual(tmp_path, monkeypatch):
+    from core.almacenamiento import registrar_clasificacion_documento
+    from core.extraccion.gemini import ExtraccionError
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "extraer_con_gemini",
+        lambda *a, **k: (_ for _ in ()).throw(ExtraccionError("JSON inválido")),
+    )
+    con = conectar(tmp_path / "evidencia-alterada.duckdb")
+    inicial = procesar_pdf(FIXTURES / "telefonia_2026-07.pdf", con, api_key="fake")
+    registrar_clasificacion_documento(
+        con,
+        hash_pdf=inicial.hash_pdf,
+        apto_gemini=True,
+        actor="ana@example.com",
+        via="gemini",
+    )
+    con.execute(
+        "UPDATE documentos_pdf SET contenido_b64 = 'cGRmLWFsdGVyYWRv' WHERE hash_pdf = ?",
+        [inicial.hash_pdf],
+    )
+    with pytest.raises(ValueError, match="PDF original verificable"):
+        reintentar_extraccion_borrador(con, inicial.hash_pdf, actor="ana@example.com")
+
+    manual = procesar_pdf_manual(
+        FIXTURES / "energia_2026-07.pdf", con, actor="ana@example.com"
+    )
+    with pytest.raises(ValueError, match="no fue autorizado"):
+        reintentar_extraccion_borrador(con, manual.hash_pdf, actor="ana@example.com")
     con.close()
 
 

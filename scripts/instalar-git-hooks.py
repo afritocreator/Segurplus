@@ -9,6 +9,7 @@ Correr UNA VEZ después de clonar el repo:
 
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import subprocess
@@ -42,7 +43,15 @@ def main() -> None:
             print("Cancelado, no se tocó nada.")
             return
 
-    shutil.copy(fuente, destino)
+    if os.name == "nt":
+        python = Path(sys.executable).resolve().as_posix()
+        script = fuente.resolve().as_posix()
+        destino.write_text(
+            f'#!/bin/sh\nexec "{python}" "{script}"\n',
+            encoding="utf-8",
+        )
+    else:
+        shutil.copy(fuente, destino)
     modo_actual = destino.stat().st_mode
     destino.chmod(modo_actual | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 

@@ -681,6 +681,63 @@ def registrar_clasificacion_documento(
     )
 
 
+def ultima_clasificacion_documento(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str
+) -> dict | None:
+    """Devuelve la clasificación más reciente usada para decidir si el PDF
+    podía salir hacia Gemini. La vía se consulta desde la auditoría existente
+    y no se infiere de textos de interfaz como `motivo_carga`."""
+    fila = con.execute(
+        """SELECT apto_gemini, actor, via, creado_en
+           FROM clasificaciones_documento
+           WHERE hash_pdf = ? ORDER BY creado_en DESC LIMIT 1""",
+        [hash_pdf],
+    ).fetchone()
+    if fila is None:
+        return None
+    return dict(zip(("apto_gemini", "actor", "via", "creado_en"), fila, strict=True))
+
+
+def gemini_ya_extrajo(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: str
+) -> bool:
+    """Si ya hubo una llamada exitosa para impedir reintentos duplicados."""
+    return bool(
+        con.execute(
+            "SELECT count(*) FROM intentos_gemini WHERE hash_pdf = ? AND exito = TRUE",
+            [hash_pdf],
+        ).fetchone()[0]
+    )
+
+
+@_transaccional
+def actualizar_fallo_extraccion_borrador(
+    con: duckdb.DuckDBPyConnection | ConexionPostgres,
+    hash_pdf: str,
+    *,
+    mensaje: str,
+    actor: str,
+) -> None:
+    """Actualiza solo el diagnóstico de un reintento fallido.
+
+    No vuelve a guardar la factura porque eso reemplazaría conceptos y montos
+    que el operador pudo haber completado manualmente mientras Gemini estaba
+    indisponible.
+    """
+    estado = con.execute(
+        "SELECT estado FROM facturas WHERE hash_pdf = ?", [hash_pdf]
+    ).fetchone()
+    if estado is None or estado[0] != "borrador":
+        raise ValueError("La factura ya no es un borrador disponible.")
+    con.execute(
+        "UPDATE facturas SET motivo_carga = ?, actualizado_en = now() WHERE hash_pdf = ?",
+        [mensaje, hash_pdf],
+    )
+    motivo = f"reintento Gemini fallido: {mensaje}"
+    _registrar_decision(con, hash_pdf, "carga", actor, motivo)
+    _registrar_version(con, hash_pdf, actor=actor, motivo=motivo)
+
+
 def _registrar_version(
     con: duckdb.DuckDBPyConnection | ConexionPostgres,
     hash_pdf: str,
@@ -799,6 +856,8 @@ def leer_borrador(con: duckdb.DuckDBPyConnection | ConexionPostgres, hash_pdf: s
         raise ValueError(f"{hash_pdf!r} no es un borrador disponible para confirmar.")
     datos = dict(zip(_CAMPOS_BORRADOR, fila[:-1], strict=True))
     datos["hash_pdf"] = hash_pdf
+    datos["clasificacion"] = ultima_clasificacion_documento(con, hash_pdf)
+    datos["extraccion_gemini_exitosa"] = gemini_ya_extrajo(con, hash_pdf)
     # docs/auditoria-2026-09-web.md, E-19: `concepto_sugerido` va al final,
     # como sexto campo -- así el resto del código que ya compara estas
     # tuplas de a 5 (D-4, `lineas_corregidas` en `core/pipeline.py`) sigue

@@ -4,11 +4,9 @@ idempotencia, y la doble lectura del total (regex directa sobre el texto,
 independiente de lo que diga el modelo -- ver
 `core/extraccion/validacion.py::validar_factura`, parámetro `total_impreso`).
 
-No hace OCR: se confirmó que las facturas de origen son PDFs digitales
-(texto seleccionable), así que un PDF sin capa de texto es un caso
-anómalo -- se manda a cuarentena con un mensaje claro en vez de devolver
-texto vacío en silencio (mismo principio que
-`core/ingesta/balance.py` de Consultora: nunca fallar en silencio).
+No hace OCR. Los consumidores textuales mantienen el rechazo explícito de
+PDFs sin capa de texto; el pipeline multimodal puede aceptar el mismo PDF
+con texto auxiliar vacío y enviar sus bytes nativos a Gemini.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ import pdfplumber
 
 # "TOTAL" (con o sin "A PAGAR") seguido de un monto. Captura el TOKEN
 # NUMÉRICO COMPLETO, con todos sus separadores -- decidir cuál es el
-# separador decimal es trabajo de `_parsear_monto`, no de la regex. Antes,
+# separador decimal es trabajo de `parsear_monto`, no de la regex. Antes,
 # esta regex exigía el formato argentino exacto (coma decimal con 2
 # dígitos) y, ante un total en formato estadounidense ("12,584.00"),
 # matcheaba solo un PREFIJO del número ("12,58") -- un valor incorrecto en
@@ -51,16 +49,21 @@ def hash_archivo(ruta: Path) -> str:
     return hashlib.sha256(ruta.read_bytes()).hexdigest()
 
 
-def extraer_texto(ruta: Path) -> DocumentoPdf:
+def extraer_texto(ruta: Path, *, permitir_sin_texto: bool = False) -> DocumentoPdf:
     """Extrae el texto plano de todas las páginas de un PDF. Lanza
     `PdfSinTextoError` si el PDF no tiene ninguna capa de texto (en vez de
     devolver un string vacío que después falle en silencio más adelante en
-    el pipeline)."""
+    el pipeline).
+
+    `permitir_sin_texto=True` se reserva para consumidores multimodales que
+    leen los bytes del PDF, como Gemini. Un PDF válido compuesto por imágenes
+    devuelve entonces `texto=""`; un PDF corrupto sigue propagando el error
+    de `pdfplumber`."""
     with pdfplumber.open(ruta) as pdf:
         paginas = [pagina.extract_text() or "" for pagina in pdf.pages]
     texto = "\n".join(paginas).strip()
 
-    if not texto:
+    if not texto and not permitir_sin_texto:
         raise PdfSinTextoError(
             f"{ruta.name} no tiene texto extraíble -- ¿es una foto/escaneo? "
             "Este pipeline no hace OCR (ver docstring de core/ingesta/pdf_texto.py); "
@@ -70,7 +73,7 @@ def extraer_texto(ruta: Path) -> DocumentoPdf:
     return DocumentoPdf(ruta=ruta, texto=texto, hash_sha256=hash_archivo(ruta))
 
 
-def _parsear_monto(token: str) -> float | None:
+def parsear_monto(token: str) -> float | None:
     """Convierte un token numérico COMPLETO (ya extraído por la regex, con
     todos sus separadores) a float -- nunca a partir de una coincidencia
     parcial. Soporta los formatos que puede imprimir un proveedor real:
@@ -129,4 +132,4 @@ def total_impreso(texto: str) -> float | None:
     coincidencias = _PATRON_TOTAL.findall(texto)
     if not coincidencias:
         return None
-    return _parsear_monto(coincidencias[-1])
+    return parsear_monto(coincidencias[-1])

@@ -70,10 +70,16 @@ from core.extraccion.esquema import (
 )
 from core.extraccion.validacion import validar_factura
 from core.formato import mes_anio, nombre_servicio, pesos_ars
-from core.ingesta.pdf_texto import total_impreso
+from core.ingesta.pdf_texto import parsear_monto, total_impreso
 from core.macro.ipc import leer_ipc
 from core.operacion import tamano_maximo_pdf_bytes
-from core.pipeline import ResultadoPipeline, confirmar_factura, procesar_pdf, procesar_pdf_manual
+from core.pipeline import (
+    ResultadoPipeline,
+    confirmar_factura,
+    procesar_pdf,
+    procesar_pdf_manual,
+    reintentar_extraccion_borrador,
+)
 from core.relato import DatosRelato, generar_relato_determinista
 from core.reportes.excel import generar_reporte_excel
 from web.auth import (
@@ -90,6 +96,8 @@ from web.comparacion import (
     sincronizar_casos_pendientes,
     snapshot_comparacion,
 )
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +402,7 @@ def get_sin_clasificar(request: Request):
 
 
 def _contexto_uso_evidencia() -> dict:
+    """Valores del indicador de evidencia para cualquier render de Subir."""
     try:
         uso_evidencia = uso_evidencia_bytes()
     except Exception:  # noqa: BLE001 -- se muestra desconocido; la escritura bloquea si no mide
@@ -644,6 +653,37 @@ def _contexto_detalle(
     aritmetica_ok: bool,
     mostrar_boton_un_renglon: bool = False,
 ) -> dict:
+    clasificacion = datos.get("clasificacion")
+    es_carga_manual = bool(clasificacion and clasificacion["via"] == "manual")
+    motivo_carga = datos["motivo_carga"]
+    if es_carga_manual:
+        aviso_carga = "Carga manual elegida por el operador; el PDF no se envió a Gemini."
+        tipo_aviso_carga = "info"
+    elif motivo_carga:
+        detalle = motivo_carga.lower()
+        if "503" in detalle or "unavailable" in detalle or "high demand" in detalle:
+            aviso_carga = (
+                "Gemini está temporalmente saturado. Reintentá desde este borrador más tarde."
+            )
+        elif "429" in detalle or "quota" in detalle or "resource_exhausted" in detalle:
+            aviso_carga = (
+                "Gemini alcanzó temporalmente su cuota. Reintentá desde este borrador más tarde."
+            )
+        elif "gemini" in detalle and "configur" in detalle:
+            aviso_carga = "Gemini no está disponible por un problema de configuración."
+        elif "gemini" in detalle and motivo_carga.startswith("No se pudo leer con Gemini"):
+            aviso_carga = (
+                "Gemini no pudo leer el documento. Podés reintentarlo desde este borrador."
+            )
+        else:
+            aviso_carga = motivo_carga
+        tipo_aviso_carga = "advertencia"
+    else:
+        aviso_carga = None
+        tipo_aviso_carga = None
+
+    pdf_disponible = bool(leer_pdf(datos["ruta_evidencia"], con=con))
+    requiere_total_manual = total_impreso(datos["texto_extraido"] or "") is None
     filas_conceptos = _filas_con_blancos(
         [
             {
@@ -663,9 +703,19 @@ def _contexto_detalle(
     )
     return {
         "hash_pdf": hash_pdf,
-        "motivo_carga": datos["motivo_carga"],
-        "pdf_disponible": bool(leer_pdf(datos["ruta_evidencia"], con=con)),
+        "aviso_carga": aviso_carga,
+        "tipo_aviso_carga": tipo_aviso_carga,
+        "pdf_disponible": pdf_disponible,
         "texto_extraido": datos["texto_extraido"],
+        "requiere_total_manual": requiere_total_manual,
+        "total_impreso_manual_texto": "",
+        "puede_reintentar": bool(
+            pdf_disponible
+            and clasificacion
+            and clasificacion["via"] == "gemini"
+            and clasificacion["apto_gemini"] is True
+            and not datos["extraccion_gemini_exitosa"]
+        ),
         "servicios_conocidos": SERVICIOS_CONOCIDOS,
         "f": {
             "emisor": datos["emisor"],
@@ -685,7 +735,7 @@ def _contexto_detalle(
         "filas_recargos": filas_monto("recargos"),
         "filas_creditos": filas_monto("creditos"),
         "errores_aritmetica": errores_aritmetica,
-        "aritmetica_ok": aritmetica_ok,
+        "aritmetica_ok": aritmetica_ok and not requiere_total_manual,
         "mostrar_boton_un_renglon": mostrar_boton_un_renglon,
     }
 
@@ -710,9 +760,45 @@ def get_revisar_detalle(request: Request, hash_pdf: str):
         if datos is None:
             return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
         contexto = _contexto_detalle_completo(con, hash_pdf, datos)
+        avisos_reintento = {
+            "exito": ("Gemini completó la extracción del mismo borrador.", "exito"),
+            "fallo": (
+                "Gemini todavía no pudo leer el documento; el borrador se conservó.",
+                "advertencia",
+            ),
+            "no_disponible": ("Este borrador no admite un reintento con Gemini.", "error"),
+        }
+        aviso = request.query_params.get("reintento")
+        if aviso in avisos_reintento:
+            contexto["mensajes"] = [avisos_reintento[aviso]]
     finally:
         con.close()
     return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
+
+
+@app.post("/revisar/{hash_pdf}/reintentar")
+async def post_reintentar(request: Request, hash_pdf: str, csrf: str = Form("")):
+    if error := _exigir_csrf(request, csrf):
+        return error
+    con = conectar()
+    try:
+        try:
+            resultado = await run_in_threadpool(
+                reintentar_extraccion_borrador,
+                con,
+                hash_pdf,
+                actor=request.state.sesion["usuario"],
+            )
+        except ValueError:
+            return RedirectResponse(
+                f"/revisar/{hash_pdf}?reintento=no_disponible", status_code=303
+            )
+    finally:
+        con.close()
+    if resultado.estado in {"ya_procesada", "ya_extraida"}:
+        return RedirectResponse("/revisar?aviso=ya_procesada", status_code=303)
+    aviso = "fallo" if resultado.detalle else "exito"
+    return RedirectResponse(f"/revisar/{hash_pdf}?reintento={aviso}", status_code=303)
 
 
 def _puede_cargar_un_renglon(datos: dict) -> bool:
@@ -847,6 +933,12 @@ def _num_desde_texto(texto: str) -> float | None:
     except InvalidOperation as exc:
         raise ValueError(f"importe inválido: {texto!r}") from exc
     return float(valor)
+
+
+def _monto_impreso_desde_texto(texto: str) -> float | None:
+    """Lee el total tipeado visualmente sin copiar el valor de Gemini."""
+    token = (texto or "").strip().replace("$", "").replace(" ", "")
+    return parsear_monto(token) if token else None
 
 
 async def _factura_desde_form(request: Request, hash_pdf: str, datos: dict) -> FacturaExtraida:
@@ -986,14 +1078,27 @@ async def post_confirmar(request: Request, hash_pdf: str, csrf: str = Form("")):
             return await _error_de_formulario(
                 request, con, hash_pdf, datos, f"No se pudo leer el formulario: {exc}"
             )
+        total_para_validar: float | None = None
+        fuente_total = "automatica"
+        total_manual_texto = ""
         try:
             diccionario = cargar_diccionario(factura.servicio) if factura.servicio else None
-            total_impreso_valor = total_impreso(datos["texto_extraido"] or "")
+            total_para_validar = total_impreso(datos["texto_extraido"] or "")
+            if total_para_validar is None:
+                form = await request.form()
+                total_manual_texto = str(form.get("total_impreso_manual") or "").strip()
+                total_para_validar = _monto_impreso_desde_texto(total_manual_texto)
+                if total_para_validar is None:
+                    raise ValueError(
+                        "Ingresá por separado el total que ves en el PDF para confirmar."
+                    )
+                fuente_total = "manual"
             estado_final = confirmar_factura(
                 con,
                 factura,
                 diccionario=diccionario,
-                total_impreso=total_impreso_valor,
+                total_impreso=total_para_validar,
+                fuente_total_impreso=fuente_total,
                 actor=request.state.sesion["usuario"],
                 permitir_duplicado=(await request.form()).get("permitir_duplicado") == "si",
                 motivo_duplicado=(await request.form()).get("motivo_duplicado") or None,
@@ -1004,9 +1109,7 @@ async def post_confirmar(request: Request, hash_pdf: str, csrf: str = Form("")):
                 except Exception:  # noqa: BLE001 -- la aprobación ya confirmó en DB
                     logger.exception("Quedó pendiente sincronizar casos comparativos")
         except ValueError as exc:
-            resultado = validar_factura(
-                factura, total_impreso=total_impreso(datos["texto_extraido"] or "")
-            )
+            resultado = validar_factura(factura, total_impreso=total_para_validar)
             errores = [str(exc)]
             contexto = _contexto_detalle(
                 hash_pdf,
@@ -1034,6 +1137,7 @@ async def post_confirmar(request: Request, hash_pdf: str, csrf: str = Form("")):
                 }
             )
             contexto.update(_filas_desde_factura(factura))
+            contexto["total_impreso_manual_texto"] = total_manual_texto
             contexto["mensajes"] = [(str(exc), "error")]
             return _render(request, "revisar_detalle.html", contexto, pagina_activa="revisar")
     finally:
